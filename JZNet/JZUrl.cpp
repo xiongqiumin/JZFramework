@@ -7,6 +7,33 @@
 #include "JZStd.h"
 #include "JZString.h"
 
+// %XX -> 字节（不解 +，避免把字面加号当空格：搜索 "c++" 这类查询不能变形）
+static std::string urlDecode(const std::string& str)
+{
+    auto hexVal = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
+    std::string out;
+    out.reserve(str.size());
+    for (size_t i = 0; i < str.size(); i++) {
+        if (str[i] == '%' && i + 2 < str.size()) {
+            int h = hexVal(str[i + 1]);
+            int l = hexVal(str[i + 2]);
+            if (h >= 0 && l >= 0) {
+                out.push_back((char)((h << 4) | l));
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(str[i]);
+    }
+    return out;
+}
+
 static std::string urlEncode(const std::string& str)
 {
     JZString js = JZString::fromStdString(str);
@@ -94,7 +121,11 @@ void JZUrlQuery::fromString(const std::string& queryStr)
         size_t eqPos = param.find('=');
         if (eqPos != std::string::npos) {
             std::string key = param.substr(0, eqPos);
-            std::string value = param.substr(eqPos + 1);
+            // 值在这里**解码**，toString() 时再编码 —— 两个方向必须对称。
+            // 以前只编码不解码：URL 走一遍 parse/重建就把 %XX 变成 %25XX（二次编码）。
+            // 典型后果：跟随 302 跳转后查询词变成字面 "%E6%B7%B1..."，搜索引擎完全搜不到
+            // （2026-11-12 实测：必应返回一批随机热点结果，被误判成"源降级"）。
+            std::string value = urlDecode(param.substr(eqPos + 1));
             addQueryItem(key, value);
         }
 

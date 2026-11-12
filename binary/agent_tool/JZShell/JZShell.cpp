@@ -6508,6 +6508,9 @@ JZShell::JZShell(JZObject *parent)
         }
         m_env["PWD"] = pwd;   // `~+` 读它
     }
+    // resetState() 的恢复点: 此刻的 m_env 就是"解释器刚建好"该有的样子
+    m_baseEnv = m_env;
+    m_baseExported = m_exported;
 }
 
 JZShell::~JZShell()
@@ -6523,8 +6526,25 @@ bool JZShell::setCwd(const string &dir, string *error)
             *error = "不是目录: " + abs;
         return false;
     }
+    const string old = m_cwd;
     m_cwd = abs;
     m_policy.setBaseCwd(m_cwd);
+
+    // ⚠ PWD / OLDPWD 必须跟着走。这个入口是**宿主**直接改 cwd 用的(终端 attach 时把
+    //   工作区根交给解释器), 不经过 `cd` 内建 —— 以前只改 m_cwd, PWD 还停在解释器构造
+    //   时的进程 cwd 上, 于是 `cd 子目录` 之后 `pwd` / `$PWD` 打出来的是"旧 base + 子目录"
+    //   的假路径: 工作区明明是 .../workspace/cli2, pwd 却给 .../agent_env/xxx。
+    //   模型照着 pwd 拼路径必然全错, 这是"cd 老出错"的一个根因。
+    auto toSlash = [](string s)
+    {
+        for (char &c : s)
+            if (c == '\\')
+                c = '/';
+        return s;
+    };
+    if (!old.empty() && old != abs)
+        m_env["OLDPWD"] = toSlash(old);
+    m_env["PWD"] = toSlash(abs);
     return true;
 }
 
@@ -6539,6 +6559,28 @@ void JZShell::addExportedEnv(const string &name, const string &value)
         return;
     m_env[name] = value;
     m_exported.insert(name);
+    // 宿主注入的配置 env 属于"解释器固有状态", 不是某条命令的残留 —— 进基线, 每条命令都要有
+    m_baseEnv[name] = value;
+    m_baseExported.insert(name);
+}
+
+void JZShell::resetState(const string &cwd)
+{
+    m_env = m_baseEnv;
+    m_exported = m_baseExported;
+    m_arrays.clear();
+    m_aliases.clear();
+    m_readonly.clear();
+    m_dirStack.clear();
+    m_functions.clear();
+    m_funcStack.clear();
+    m_params.clear();
+    m_locals.clear();
+    m_childEnvExtra.clear();
+    m_lastStatus = 0;
+    m_returning = false;
+    if (!cwd.empty())
+        setCwd(cwd);          // cwd 要在 PWD/OLDPWD 里, 否则 pwd 与真实位置对不上
 }
 
 void JZShell::unsetEnvVar(const string &name)

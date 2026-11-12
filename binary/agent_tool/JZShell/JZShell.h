@@ -335,6 +335,13 @@ public:
     bool setCwd(const std::string &dir, std::string *error = nullptr);
     std::string cwd() const { return m_cwd; }
 
+    // 无状态执行: 每条命令开始前把解释器拉回基线(构造时快照 + 宿主注入的配置 env)。
+    // cwd 用调用方给的**起点**(工作区根), 其余 export / 变量 / 函数 / alias / readonly /
+    // pushd 栈 / $? 全部清空; 上一条命令里的 `cd` 也不保留(执行完不回写)。
+    // 为什么: 持久 shell 的残留状态对模型完全不可见, 也无从预期;
+    // 而同一条命令**内部**的状态(变量、循环、函数)一概不受影响。
+    void resetState(const std::string &cwd);
+
     // shell 变量: 只在本解释器里可见, **不**导出给子进程(等价于 bash 里没 export 的赋值)。
     // 要传给子进程用 addExportedEnv()。
     void setEnvVar(const std::string &name, const std::string &value);
@@ -554,6 +561,9 @@ private:
 
     std::string m_cwd;
     std::map<std::string, std::string> m_env;      // 覆盖(叠在进程环境上)
+    // 基线: 构造时的 m_env + 宿主 addExportedEnv 注入的项。resetState() 恢复到这里。
+    std::map<std::string, std::string> m_baseEnv;
+    std::set<std::string> m_baseExported;
     // 数组变量: `a=(x y)` 之后 a[0]=x ...。`$a` / `${a}` 取 a[0]; 与 m_env 互斥同名。
     std::map<std::string, std::vector<std::string>> m_arrays;
     std::vector<std::string> m_pathDirs;           // 额外搜索目录

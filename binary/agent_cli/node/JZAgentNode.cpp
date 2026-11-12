@@ -154,6 +154,9 @@ JZAgentNode::~JZAgentNode()
     // 工具里存的是 &m_config / &m_host, 虽然析构路径上不会解引用, 但显式断掉更稳。
     delete m_server;
     m_server = nullptr;
+    // 工具都销毁之后再收池(工具里存的是池指针)
+    delete m_termPool;
+    m_termPool = nullptr;
 }
 
 void JZAgentNode::normalizeConfig(JZNodeConfig &config)
@@ -196,29 +199,28 @@ void JZAgentNode::init(const JZNodeConfig &config)
     // ---- 终端: 这台机器上唯一的执行面与审核面 ----
     // ls / cat / mkdir / rm / cp / mv / grep 都不再单独做工具 —— 它们是 shell 命令,
     // 由 terminal_run 直接覆盖。
-    // 终端按会话管理(map<session, JZVirtualTerminal>, 见 JZTerminalRegistry):
-    // 每个会话一个独立终端实例, 由 terminal_open 按需创建(见 open())。
+    // 执行是**无状态**的(每条命令从基线重来, 只有 cwd 保留), 所以一个节点一台终端就够:
+    // 这里建好、随节点存活, terminal_run 直接拿指针 —— 没有会话/懒建/回收这一套。
+    // 空闲时它只是个空壳: 执行线程要到第一次 run 才起(见 ensureWorker)。
     if (m_config.allowTerminal)
     {
-        // terminal 的 MCP 直出门面(不经过 agent_tool 包装):
-        //   terminal_run    —— 单前台任务, 回包就是输出(没有 run_id / query)
-        addTool(new JZTerminalRunMcpTool(this));
-        addTool(new JZTerminalOpenMcpTool(this));
-        addTool(new JZTerminalListMcpTool(this));
-        addTool(new JZTerminalCloseMcpTool(this));
+        // 池: 每次 run 借一台、跑完归还 —— 多条调用并发时各占一台, 不会挤在同一个执行槽里。
+        // 上限用 maxConcurrent(每连接/每节点同时能跑几条命令), 没配就按 8。
+        m_termPool = new JZTerminalPool(m_config.maxConcurrent > 0 ? m_config.maxConcurrent : 8);
+        m_termPool->setConfig(m_host.toolTerminalConfig());
+        if (m_config.recycleSec > 0)
+            m_termPool->setRecycleMs(m_config.recycleSec * 1000);
+
+        // terminal 的 MCP 直出门面(不经过 agent_tool 包装)
+        addTool(new JZTerminalRunMcpTool(m_termPool));
     }
 
     if (!m_config.allowFileTools && !m_config.allowTerminal)
         jzWarning() << "allowTerminal 与 allowFileTools 都是 false: 这个节点一个工具都没注册";
 
-    // 空闲会话的回收: 只有开了终端才有会话可管
-    startRecycleTimer();
-
     jzInfo().noquote().nospace() << "agent_node 就绪: name=" << m_config.nodeName
                                  << " root=" << m_config.rootDir
                                  << " verify-shell=" << (m_config.shellProgram.empty() ? string("auto(/bin/sh)") : m_config.shellProgram)
-                                 << " 会话上限=" << m_config.maxSessions
-                                 << " 空闲回收=" << (m_config.recycleSec > 0 ? to_string(m_config.recycleSec) + "s" : string("关"))
                                  << " 包管理=" << (m_config.allowPackageManager ? string("开") : string("关"))
                                  << " 联网=" << (m_config.allowNetwork ? string("开") : string("关"));
 }
@@ -259,12 +261,6 @@ string JZAgentNode::buildInstructions() const
     if (m_config.allowTerminal)
     {
         text += "  terminal_run    执行一条命令(整条交给 shell, 一次一条)。\n";
-        text += jzTerminalSessionNotes(true);
-        if (m_config.maxSessions > 0)
-        {
-            text += "  - 会话上限 " + to_string(m_config.maxSessions) + " 个, 空闲 " +
-                    to_string(m_config.recycleSec) + " 秒会被自动回收。\n";
-        }
     }
     if (m_config.allowFileTools)
     {
@@ -281,132 +277,13 @@ string JZAgentNode::buildInstructions() const
     // 终端语义统一走 jzTerminalRunNotes(): 与本地 cli / remote_ssh / code_agent 同一份口径,
     // 别在这里另写一套(以前这里写死了"不支持后台 &"等旧说法, 和实际行为对不上)。
     text += jzTerminalRunNotes();
-    // 节点特有: 每个会话是有状态解释器, cd/export 跨命令保留
-    text += "  - 会话是有状态的: `cd` / `export` 保留到下一条命令; `cd X && <命令>` 之后相对路径按 X 解析,"
-            "权限也按 X 判。\n";
-    text += "  - 不确定当前目录就看结果末尾那行 `[cwd]`(单独的 `pwd` 也返回它)。\n";
+    // 节点特有: 无状态执行, 每条命令都从工作区根起
+    text += "  - 执行是无状态的: 每条命令都从**工作区根**开始, `cd` 只对那一条有效(下一条又回根),"
+            "`export` / 变量 / 函数 / alias 也过不到下一条。`cd X && <命令>` 里相对路径按 X 解析, 权限也按 X 判。\n";
     return text;
 }
 
-// ==========================================================================
-// JZTerminalRegistry: 会话 -> 终端
-// ==========================================================================
 
-JZVirtualTerminal *JZAgentNode::terminal(const std::string &sessionId, std::string &error)
-{
-    auto it = m_terminals.find(sessionId);
-    if (it == m_terminals.end())
-    {
-        error = "没有这个会话: " + sessionId + " (用 terminal_list 看有哪些, 或先 terminal_open)";
-        return nullptr;
-    }
-    return it->second;
-}
-
-// 空闲会话回收(定时器周期调用 / open() 触顶时也先试一次)
-// ⚠ 在跑命令的会话不动: 那是一条命令的正常耗时, 不是"没人用"。
-void JZAgentNode::recycleIdleSessions()
-{
-    if (m_config.recycleSec <= 0)
-        return;
-
-    int64_t now = JZDateTime::currentMSecsSinceEpoch();
-    std::vector<std::string> dead;
-    for (auto &kv : m_terminals)
-    {
-        JZVirtualTerminal *t = kv.second;
-        JZVirtualTerminal::SessionInfo info = t->info();
-        if (info.running || info.lastActive <= 0)
-            continue;
-        if (t->recycleMs() <= 0)
-            continue;
-        if (now - info.lastActive < t->recycleMs())
-            continue;
-        dead.push_back(kv.first);
-    }
-
-    for (const std::string &sid : dead)
-    {
-        jzInfo().noquote().nospace() << "会话空闲超时, 回收: " << sid
-                                     << " (空闲 " << (now - m_terminals[sid]->info().lastActive) / 1000 << "s)";
-        close(sid);
-    }
-}
-
-void JZAgentNode::startRecycleTimer()
-{
-    if (m_config.recycleSec <= 0 || !m_config.allowTerminal)
-        return;
-    if (m_recycleTimer)
-        return;
-
-    // 扫描周期取回收时长的 1/4, 夹在 [5s, 60s]: 15 分钟 -> 每 60s 扫一次。
-    // 扫得太勤没意义(回收本来就允许几分钟的误差), 太懒则堆一堆僵尸会话。
-    int gapMs = m_config.recycleSec * 1000 / 4;
-    gapMs = std::max(gapMs, 5 * 1000);
-    gapMs = std::min(gapMs, 60 * 1000);
-
-    m_recycleTimer = new JZTimer(this);
-    connect(&m_recycleTimer->sigTimeout, this, [this]() { recycleIdleSessions(); });
-    m_recycleTimer->start(gapMs);
-}
-
-std::string JZAgentNode::open(const std::string &cwd, std::string &error)
-{
-    // 上限不是硬墙: 先回收掉空闲的, 还满才拒绝 ——
-    // 否则模型开了一堆不关之后就再也开不了会话, 只能重启节点。
-    if (m_config.maxSessions > 0 && (int)m_terminals.size() >= m_config.maxSessions)
-    {
-        recycleIdleSessions();
-        if ((int)m_terminals.size() >= m_config.maxSessions)
-        {
-            error = "会话数已达上限(" + to_string(m_config.maxSessions) + "): "
-                    "先用 terminal_close 关掉不用的, 或调大配置里的 maxSessions";
-            return std::string();
-        }
-    }
-
-    // 每个会话一个独立终端实例(各自 cwd / 前后台进程 / 运行记录);
-    // JZVirtualTerminal 本身不含会话概念, 生命周期由本节点管。
-    JZVirtualTerminal *t = new JZVirtualTerminal(this);
-    t->setTerminalConfig(m_host.toolTerminalConfig());
-    if (m_config.recycleSec > 0)
-        t->setRecycleMs(m_config.recycleSec * 1000);
-
-    // 空 cwd 也要走一次 changeDir: 一是把 cwd 落成工作区根的绝对路径(否则会话的
-    // cwd 是空的, 工具回的 [cwd] 行没内容), 二是它会刷新 lastActive ——
-    // 不刷新的话这个会话"从 1970 年就没动过", 下一轮扫描直接被回收掉。
-    if (!t->changeDir(cwd, error))
-        return std::string();   // changeDir 已填 error(越界等)
-
-    std::string sid = "t" + std::to_string(++m_sessionIdGen);
-    t->setId(sid);
-    m_terminals[sid] = t;
-
-    jzInfo().noquote().nospace() << "开会话 " << sid << " cwd=" << t->info().cwd
-                                 << " (当前 " << m_terminals.size() << "/" << m_config.maxSessions << ")";
-    return sid;
-}
-
-bool JZAgentNode::close(const std::string &sessionId)
-{
-    auto it = m_terminals.find(sessionId);
-    if (it == m_terminals.end())
-        return false;
-    JZVirtualTerminal *t = it->second;
-    m_terminals.erase(it);
-    jzInfo().noquote().nospace() << "关会话 " << sessionId << " (剩下 " << m_terminals.size() << ")";
-    delete t;   // 析构会 kill 在跑的进程; 同时从 this 的子对象里摘掉
-    return true;
-}
-
-std::vector<JZVirtualTerminal::SessionInfo> JZAgentNode::list()
-{
-    std::vector<JZVirtualTerminal::SessionInfo> out;
-    for (auto &kv : m_terminals)
-        out.push_back(kv.second->info());
-    return out;
-}
 
 // ==========================================================================
 // link 模式(配合 agent_cli): 不起 MCP, 只对外提供"执行一条命令"
@@ -423,7 +300,7 @@ void JZAgentNode::initLink(const JZNodeConfig &config)
 
     // link 模式: 终端按"连接 + session"懒创建(见 linkTerm), 生命周期跟着连接走 ——
     // 连接断(或被保活判死)就全部销毁, 没有空闲回收。
-    // mcp 模式那套 terminal_open/close 是给模型自己管会话用的, remote_ssh 不需要。
+    // mcp 模式那边模型也只有一个默认终端(执行无状态, 不暴露 open/close), remote_ssh 更不需要。
 
     jzInfo().noquote().nospace() << "agent_node(link) 就绪: name=" << m_config.nodeName
                                  << " root=" << m_config.rootDir

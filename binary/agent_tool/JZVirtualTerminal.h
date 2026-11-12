@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <set>
 #include <vector>
@@ -55,7 +56,7 @@
 //   要并发就多开终端(上层 new 几个 JZVirtualTerminal, 各自一个线程)。
 //
 // 本类不是 JZAgentTool —— 是否暴露、以什么名字暴露由上层决定
-// (本地 code_agent 直接持有; 远端 agent_node 经 JZTerminalRegistry 包成 MCP 工具)。
+// (本地 code_agent 直接持有; 远端 agent_node 持有唯一那台, 包成 terminal_run 这个 MCP 工具)。
 //
 // ⚠ "都走 shell": 解析/展开/执行全在 JZShell 里; 这里的 JZShellParser 只做**审核**
 //   (先按结构过白名单/区域/危险参数, 再交给 JZShell 跑)。
@@ -251,6 +252,55 @@ protected:
     size_t m_replyMaxBytes = 32 * 1024; // 单次回包的字节上限(上下文阀, 见 setReplyMaxBytes)
 
     AuditCallback m_audit;
+};
+
+// ---------------------------------------------------------------------------
+// JZTerminalPool —— 终端池: 一次执行 = 借一台 -> 跑 -> 归还。
+//
+// 为什么需要: JZVirtualTerminal **本身是单前台任务**(一个终端同时只跑一条命令,
+// 第二条直接报忙) —— 这是对的, 一台终端就是一个执行槽。要并发就多发几个槽,
+// 而不是让一个槽同时跑两条。
+//
+// 为什么归还时不用清理状态: 执行是无状态的(每条命令都从配置的 cwd 起, 跑完不回写),
+// 所以一台终端跑完这条命令, 下一条从同样的起点开始 —— 不存在"上一个调用留下的东西"。
+// 这是池化能成立的前提; 有状态时池化就要逐台 reset, 很容易漏。
+//
+// 上限: maxLive 是**同时存活**的终端数(含空闲)。到顶了就拒绝, 不排队 ——
+// 排队会让调用方以为"已经在跑了"。
+// ---------------------------------------------------------------------------
+class JZTerminalPool
+{
+public:
+    explicit JZTerminalPool(int maxLive = 8);
+    ~JZTerminalPool();
+
+    // 新建终端时用的配置(工作区 / 权限档 / 命令策略)。已有终端不受影响。
+    void setConfig(const JZVirtualTerminalConfig &cfg);
+    const JZVirtualTerminalConfig &config() const { return m_cfg; }
+
+    void setMaxLive(int n) { m_maxLive = n; }
+    void setKeepIdle(int n) { m_keepIdle = n; }     // 空闲最多留几台(其余归还时销毁)
+    void setRecycleMs(int ms) { m_recycleMs = ms; }
+
+    // 借一台: 优先复用空闲的; 没有空闲且未到上限就新建一台。
+    // cwd 为空 = 用配置里的工作区根。失败返回 nullptr 并填 error。
+    JZVirtualTerminal *acquire(const std::string &cwd, std::string &error);
+    // 归还: 放回空闲表; 空闲数超过 keepIdle 的直接销毁
+    void release(JZVirtualTerminal *term);
+
+    int liveCount();
+    // 停掉当前所有在跑的(池子记着借出去的), 返回停了几条
+    int cancelAll();
+
+private:
+    std::mutex m_mu;
+    JZVirtualTerminalConfig m_cfg;
+    std::vector<JZVirtualTerminal *> m_idle;
+    std::vector<JZVirtualTerminal *> m_busy;
+    int m_live = 0;
+    int m_maxLive = 8;
+    int m_keepIdle = 2;
+    int m_recycleMs = 0;
 };
 
 #endif // !JZ_VIRTUAL_TERMINAL_H_

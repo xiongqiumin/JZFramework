@@ -246,6 +246,34 @@ private:
     JZAgentCliServer *m_s;
 };
 
+// 在工作区里新建目录/空文件(网页文件树的写入口)
+class ApiFsCreateHandler : public JZHttpHandler
+{
+public:
+    explicit ApiFsCreateHandler(JZAgentCliServer *s) : m_s(s) {}
+    void handle(JZHttpServerClient *c, const JZHttpRequest &r) override { m_s->onApiFsCreate(c, r); }
+private:
+    JZAgentCliServer *m_s;
+};
+
+class ApiFsRenameHandler : public JZHttpHandler
+{
+public:
+    explicit ApiFsRenameHandler(JZAgentCliServer *s) : m_s(s) {}
+    void handle(JZHttpServerClient *c, const JZHttpRequest &r) override { m_s->onApiFsRename(c, r); }
+private:
+    JZAgentCliServer *m_s;
+};
+
+class ApiFsDeleteHandler : public JZHttpHandler
+{
+public:
+    explicit ApiFsDeleteHandler(JZAgentCliServer *s) : m_s(s) {}
+    void handle(JZHttpServerClient *c, const JZHttpRequest &r) override { m_s->onApiFsDelete(c, r); }
+private:
+    JZAgentCliServer *m_s;
+};
+
 // 主机视图: 一次拿全「每个 agent + 它用过的目录」
 class ApiProjectsHandler : public JZHttpHandler
 {
@@ -1939,7 +1967,7 @@ void JZAgentCliServer::onApiTaskEvents(JZHttpServerClient *client, const JZHttpR
         end = total;
     int limit = atoi(req.queryParam("limit").c_str());
     if (limit <= 0 || limit > 2000)
-        limit = 200;
+        limit = 1000;
     const size_t begin = eventPageBegin(r->events, end, (size_t)limit);
 
     Json::Value out(Json::objectValue);
@@ -2274,6 +2302,241 @@ void JZAgentCliServer::onApiFsRaw(JZHttpServerClient *client, const JZHttpReques
     client->response(resp, req);
 }
 
+// 工作区边界: p 落在 root 之内(root 本身也算)
+static bool pathInRoot(const string &root, const string &p)
+{
+    return !root.empty() && !p.empty() &&
+           (p == root ||
+            (p.size() > root.size() && p.compare(0, root.size(), root) == 0 && p[root.size()] == '/'));
+}
+
+// 名字必须是单层(不许 / \ . ..) —— 挡掉 "../x" 这类穿越
+static bool validEntryName(const string &name)
+{
+    return !name.empty() && name != "." && name != ".." &&
+           name.find('/') == string::npos && name.find('\\') == string::npos;
+}
+
+// 父目录: "C:/a/b" -> "C:/a"; "C:/a" -> "C:/"; "C:/" -> ""
+static string parentDirOf(const string &p)
+{
+    const size_t pos = p.find_last_of('/');
+    if (pos == string::npos)
+        return string();
+    if (pos == 0)
+        return "/";
+    if (pos == 2 && p.size() >= 3 && p[1] == ':')
+        return p.substr(0, 3);
+    return p.substr(0, pos);
+}
+
+// 新建: POST /api/fs/create {root, dir, name, kind: "dir"|"file"}
+//
+// 边界 = **工作区内**(与 cli 的区域模型一致: 全盘可读, 工作区可写, 授信目录只读) ——
+// 这个规则三档(strict/standard/loose)完全一样, 见 JZVirtualTerminalConfig::applyProfile,
+// 所以不需要把 cli 的 profile 传上来。
+//
+// root 为什么由前端带: 网页上切工作区只写浏览器的 localStorage, server 并不知道
+// "这个人现在看的是哪个目录"。root 只用来做前缀判定, 不参与别的逻辑。
+void JZAgentCliServer::onApiFsCreate(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    SlowReqGuard slow("api/fs/create");
+
+    Json::Value body;
+    if (!parseJsonText(string(req.body().data(), req.body().size()), body) || !body.isObject())
+    {
+        respondJson(client, req, 400, Json::Value("body 必须是 JSON 对象"));
+        return;
+    }
+
+    const string root = codeNormalizePath(body.get("root", "").asString());
+    const string dir  = codeNormalizePath(body.get("dir", "").asString());
+    const string name = body.get("name", "").asString();
+    const string kind = body.get("kind", "dir").asString();
+    if (root.empty() || dir.empty() || name.empty())
+    {
+        respondJson(client, req, 400, Json::Value("缺少 root / dir / name"));
+        return;
+    }
+    // 名字必须是单层: 不许带分隔符, 不许 . / ..(挡掉 ../ 这类穿越)
+    if (name.find('/') != string::npos || name.find('\\') != string::npos ||
+        name == "." || name == "..")
+    {
+        respondJson(client, req, 400, Json::Value("名字不能带路径分隔符, 也不能是 . 或 .."));
+        return;
+    }
+    // 边界: dir 必须在 root 之内(root 本身也算)
+    const bool inside = (dir == root) ||
+        (dir.size() > root.size() && dir.compare(0, root.size(), root) == 0 && dir[root.size()] == '/');
+    if (!inside)
+    {
+        respondJson(client, req, 403,
+                    Json::Value("只能在工作区内新建\n工作区: " + root + "\n目标: " + dir));
+        return;
+    }
+
+    JZFileInfo dirInfo(dir);
+    if (!dirInfo.exists() || !dirInfo.isDir())
+    {
+        respondJson(client, req, 404, Json::Value("目录不存在: " + dir));
+        return;
+    }
+
+    const string target = dir + "/" + name;
+    if (JZFileInfo(target).exists())
+    {
+        respondJson(client, req, 400, Json::Value("已存在: " + name));
+        return;
+    }
+
+    bool ok = false;
+    if (kind == "file")
+    {
+        JZFile f;                       // "wb" 就是"建一个空文件"
+        ok = f.open(target, "wb");
+        if (ok)
+            f.close();
+    }
+    else
+    {
+        ok = JZDir(dir).mkpath(target);
+    }
+    if (!ok)
+    {
+        respondJson(client, req, 500, Json::Value("创建失败(权限?): " + target));
+        return;
+    }
+
+    Json::Value out(Json::objectValue);
+    out["ok"] = true;
+    out["path"] = target;
+    out["kind"] = (kind == "file" ? "file" : "dir");
+    respondJson(client, req, 200, out);
+}
+
+// 重命名: POST /api/fs/rename {root, path, name}
+// 只改名字, 不移动目录(新名字拼在同一个父目录下); 边界与新建一致。
+void JZAgentCliServer::onApiFsRename(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    SlowReqGuard slow("api/fs/rename");
+
+    Json::Value body;
+    if (!parseJsonText(string(req.body().data(), req.body().size()), body) || !body.isObject())
+    {
+        respondJson(client, req, 400, Json::Value("body 必须是 JSON 对象"));
+        return;
+    }
+    const string root = codeNormalizePath(body.get("root", "").asString());
+    const string path = codeNormalizePath(body.get("path", "").asString());
+    const string name = body.get("name", "").asString();
+
+    if (root.empty() || path.empty() || name.empty())
+    {
+        respondJson(client, req, 400, Json::Value("缺少 root / path / name"));
+        return;
+    }
+    if (!pathInRoot(root, path))
+    {
+        respondJson(client, req, 403, Json::Value("只能改工作区内的东西\n工作区: " + root));
+        return;
+    }
+    if (path == root)
+    {
+        respondJson(client, req, 400, Json::Value("不能重命名工作区根目录"));
+        return;
+    }
+    if (!validEntryName(name))
+    {
+        respondJson(client, req, 400, Json::Value("名字不能带路径分隔符, 也不能是 . 或 .."));
+        return;
+    }
+    JZFileInfo info(path);
+    if (!info.exists())
+    {
+        respondJson(client, req, 404, Json::Value("不存在: " + path));
+        return;
+    }
+    const string parent = parentDirOf(path);
+    const string target = parent + "/" + name;
+    if (target == path)
+    {
+        Json::Value out(Json::objectValue);
+        out["ok"] = true;
+        out["path"] = target;
+        respondJson(client, req, 200, out);
+        return;
+    }
+    if (JZFileInfo(target).exists())
+    {
+        respondJson(client, req, 400, Json::Value("已存在: " + name));
+        return;
+    }
+
+    string err;
+    const bool ok = info.isDir() ? JZDir::rename(path, target, &err)
+                                 : JZFile::rename(path, target, &err);
+    if (!ok)
+    {
+        respondJson(client, req, 500,
+                    Json::Value("重命名失败" + (err.empty() ? string() : (": " + err))));
+        return;
+    }
+    Json::Value out(Json::objectValue);
+    out["ok"] = true;
+    out["path"] = target;
+    respondJson(client, req, 200, out);
+}
+
+// 删除: POST /api/fs/delete {root, path}
+// 目录**递归删除**(页面上会先确认); 工作区根目录不许删。
+void JZAgentCliServer::onApiFsDelete(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    SlowReqGuard slow("api/fs/delete");
+
+    Json::Value body;
+    if (!parseJsonText(string(req.body().data(), req.body().size()), body) || !body.isObject())
+    {
+        respondJson(client, req, 400, Json::Value("body 必须是 JSON 对象"));
+        return;
+    }
+    const string root = codeNormalizePath(body.get("root", "").asString());
+    const string path = codeNormalizePath(body.get("path", "").asString());
+
+    if (root.empty() || path.empty())
+    {
+        respondJson(client, req, 400, Json::Value("缺少 root / path"));
+        return;
+    }
+    if (!pathInRoot(root, path))
+    {
+        respondJson(client, req, 403, Json::Value("只能删工作区内的东西\n工作区: " + root));
+        return;
+    }
+    if (path == root)
+    {
+        respondJson(client, req, 400, Json::Value("不能删除工作区根目录"));
+        return;
+    }
+    JZFileInfo info(path);
+    if (!info.exists())
+    {
+        respondJson(client, req, 404, Json::Value("不存在: " + path));
+        return;
+    }
+    const bool isDir = info.isDir();
+    const bool ok = isDir ? JZDir(path).removeRecursively() : JZFile::remove(path);
+    if (!ok)
+    {
+        respondJson(client, req, 500, Json::Value("删除失败(权限?): " + path));
+        return;
+    }
+    Json::Value out(Json::objectValue);
+    out["ok"] = true;
+    out["path"] = path;
+    out["dir"] = isDir;
+    respondJson(client, req, 200, out);
+}
+
 // 主机视图: GET /api/projects
 // 一次返回「每个 agent(在线与否 + 根目录) + 它用过的目录」。
 // 目录从任务记录里聚合(不再让前端拉 tasks 全量 —— 那玩意儿带 events, 500 条能有几 MB)。
@@ -2539,9 +2802,13 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
 {
     // A2A SendMessage 是唯一入口。cli 的 /task 载荷在边界转换一次, 对外不再出现 prompt/verify_cmd。
     const string prompt = messageText(body);
-    if (prompt.empty())
+    // 图片附件(多模态): 网页传来的 data URL 数组, 原样透传给 cli(它的 extractImages 认这个字段)。
+    // 允许"只发图不写字" —— 与 cli 侧同一口径。
+    const Json::Value &images = body["images"];
+    const bool hasImages = images.isArray() ? images.size() > 0 : images.isString();
+    if (prompt.empty() && !hasImages)
     {
-        error = "缺少 message.parts[].text";
+        error = "缺少 message.parts[].text（只发图片时请用 images 字段）";
         ack["error"] = error;
         return 400;
     }
@@ -2558,6 +2825,10 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
 
     Json::Value cliBody(Json::objectValue);
     cliBody["prompt"] = prompt;
+    // ⚠ 以前这里只搬了 prompt/verify_cmd 等字段, images 被**静默丢掉** —— 网页传了图、cli 也支持,
+    //   但中间这一层没转, 模型只看到文字(2026-11-12 实测: 模型跑去 workspace 里找文件猜内容)。
+    if (!images.isNull())
+        cliBody["images"] = images;
     cliBody["verify_cmd"] = body.get("verifyCmd", "").asString();
     cliBody["use_memory"] = false;
     if (body.isMember("verifyTimeout"))   cliBody["verify_timeout"] = body["verifyTimeout"];
@@ -2999,6 +3270,9 @@ void JZAgentCliServer::startHttp()
     m_http->addRoute("/api/agent/card", new ApiAgentCardHandler(this));
     m_http->addRoute("/api/fs", new ApiFsHandler(this));
     m_http->addRoute("/api/fs/raw", new ApiFsRawHandler(this));
+    m_http->addRoute("/api/fs/create", new ApiFsCreateHandler(this));
+    m_http->addRoute("/api/fs/rename", new ApiFsRenameHandler(this));
+    m_http->addRoute("/api/fs/delete", new ApiFsDeleteHandler(this));
     m_http->addRoute("/api/projects", new ApiProjectsHandler(this));
     m_http->addRoute("/api/agent/forget", new ApiAgentForgetHandler(this));
     m_http->addRoute("/api/agents", new ApiAgentsHandler(this));
@@ -3018,6 +3292,8 @@ void JZAgentCliServer::startHttp()
     m_http->addRoute("/app.css", webFiles);
     m_http->addRoute("/app.js", webFiles);
     m_http->addRoute("/ui/<path:path>", webFiles);
+    // /vendor/*  第三方前端库(highlight.js 等), 全是本地文件 —— 不走 CDN
+    m_http->addRoute("/vendor/<path:path>", webFiles);
 
     // 单页: index.html 就是对话页(/ 由 DashboardHandler 读它);
     // /agent 留一条同内容的别名, 老的 ?id= 书签继续能用。

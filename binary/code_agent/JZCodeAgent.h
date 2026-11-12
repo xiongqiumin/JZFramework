@@ -15,6 +15,7 @@
 #include "JZTimer.h"
 
 class JZVirtualTerminal;   // 执行/审核面（agent_tool/JZVirtualTerminal.h）
+class JZTerminalPool;      // 终端池（agent_tool/JZTerminalPool.h）
 
 // 代码助手自身的配置（与大模型配置 JZAgentConfig 分开）
 class CodeAgentConfig
@@ -312,9 +313,9 @@ protected:
 
     JZTsLangServer *m_tsServer = nullptr;   // 直连 TSGO 语言服务；随 agent 生命周期常驻
 
-    // 这台机器上唯一的执行面与审核面（terminal_run / edit_file 背后就是它）。
-    // 是 this 的子对象；区域/策略由 applyZoneConfig() 同步过去。
-    JZVirtualTerminal *m_terminal = nullptr;
+    // 执行面与审核面（terminal_run / edit_file 背后就是它）。
+    // 池里每台终端一次跑一条命令，并发调用各占一台；区域/策略由 applyZoneConfig() 同步过去。
+    JZTerminalPool *m_termPool = nullptr;
 
     // 所有网络工具（web_search / web_fetch）共享的访问管理器，代理只在此统一设置一次
     JZNetworkAccessManager *m_netMan = nullptr;

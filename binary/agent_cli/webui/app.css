@@ -335,7 +335,21 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
 
 /* 主机视图 */
 .hosts-body { padding: 0 var(--jz-sp-2) var(--jz-sp-2); }
-.host { margin-bottom: 2px; }
+.host { margin-bottom: 2px; position: relative; }
+/* 主机行右侧的"打开文件夹"快捷按钮: 不用展开就能点 */
+.host-row { padding-right: 26px; }
+.host-add {
+  position: absolute; right: 3px; top: 3px;
+  width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 4px; background: none;
+  color: var(--jz-muted); font: inherit; font-size: 14px; line-height: 20px;
+  text-align: center; cursor: pointer; opacity: 0; transition: opacity .12s;
+}
+/* ⚠ 用"主机行 hover"而不是 .host:hover —— .host 包着下面所有目录行,
+   鼠标移到文件夹行时 .host 也算 hover, ＋ 会跟着冒出来。 */
+.host-row:hover ~ .host-add,
+.host-add:hover { opacity: 1; }
+.host-add:hover { background: var(--jz-panel-2); color: var(--jz-text); }
 .host-row {
   display: flex; align-items: center; gap: 6px;
   width: 100%; padding: 4px 6px;
@@ -348,10 +362,7 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
 .host-row__dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--jz-ok); }
 .host-row__dot.off { background: var(--jz-muted); }
 .host-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.host-row__cur {
-  flex: none; font-size: 10px; color: var(--jz-accent);
-  border: 1px solid var(--jz-accent); border-radius: 999px; padding: 0 5px;
-}
+
 
 /* 文件预览 */
 .prev-bar {
@@ -365,10 +376,28 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .prev-bar__meta { flex: none; font-size: 11px; color: var(--jz-muted); }
+/* 语法高亮只借 token 颜色: 底色/字色仍用面板主题(hljs 主题自带的 #282c34 不要) */
+.prev-body.hljs { background: var(--jz-panel); color: var(--jz-fg); }
+
+/* 行号: 每行开头一个空 span, 数字由计数器打出来。
+   sticky + left:0 让横向滚动时序号钉在左边不跟着跑。 */
+.prev-body { counter-reset: ln; }
+.prev-ln { counter-increment: ln; }
+.prev-ln::before {
+  content: counter(ln);
+  /* 宽度按"最大行号有几位"来定(--ln-w 由 JS 按行数算, 单位 ch):
+     这样 800 行的文件不会按 4 位数的宽度留白, 左侧就不会空一大块。
+     +1.6em 是与正文的间隔(数字右对齐, 所以空的是这个位置, 不是左边)。 */
+  display: inline-block; width: calc(var(--ln-w, 4ch) + 1.6em); padding-right: 1.6em;
+  text-align: right; color: var(--jz-muted); opacity: .6;
+  user-select: none; -webkit-user-select: none;
+  position: sticky; left: 0; background: var(--jz-panel);
+}
 .prev-body {
   flex: 1; min-height: 0;
   margin: var(--jz-sp-2) var(--jz-sp-3) var(--jz-sp-3);
-  padding: var(--jz-sp-2) var(--jz-sp-3);
+  /* 左边 4px: 行号贴着边缘; 行号和正文之间的空隙由 ::before 的 padding-right 给 */
+  padding: var(--jz-sp-2) var(--jz-sp-3) var(--jz-sp-3) 4px;
   overflow: auto;
   background: var(--jz-panel);
   border: 1px solid var(--jz-border); border-radius: var(--jz-r-2);
@@ -380,6 +409,33 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
   flex-direction: column;
   min-width: 0; min-height: 0;
 }
+
+/* ---- 文件树右键菜单 ---- */
+.ctx-menu {
+  position: fixed; z-index: 9999; min-width: 168px;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  background: var(--jz-panel); border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+}
+.ctx-menu.hidden { display: none; }
+.ctx-menu button {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 0; cursor: pointer;
+  color: var(--jz-fg); font: inherit; font-size: var(--jz-fs-2);
+  padding: 6px 10px; border-radius: 4px;
+}
+.ctx-menu button:hover,
+.ctx-menu button:focus-visible { background: var(--jz-border); outline: none; }
+.ctx-menu button[hidden] { display: none; }
+.ctx-menu__sep { height: 1px; margin: 4px 2px; background: var(--jz-border); }
+/* 快捷键提示靠右, 删除用语义色 */
+.ctx-menu__kbd { float: right; margin-left: 18px; color: var(--jz-muted); font-size: 11px; }
+.ctx-menu button.ctx-menu__danger { color: var(--jz-fail); }
+.ctx-menu button.ctx-menu__danger:hover { background: var(--jz-fail-weak); }
+
+/* 文件树里"当前选中"的那一行: F2/右键都作用于它 */
+.fs-row.is-sel { background: var(--jz-accent-weak); }
 
 /* ---- 左栏 ---- */
 .ag-side {
@@ -436,8 +492,7 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
 }
 .dir-row:hover .dir-row__go { opacity: 1; }
 .dir-row__go:hover { color: var(--jz-accent); }
-.dir-row--add { color: var(--jz-muted); }
-.dir-row--add:hover { color: var(--jz-text); }
+
 
 .ag-side__new { flex: none; padding: var(--jz-sp-2) var(--jz-sp-3); }
 .ag-new { width: 100%; }
@@ -546,7 +601,27 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
   50% { opacity: .25; }
 }
 
-.ag-tabs { flex: none; padding: 0 var(--jz-sp-4); background: var(--jz-panel); }
+/* 主区 tab: 「对话」常驻, 点文件树里的文件多开一个; 多到放不下横向滚 */
+.ag-tabs {
+  flex: none; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: thin;
+  padding: 0 var(--jz-sp-4); background: var(--jz-panel);
+}
+.ag-tabs .tab {
+  display: inline-flex; align-items: center; gap: 4px; flex: none; max-width: 240px;
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  font: inherit; font-size: var(--jz-fs-2); color: var(--jz-muted);
+  padding: 7px 6px 7px 12px; margin-bottom: -1px; cursor: pointer; text-decoration: none;
+}
+.ag-tabs .tab:hover { color: var(--jz-fg); }
+.ag-tabs .tab.is-on { color: var(--jz-accent); border-bottom-color: var(--jz-accent); font-weight: 600; }
+.ag-tabs .tab__t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-tabs .tab__x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: none; border-radius: 3px;
+  font-size: 13px; line-height: 1; opacity: .55;
+}
+.ag-tabs .tab__x:hover { background: var(--jz-border); opacity: 1; }
+
 .pane[data-pane="chat"] { overflow: hidden; }
 
 .cs-thread { flex: 1; min-height: 0; padding: var(--jz-sp-4) clamp(12px, 4vw, 48px); }
@@ -726,3 +801,69 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
   .cs-composer { padding: var(--jz-sp-2) var(--jz-sp-3) var(--jz-sp-3); }
   .ag-term { margin: 0 var(--jz-sp-3); }
 }
+
+/* ---- 附图：输入框内的缩略图条 + 悬停看详情 ---- */
+.cs-imgs {
+  display: flex; flex-wrap: wrap; gap: var(--jz-sp-2);
+  padding: 0 0 var(--jz-sp-2);
+}
+.cs-img { position: relative; width: 72px; height: 72px; flex: 0 0 auto; }
+.cs-img__mx {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  border-radius: 8px; border: 1px solid var(--jz-border); background: var(--jz-panel-2);
+}
+.cs-img__x {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0;
+  border: none; border-radius: 50%; cursor: pointer; line-height: 18px; font-size: 12px;
+  color: #fff; background: rgba(0, 0, 0, .72); opacity: 0; transition: opacity .12s;
+}
+.cs-img:hover .cs-img__x { opacity: 1; }
+.cs-img__tip {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 30;
+  padding: 5px 8px; border-radius: 6px; font-size: var(--jz-fs-1); line-height: 1.6;
+  color: #fff; background: rgba(0, 0, 0, .82); white-space: nowrap;
+  pointer-events: none; opacity: 0; visibility: hidden; transition: opacity .12s;
+}
+.cs-img:hover .cs-img__tip { opacity: 1; visibility: visible; }
+.cs-imgbtn { min-width: 30px; padding: 0 6px; }
+
+/* ---- 目录选择器(仿 VSCode Quick Open: 一行输入 + 候选) ---- */
+.dirpick {
+  width: min(680px, calc(100vw - 36px));
+  max-height: min(72vh, 580px);
+  margin: 12vh auto auto;
+  padding: 0;
+  border: 1px solid var(--jz-border);
+  border-radius: 8px;
+  background: var(--jz-panel);
+  color: var(--jz-text);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .45);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* ⚠ 必须显式关掉未打开时的显示: 上面给了 display:flex, 会盖掉 <dialog> 默认的 display:none,
+   结果弹窗一直挂在页面上, 点 ＋ 看起来"没反应"。 */
+.dirpick:not([open]) { display: none; }
+.dirpick::backdrop { background: rgba(0, 0, 0, .45); }
+.dpick__hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px; border-bottom: 1px solid var(--jz-border);
+}
+.dpick__input {
+  flex: 1; min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--jz-border); border-radius: 6px;
+  background: var(--jz-bg); color: var(--jz-text);
+  font: inherit; font-size: 14px; outline: none;
+}
+.dpick__input:focus { border-color: var(--jz-accent); }
+.dpick__input::placeholder { color: var(--jz-muted); }
+.dpick__list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px; }
+.dpick__empty { padding: 16px 10px; color: var(--jz-muted); font-size: var(--jz-fs-1); }
+.dpick-row {
+  display: block; width: 100%;
+  padding: 9px 10px; border: 0; border-radius: 5px; background: none;
+  color: var(--jz-text); font: inherit; font-size: 14px;
+  text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dpick-row.is-sel { background: var(--jz-accent); color: #fff; }

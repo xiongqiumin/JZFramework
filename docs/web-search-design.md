@@ -1,9 +1,8 @@
 # 网络搜索（web_search）现状与选型
 
-> 2026-11-12 调研。结论先行：**必应两个通道（RSS / HTML）国内直连都可用**，默认源为
-> 「RSS 优先（~6KB）→ HTML 兜底（~105KB）」，零依赖、无需 API Key，三次不同查询实测 10/10 相关。
-> 关键前提：带 `setlang=zh-CN&cc=CN`、跟随 302、**不要走代理**（出口 IP 会被判滥用，返回垃圾结果）。
-> 本文记录现状、实测数据、可选方案与接入方式。
+> 2026-11-12 调研。结论先行：**必应 RSS 国内直连可用**（~6KB、10 条、链接直链），零依赖、无需
+> API Key，已在 `web_search` 里作为唯一默认源。关键前提：带 `setlang=zh-CN&cc=CN`、跟随 302、
+> **不要走代理**（出口 IP 会被判滥用，返回垃圾结果）。本文记录现状、实测数据、可选方案与接入方式。
 
 ---
 
@@ -14,10 +13,9 @@
 | 组件 | 位置 |
 |---|---|
 | 工具实现 | `binary/agent_tool/JZCodeTools.cpp` → `JZWebSearchTool` / `JZWebFetchTool` |
-| 默认搜索源 | 主 `kBingRssSearchUrl`（`format=rss&count=15&setlang=zh-CN&cc=CN`）→ 兜底 `kBingHtmlSearchUrl`（同参数去掉 `format=rss`）；队列见 `call()` |
-| 结果解析 | `parseSearch()`（JSON / RSS / 必应 HTML 三条分支）→ `collectJsonResults()` / `collectRssResults()` / `jzParseBingHtmlResults()` |
-| 降级保护 | 内置抓取源开 `SearchCall::checkRelevance`：结果与查询词零交集 → **直接返回"搜索不可用"**（`jzSearchResultsRelevant`）。不切下一个源：RSS/HTML 同后端同出口，重试只是白等一轮 |
-| HTML 解析单测 | `test/net/test_search_parse.cpp`（离线，内嵌样本；`test_search_parse <page.html>` 可解析真实页面） |
+| 默认搜索源 | `kBingRssSearchUrl`（`format=rss&count=15&setlang=zh-CN&cc=CN`），单一源 |
+| 结果解析 | `parseSearch()`（JSON / RSS 两条分支）→ `collectJsonResults()` / `collectRssResults()` |
+| 失败判定 | 只认**硬错误**：连接失败 / 非 2xx / 解析不出条目 → 报错。**不做查询词相关性启发式**（误判两头挨骂，见 §7） |
 | 工具注册 | `binary/agent_cli/JZAgentCliTask.cpp`（`allowNetworkTools` 为真时注册） |
 | 配置项 | `network.enabled` / `network.searchUrl` / `network.proxyHost...` |
 | 档位联动 | `binary/agent_cli/main.cpp`：未显式配置时 `allowNetworkTools = (profile != Strict)` |
@@ -26,16 +24,14 @@
 
 ```
 模型调用 web_search(query, num_results)
-  → 用 urlEncodeQuery(query) 展开 {q} 占位符（空格编码成 +）
+  → 把 {q} 换成原始查询文本（⚠ 不预编码，交给 JZUrl 统一编码一次）
   → JZNetworkAccessManager::get(url)      ← ⚠ 只支持 GET
-      · UA = kSearchUserAgent（伪装 Chrome）
+      · UA = kSearchUserAgent（伪装 Chrome）+ Accept / Accept-Language / Sec-Fetch-*
       · 允许跨主机重定向（www.bing.com → cn.bing.com 的 302）
       · 单源超时 15s
   → parseSearch(body)
       · 以 { 或 [ 开头 → JSON：顶层数组 / results / RelatedTopics 三种形状
       · 含 <rss> 或 <feed> → RSS：<item><title>/<link>/<description>
-      · 含 b_algo（RSS 失败时的兜底）→ 必应 HTML：<li class="b_algo"> 分块取 h2>a 与首个 <p>
-        （jzParseBingHtmlResults；ck/a?u=a1<base64url> 链接就地解码，不发二次请求）
   → formatSearchResults()：拼成"1. 标题\n  链接\n  摘要"
 ```
 
@@ -65,9 +61,9 @@
 
 | 源 | 结果 | 说明 |
 |---|---|---|
-| **Bing RSS**（主源） | ✅ 可用 | 直连 + 跟随 302 到 `cn.bing.com` + `setlang/cc`：`冬瓜` / `python asyncio` / `上海天气` 三次实测均 10 条全相关，体积仅 ~6KB（HTML 的 1/18） |
-| **Bing HTML**（兜底） | ✅ 可用 | 同上前提，~105KB，10 条与 RSS 完全一致；`li.b_algo` 解析，少数 `ck/a?u=a1<base64url>` 可本地解码 |
-| **两个通道走代理** | ❌ 不可用 | 经 `101.32.19.163:7001`（香港出口）：RSS 返回一堆 Telegram、HTML 搜 "python" 返回 Lidl 超市 → 出口 IP 被必应判滥用。**上一版把"代理下的垃圾"误判成 RSS 通道降级**，实际国内直连正常 |
+| **Bing RSS**（默认源） | ✅ 可用 | 直连 + 跟随 302 到 `cn.bing.com` + `setlang/cc`：`冬瓜` / `python asyncio` / `上海天气` 三次实测均 10 条全相关，体积仅 ~6KB |
+| **Bing HTML** | 已移除 | 曾作兜底（~105KB，10 条结果与 RSS 完全一致）；既然 RSS 一直可用，多一条解析路径只多一处会坏的地方，2026-11-12 删除（含 `jzParseBingHtmlResults` 与其单测） |
+| **走代理** | ❌ 不可用 | 经 `101.32.19.163:7001`（香港出口）：RSS 返回一堆 Telegram、HTML 搜 "python" 返回 Lidl 超市 → 出口 IP 被必应判滥用。**上一版把"代理下的垃圾"误判成 RSS 通道降级**，实际国内直连正常 |
 | **百度** | ❌ 不适合自动化 | 无 cookie 直接 302；先访问首页拿 `BAIDUID` + Referer 后第一次 200，**第二次就 302 到 `wappass.baidu.com/...tuxing_v2`（图形验证码）**，且粘性 |
 | **搜狗** | ⚠️ 单次可用，限流严 | 浏览器 UA 下第 1–4 次（间隔 300ms）都是 200 / ~420KB / 1.3–1.5s；**第 5 次起**返回 200 + 3.5KB `antispider` 页，随后 302 到 `www.sogou.com/captcha/`；无 UA 时 200 但只有 5.4KB 提示页 |
 | **DuckDuckGo API** | ❌ 不可达 | `code=000`（需代理，且 `/v1` 免费接口质量一般） |
@@ -142,24 +138,26 @@ DeepSeek 是 POST + JSON body + Bearer 鉴权，现有工具不支持，需要�
 ### 4.3 已删除：本地聚合服务（`web_search_server`）
 
 曾有一版 Python 聚合服务（包搜狗 + 限流 + 缓存 + 跳转还原），用于在默认源不可用时兜底。
-2026-11-12 确认**必应直连可用**（RSS 主 + HTML 兜底，均已内置在 C++ 工具里）后删除：
+2026-11-12 确认**必应 RSS 直连可用**（已内置在 C++ 工具里）后删除：
 它的核心价值是"绕开必应降级"，而那个前提本身是误判（降级其实是代理出口造成的）。
 
 需要缓存/限流时再回来参考它的设计（同 query 缓存 300s、全局 1.2s 间隔、验证页识别）；
-但当前场景下 C++ 侧的直接抓取 + 相关性校验已经够用。
+但当前场景下 C++ 侧的一次 GET 已经够用。
 
 ---
 
 ## 5. 推荐路线
 
-1. **已落地（默认）**：必应 RSS（主）→ HTML（兜底），零依赖、无需 Key。三个必须记住的点：
+1. **已落地（默认）**：必应 RSS 单源，零依赖、无需 Key。三个必须记住的点：
    - 带 `setlang=zh-CN&cc=CN`、请求头 `Accept-Language: zh-CN`；
    - 跟随 `www.bing.com → cn.bing.com` 的 302（`setRedirectPolicy(AllAllowed)`）；
-   - **不要走代理**（出口 IP 会被判滥用，两个通道都返回无关结果）。
+   - **不要走代理**（出口 IP 会被判滥用，返回无关结果）。
 2. **需要更高频/更稳时**：接 DeepSeek Search API（¥5/千次，中文好、失败不计费、国内直连）；
-3. **同时补两件事**（与源无关，一次做完长期受益）：
+3. **还可以补**（与源无关）：
    - **结果缓存**：同一 `query + num` 在 N 分钟内直接返回缓存，不消耗请求；
-   - **相关性校验**：结果标题/摘要里一个查询词都不出现 → 返回"无有效结果"而不是把垃圾喂给模型。
+   - ~~相关性校验~~：**已否决**。曾按"查询词是否出现在结果里"判源降级，实测误判率高
+     （「深圳 明天 天气 温度」命中"深圳"就放行、返回深圳市百科；「深圳天气 11月13日 预报 温度」
+     因整串词不常见而被误报不可用）。结果好不好，交给模型看标题判断。
 4. **不建议**：用代理抓必应（出口 IP 会被判滥用，返回无关结果）；百度抓取（第 2 次就验证码）；
    高频抓搜狗（第 5 次 antispider）；装无头浏览器解决搜索（不需要，必应结果在初始 HTML 里）。
 
@@ -184,10 +182,19 @@ curl -s -D - -o /dev/null "https://www.sogou.com/web?query=test"
 
 ## 7. 历史
 
+- 2026-11-12（晚·四）：**去掉 HTML 兜底，只保留必应 RSS**。RSS 一直可用，HTML 是同结果的 18 倍体积；
+  多一条解析路径就多一处会坏的地方（这次二次编码 bug 排查时，两条路径还互相干扰了判断）。
+  删除 `jzParseBingHtmlResults` 及 185 行辅助函数、`test/net/test_search_parse.cpp` 与其 ctest。
+- 2026-11-12（晚·三）：**根因其实是自己的 URL 编码 bug**（`JZUrlQuery::fromString` 不解码而
+  `toString` 编码 → 任何 URL 重建一次就二次编码）。必应 302 到 `cn.bing.com` 时重建 URL，查询词
+  变成字面 `%E6%B7%B1...`，必应读不懂 → 返回一批随机热点页。铁证：必应 RSS 回显
+  「必应：%E6%B7%B1%E5%9C%B3%20%E5%A4%A9%E6%B0%94」。此前所有"源降级"结论都是这个 bug 的假象。
+  修复在 `JZUrl.cpp`（`fromString` 加 `urlDecode`）。同时**移除相关性启发式判定**：
+  实测「深圳 明天 天气 温度」命中"深圳"就放行、返回深圳市百科；「深圳天气 11月13日 预报 温度」
+  因整串词不常见被误报不可用 —— 两头都不可靠，只保留硬错误（非 2xx / 验证页 / 解析为空）判定。
 - 2026-11-12（晚·二）：**再修正**。RSS 通道其实没降级——上一版"RSS 返回 Telegram"的样本是**走代理**
   抓的。直连复测 `冬瓜` / `python asyncio` / `上海天气` 三次，RSS 均 10 条全相关、仅 ~6KB。
-  默认源定为「RSS 优先 → HTML 兜底」，并给内置源加相关性校验（`searchResultsRelevant`），
-  这样一旦某个通道被降级会**自动切下一个源**，而不是把垃圾喂给模型。
+  默认源定为「RSS 优先 → HTML 兜底」。
   **教训**：判"源坏了"之前必须先排除代理出口污染——共享代理 IP 被搜索引擎拉黑是常态。
 - 2026-11-12（晚）：修正"HTML 不可用"的结论，新增 `jzParseBingHtmlResults()` +
   离线单测 `test/net/test_search_parse.cpp`（真实页面 105 KB → 10 条全对）。

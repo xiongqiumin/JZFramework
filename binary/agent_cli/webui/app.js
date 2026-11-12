@@ -100,7 +100,8 @@ const isTerminal = (t) => !!t && !isRunning(t);
 const taskId = (t) => (t && t.id) || '';
 const taskAgent = (t) => meta(t).agentId || '';
 const taskPrompt = (t) => meta(t).prompt || '';
-/* 事件按页拿: 服务端只回最近 ~200 条(起点对齐到 user_msg), 更早的点"加载更多"再翻。
+/* 事件按页拿: 服务端只回最近 1000 条(起点对齐到 user_msg), 更早的点"加载更多"再翻。
+   1000 条够绝大多数任务一次到底 —— 200 条时三四十个块就冒"加载更多", 看着像没显示全。
    翻过的部分缓存在本机, 轮询/刷新重新拉列表不会把它冲掉。 */
 const AG_OLDER = {};        // taskId -> { events: [...], offset: n }
 const taskEvents = (t) => {
@@ -123,6 +124,31 @@ function taskCost(t) {
   if (m.costMs > 0) return (m.costMs / 1000).toFixed(1) + 's';
   if (isRunning(t) && m.startMs) return Math.max(0, (Date.now() - m.startMs) / 1000).toFixed(0) + 's';
   return '-';
+}
+/* 本次提交的耗时: 从最后一个 user_msg 到任务结束。
+   一条任务可以被"接着说"续很多轮, 卡片上显示累计 costMs 会越滚越大, 看着像这次跑了 86s。 */
+function taskCostLast(t) {
+  const m = meta(t);
+  const evs = taskEvents(t) || [];
+  let start = 0;
+  for (let i = evs.length - 1; i >= 0; i--) {
+    if (evs[i] && evs[i].type === 'user_msg') { start = Number(evs[i].at) || 0; break; }
+  }
+  if (start && m.endMs && m.endMs >= start) return ((m.endMs - start) / 1000).toFixed(1) + 's';
+  return taskCost(t);            // 老记录没有 user_msg 事件: 退回总耗时
+}
+/* 卡片底部那行。两个信息都只在"有内容"时才出现:
+   - rounds 是**验证循环**的轮次(verify_rounds), 不是对话轮数: 不配验证脚本恒为 0,
+     配了也要失败重试才涨 —— 写个 "0 轮" 等于占位, 还容易被当成"我说了几次话";
+     涨起来了才值得说, 所以只在 >0 时显示成 "验证 N 轮"(说明模型返工了几次)。
+   - 耗时只在结束后给, 执行中数字一直往上跳, 既不准也没参考价值。 */
+function taskMetaText(t) {
+  const out = [];
+  const r = taskRounds(t);
+  if (r > 0) out.push('验证 ' + r + ' 轮');
+  const c = isRunning(t) ? '' : taskCostLast(t);
+  if (c && c !== '-') out.push(c);
+  return out.join(' · ');
 }
 function partText(parts) { return (parts || []).map(p => p.text || '').join('\n'); }
 function statusMessage(t) {
@@ -218,12 +244,14 @@ async function postJson(url, body, timeoutMs) {
   const j = await r.json().catch(() => ({}));
   return { ok: r.ok, json: j };
 }
-async function sendMessage({ agentId, prompt, verifyCmd, contextId, taskId, rootDir }) {
+async function sendMessage({ agentId, prompt, verifyCmd, contextId, taskId, rootDir, images }) {
   const body = {
     agentId,
     message: { role: 'ROLE_USER', parts: [{ text: prompt }] },
     returnImmediately: true
   };
+  // 图片附件(多模态): data URL 数组, 后端 JZAgentCli::extractImages 直接认这个字段
+  if (images && images.length) body.images = images;
   if (verifyCmd) body.verifyCmd = verifyCmd;
   if (contextId) body.contextId = contextId;
   // 工作目录(网页上切换): 服务端记成这条任务的 project, cli 按它挑执行环境
@@ -357,7 +385,8 @@ function stepText(e) {
   else if (type === 'tool_call') s = (pick('name') || 'tool') + (pick('args') ? ' ' + jsonText(pick('args')) : '');
   else if (type === 'tool_result') s = pick('result') != null ? jsonText(pick('result')) : jsonText(d);
   else if (type === 'verify') s = '第 ' + (pick('round') || 1) + ' 轮 · ' + (pick('cmd') || '验证');
-  else if (type === 'retry') s = '第 ' + (pick('attempt') || '?') + ' 次重试 · ' + (pick('reason') || pick('error') || '');
+  // 后端 retry 事件里字段名是 retry(不是 attempt); attempt 留着兼容旧记录
+  else if (type === 'retry') s = '第 ' + (pick('retry') || pick('attempt') || '?') + ' 次重试 · ' + (pick('reason') || pick('error') || '');
   else if (type === 'error') s = pick('message') || pick('error') || pick('text') || jsonText(d);
   else s = jsonText(d);
   // ⚠ thinking/reply 是**流式增量**: 这里绝不能 trim/截断, 否则每个分片末尾的空格和换行
@@ -475,14 +504,14 @@ function convHtml(t) {
       <div class="jz-bubble">${esc(taskPrompt(t))}</div>
       <div class="jz-msg__meta">${esc(taskAgent(t))} · ${shortTime(meta(t).startMs)}</div>
     </div>`;
+  const metaTxt = taskMetaText(t);
   return `<div class="cs-task" data-task="${esc(id)}">
     ${headBubble}
     <div class="cs-conv">${inner}</div>
     ${err ? `<div class="jz-msg jz-msg--error"><div class="jz-bubble">${esc(err)}</div></div>` : ''}
     <div class="jz-msg__meta cs-task__meta">
       <span class="jz-badge ${BADGE[stateOf(t)] || ''}">${esc(stateText(t))}</span>
-      <span>${taskRounds(t)} 轮 · ${taskCost(t)}</span>
-      <code>${esc(id)}</code>
+      ${metaTxt ? `<span>${esc(metaTxt)}</span>` : ''}
     </div>
   </div>`;
 }
@@ -529,9 +558,10 @@ function sideTime(t) {
 function sideItemHtml(t) {
   const rounds = taskRounds(t);
   const prompt = taskPrompt(t) || '（空指令）';
-  // 条目只占一行: 状态看圆点, 细节放 tooltip
+  // 条目只占一行: 状态看圆点, 细节放 tooltip(执行中不报耗时, 同卡片)
+  const cost = isRunning(t) ? '' : taskCost(t);
   const tip = prompt + '\n' + stateText(t)
-    + (rounds ? ' · ' + rounds + ' 轮' : '') + ' · ' + taskCost(t)
+    + (rounds ? ' · 验证 ' + rounds + ' 轮' : '') + (cost && cost !== '-' ? ' · ' + cost : '')
     + ' · ' + fmtTime(lastMs(t));
   const del = `<button class="ag-del" type="button" data-del="${esc(taskId(t))}"
       title="${isRunning(t) ? '取消并删除这条任务' : '删除这条记录'}" aria-label="删除">×</button>`;
@@ -589,7 +619,7 @@ function selectTask(id, scroll) {
   adoptContext(id);      // 选中哪条, 下一条就接它的会话
   renderSide();
   renderTask(true, scroll ? (t && isRunning(t) ? 'bottom' : 'top') : '');
-  if (scroll) setTab('chat');
+  if (scroll) activateTab('chat');
   // 地址栏同步, 刷新/分享能回到同一个任务
   const url = new URL(location.href);
   if (id) url.searchParams.set('task', id); else url.searchParams.delete('task');
@@ -640,7 +670,7 @@ async function loadOlderEvents(id, btn) {
   if (!before) return;
   if (btn) { btn.disabled = true; btn.textContent = '加载中…'; }
   try {
-    const d = await getJson(api('tasks/events?id=' + encodeURIComponent(id) + '&before=' + before + '&limit=200'));
+    const d = await getJson(api('tasks/events?id=' + encodeURIComponent(id) + '&before=' + before + '&limit=1000'));
     const older = d.events || [];
     const cur = AG_OLDER[id];
     AG_OLDER[id] = {
@@ -669,10 +699,9 @@ function renderHead() {
                       : '<span class="jz-badge">离线</span>');
 
   const running = AG.tasks.filter(isRunning).sort((a, b) => meta(b).startMs - meta(a).startMs)[0];
-  const sel = AG.tasks.filter(t => taskId(t) === AG.sel)[0];
+  // 对话上方只留"这条任务正在跑, 要不要停": 删除走左栏每条任务的 ×,
+  // 全部任务走 /tasks 页面(不占对话的地方)。
   acts.innerHTML = `${running ? '<button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnCancelTask" type="button">取消任务</button>' : ''}
-    ${sel ? '<button class="jz-btn jz-btn--sm" id="btnDelTask" type="button">删除</button>' : ''}
-    ${AG.kind !== 'cli' ? `<a class="jz-btn jz-btn--sm" href="tasks?agentId=${encodeURIComponent(AG.id)}">全部任务</a>` : ''}
     <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnRefresh" type="button">刷新</button>`;
   const c = document.getElementById('btnCancelTask');
   if (c) c.onclick = async () => {
@@ -680,20 +709,6 @@ function renderHead() {
     const r = await cancelTask(taskId(running));
     if (window.JzUI) JzUI.toast(r.ok ? '已请求取消' : '取消失败：' + r.error, r.ok ? 'warn' : 'fail');
     loadTasks();
-  };
-  const d = document.getElementById('btnDelTask');
-  if (d) d.onclick = async () => {
-    const id = taskId(sel);
-    const wasRunning = isRunning(sel);
-    d.disabled = true;
-    const r = await deleteTaskRecords([id], { running: wasRunning });
-    if (!r.ok) {
-      d.disabled = false;
-      if (!r.cancelled && window.JzUI) JzUI.toast(r.error || '删除失败', 'fail');
-      return;
-    }
-    dropTasks([id]);
-    if (window.JzUI) JzUI.toast(wasRunning ? '已取消并删除' : '已删除', 'ok');
   };
   document.getElementById('btnRefresh').onclick = () => { AG.sig = ''; loadTasks(); };
 }
@@ -751,149 +766,219 @@ function setWorkdir(p) {
   else if (SIDE.view === 'hosts') loadHosts(true);  // 主机列表要更新"当前"
 }
 
-/* 目录选择器(仿 VSCode「打开文件夹」): 盘符/主目录快捷入口 + 路径输入 + 名字过滤 + 子目录列表 */
+/* ---- 目录选择器(仿 VSCode Quick Open): 一行输入 + 候选, 不搞路径栏/快捷区 ---- */
 const DIRPICK_KEY = 'jz.dirpick.';
-let DIR_CUR = '', DIR_PARENT = '', DIR_DIRS = [];
+let DIR_TARGET = '';      // 这次选目录给哪台 agent 用(主机行的 + 可能是别的 agent)
+let DIR_CUR = '';         // 输入框当前对应的有效目录('' = 不是个目录)
+let DIR_ITEMS = [];       // [{path, name, note}]
+let DIR_SEL = 0;
+let DIR_TIMER = 0;
+let DIR_ERR = '';         // 上次读目录失败的原因(显示在候选区, 别让人对着空列表猜)
+const DIR_POOL = { loaded: false, items: [] };   // 盘符/主目录的第一层(按名字搜时用, 只拉一次)
 
 function dirPickStart() {
-  return lsGet(DIRPICK_KEY + AG.id) || workdir() || (AG.info && AG.info.rootDir) || '';
+  const id = DIR_TARGET || AG.id;
+  // 默认落在"最近用过的目录": 上次在这个弹窗里选的 -> 当前工作目录 -> cli 根目录
+  if (id === AG.id)
+    return lsGet(DIRPICK_KEY + AG.id) || workdir() || (AG.info && AG.info.rootDir) || '';
+  const h = (HOSTS.list || []).find(x => x.agentId === id);
+  return (h && (h.rootDir || (h.dirs && h.dirs[0] && h.dirs[0].path))) || '';
 }
 
-async function openDirDlg() {
+async function openDirDlg(agentId) {
   const dlg = document.getElementById('dlgDir');
   if (!dlg) return;
+  DIR_TARGET = agentId || AG.id;
+  // 给别的 agent 选目录时默认值来自主机列表 —— 它可能还没加载过(没切过"主机"视图)
+  if (DIR_TARGET !== AG.id && !(HOSTS && HOSTS.loaded)) {
+    try { await loadHosts(); } catch (e) { /* 拿不到就退回默认目录 */ }
+  }
+  const inp = document.getElementById('fDirPath');
+  if (inp) inp.value = dirPickStart();
   if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
   else dlg.setAttribute('open', '');
-  const f = document.getElementById('fDirFilter');
-  if (f) f.value = '';
-  renderDirQuick();
-  await loadDir(dirPickStart());
+  if (inp) { inp.focus(); inp.select(); }
+  await refreshDirPick();
 }
+
 function closeDirDlg() {
   const dlg = document.getElementById('dlgDir');
   if (!dlg) return;
   if (typeof dlg.close === 'function') dlg.close(); else dlg.removeAttribute('open');
 }
 
-/* 常用目录: agent 自己的根目录 + 历史任务出现过的目录 */
-function renderDirQuick() {
-  const box = document.getElementById('dirQuick');
-  if (!box) return;
-  const list = [];
-  const push = (p) => { if (p && isAbsPath(p) && list.indexOf(p) < 0) list.push(p); };
-  push(AG.info && AG.info.rootDir);
-  AG.tasks.forEach(t => push((meta(t) || {}).project));
-  push(workdir());
-  box.innerHTML = list.map(p =>
-    `<button class="cs-chip" type="button" data-dir="${esc(p)}" title="${esc(p)}">${esc(projName(p))}</button>`).join('');
-  box.querySelectorAll('button[data-dir]').forEach(b => { b.onclick = () => loadDir(b.dataset.dir); });
+/* "C:/work/pro" -> {parent:'C:/work', frag:'pro'}
+   "work"       -> {parent:'', frag:'work'}          纯名字: 在已知目录里搜
+   "C:/work/"   -> {parent:'C:/work', frag:''}       列它的子目录 */
+function splitDirQuery(raw) {
+  if (!raw) return { parent: '', frag: '' };
+  const last = raw.charAt(raw.length - 1);
+  if (last === '/' || last === '\\')
+    return { parent: raw.replace(/[\/\\]+$/, ''), frag: '' };
+  const i = raw.lastIndexOf('/');
+  if (i < 0) return { parent: '', frag: raw };
+  let parent = raw.slice(0, i);
+  if (/^[A-Za-z]:$/.test(parent)) parent += '/';   // "C:" -> "C:/"
+  return { parent, frag: raw.slice(i + 1) };
 }
 
-function renderDirRoots(j) {
-  const box = document.getElementById('dirRoots');
-  if (!box) return;
-  const chips = [];
-  (j.drives || []).forEach(d => chips.push({ p: d, label: d }));
-  if (j.home) chips.push({ p: j.home, label: '🏠 主目录' });
-  box.innerHTML = chips.map(c =>
-    `<button class="cs-chip" type="button" data-dir="${esc(c.p)}" title="${esc(c.p)}">${esc(c.label)}</button>`).join('');
-  box.querySelectorAll('button[data-dir]').forEach(b => { b.onclick = () => loadDir(b.dataset.dir); });
-}
-
-/* 只画列表(过滤框变化时重画, 不重新请求) */
-function renderDirList() {
+function renderDirPickList() {
   const listEl = document.getElementById('dirList');
   if (!listEl) return;
-  const kw = (document.getElementById('fDirFilter') || {}).value || '';
-  const q = kw.trim().toLowerCase();
-  const dirs = q ? DIR_DIRS.filter(d => String(d.name).toLowerCase().indexOf(q) >= 0) : DIR_DIRS;
-  listEl.innerHTML = dirs.length
-    ? dirs.map(d => `<button class="dir-item" type="button" data-dir="${esc(d.path)}">
-        <span class="dir-item__ico">📁</span><span class="dir-item__name">${esc(d.name)}</span></button>`).join('')
-    : `<div class="jz-empty">${DIR_DIRS.length ? '没有匹配的文件夹' : '没有子文件夹'}</div>`;
-  listEl.querySelectorAll('button[data-dir]').forEach(b => {
-    const p = b.dataset.dir;
-    if (p) b.onclick = () => { lsSet(DIRPICK_KEY + AG.id, p); loadDir(p); };
-  });
-}
-
-async function loadDir(p) {
-  const listEl = document.getElementById('dirList');
-  const note = document.getElementById('dirNote');
-  if (!listEl) return;
-  listEl.innerHTML = '<div class="jz-empty">读取中…</div>';
-  let r = null;
-  try { r = await getJson(api('fs') + (p ? '?path=' + encodeURIComponent(p) : '')); } catch (e) { r = null; }
-  const j = (r && r.json) || {};
-  if (!r || !r.ok) {
-    const why = typeof j === 'string' ? j : (j.error || '读不到这个目录');
-    listEl.innerHTML = `<div class="jz-empty">${esc(why)}</div>`;
+  if (!DIR_ITEMS.length) {
+    listEl.innerHTML = '<div class="dpick__empty">'
+      + esc(DIR_ERR || '没有匹配的文件夹') + '</div>';
     return;
   }
-  DIR_CUR = j.path || p || '';
-  DIR_PARENT = j.parent || '';
-  DIR_DIRS = j.dirs || [];
-  const fPath = document.getElementById('fDirPath');
-  if (fPath) fPath.value = DIR_CUR;
-  const up = document.getElementById('btnDirUp');
-  if (up) up.disabled = !DIR_PARENT;
-  renderDirRoots(j);
-  renderDirList();
-  if (note) note.textContent = '当前：' + DIR_CUR;
-}
-
-function useDirDlg() {
-  if (!DIR_CUR) return;
-  setWorkdir(DIR_CUR);
-  lsSet(DIRPICK_KEY + AG.id, DIR_CUR);
-  closeDirDlg();
-  if (window.JzUI) JzUI.toast('工作目录：' + DIR_CUR, 'ok');
-}
-
-function renderLog() {
-  const body = document.getElementById('logBody');
-  if (!body) return;
-  const list = AG.tasks.slice().sort((a, b) => (meta(b).startMs || 0) - (meta(a).startMs || 0));
-  body.innerHTML = list.length ? list.map(t => `<tr data-task="${esc(taskId(t))}" style="cursor:pointer">
-      <td data-label="时间" class="hide-sm">${shortTime(meta(t).startMs)}</td>
-      <td data-label="状态">${badge(t)}</td>
-      <td data-label="指令" style="color:var(--jz-muted);font-size:var(--jz-fs-1)">${esc(taskPrompt(t).slice(0, 80))}</td>
-      <td data-label="轮次" class="hide-sm">${taskRounds(t)}</td>
-      <td data-label="耗时" class="hide-sm">${taskCost(t)}</td>
-      <td data-label="Task" class="hide-sm"><code>${esc(taskId(t))}</code></td>
-    </tr>`).join('')
-    : `<tr><td colspan="6" style="color:var(--jz-muted)">还没有任务</td></tr>`;
-  body.querySelectorAll('tr[data-task]').forEach(tr => {
-    tr.onclick = () => selectTask(tr.dataset.task, true);
+  // 只显示文件夹名(路径在输入框里), 和系统那个 "Open Folder" 对话框一致
+  listEl.innerHTML = DIR_ITEMS.map((it, i) =>
+    `<button class="dpick-row${i === DIR_SEL ? ' is-sel' : ''}" type="button"
+      data-i="${i}" title="${esc(it.path)}">${esc(it.name)}</button>`).join('');
+  listEl.querySelectorAll('.dpick-row').forEach(b => {
+    b.onclick = () => {
+      const it = DIR_ITEMS[Number(b.dataset.i)];
+      if (!it) return;
+      if (it.up) { dirPickGoUp(it.path); return; }
+      useDirPick(it.path);
+    };
+    b.onmouseenter = () => { DIR_SEL = Number(b.dataset.i); markDirSel(); };
   });
+  markDirSel();
 }
 
-function cardHtml(card) {
-  if (!card) return '<span class="muted">没有 AgentCard</span>';
-  const m = card.metadata || {};
-  const skills = (card.skills || []).map(s => `<span class="skill">${esc(s.name || s.id)}
-    <span class="muted">${esc((s.tags || []).join('/'))}</span></span>`).join('');
-  const caps = Object.keys(card.capabilities || {}).filter(k => card.capabilities[k]).join(' · ') || '-';
-  return `
-    <div class="kv"><span class="k">名称</span><span class="v">${esc(card.name || '')} <span class="muted">v${esc(card.version || '?')}</span></span></div>
-    <div class="kv"><span class="k">说明</span><span class="v">${esc(card.description || '-')}</span></div>
-    <div class="kv"><span class="k">接口</span><span class="v"><code>${esc((card.supportedInterfaces || [{}])[0].url || '-')}</code></span></div>
-    <div class="kv"><span class="k">能力</span><span class="v">${esc(caps)}</span></div>
-    <div class="kv"><span class="k">skills</span><span class="v"><div class="skills">${skills || '<span class="muted">-</span>'}</div></span></div>
-    <div class="kv"><span class="k">工作区</span><span class="v">${esc(m.rootDir || '-')}</span></div>
-    <div class="kv"><span class="k">模型</span><span class="v">${esc(m.modelName || '-')}</span></div>`;
+function markDirSel() {
+  const listEl = document.getElementById('dirList');
+  if (!listEl) return;
+  const rows = listEl.querySelectorAll('.dpick-row');
+  rows.forEach((b, i) => b.classList.toggle('is-sel', i === DIR_SEL));
+  const sel = rows[DIR_SEL];
+  if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
 }
-function renderNodes(card) {
-  const nodes = (card && card.metadata && card.metadata.nodes) || [];
-  const body = document.getElementById('nodeBody');
-  if (!body) return;
-  body.innerHTML = nodes.length ? nodes.map(n => `<tr>
-      <td data-label="节点">${esc(n.name || '-')}</td>
-      <td data-label="地址">${esc(n.target || '-')}</td>
-      <td data-label="状态">${n.online ? '<span class="jz-badge jz-badge--ok">在线</span>' : '<span class="jz-badge">离线</span>'}</td>
-      <td data-label="工作区" class="muted">${esc(n.rootDir || '-')}</td></tr>`).join('')
-    : `<tr><td colspan="4" style="color:var(--jz-muted)">没有节点（本地执行）</td></tr>`;
+
+/* 点 "..": 把输入框改成上一级并刷新(相当于"进入上一级目录", 不是确认它) */
+function dirPickGoUp(parent) {
+  const inp = document.getElementById('fDirPath');
+  if (!inp) return;
+  inp.value = String(parent || '').replace(/[\/\\]+$/, '') + '/';
+  DIR_SEL = 0;
+  refreshDirPick();
 }
+
+function moveDirSel(d) {
+  if (!DIR_ITEMS.length) return;
+  DIR_SEL = (DIR_SEL + d + DIR_ITEMS.length) % DIR_ITEMS.length;
+  markDirSel();
+}
+
+/* 盘符 + 主目录的第一层, 一个会话只拉一次(名字搜索用; 别每次敲字都发一串请求) */
+async function loadDirPool() {
+  if (DIR_POOL.loaded) return DIR_POOL.items;
+  DIR_POOL.loaded = true;
+  const roots = [];
+  try {
+    const r = await getJson(api('fs'));
+    (r.drives || []).forEach(d => roots.push(d));
+    if (r.home) roots.push(r.home);
+  } catch (e) { return DIR_POOL.items; }
+
+  const seen = {};
+  for (const p of roots) {
+    try {
+      const j = await getJson(api('fs') + '?path=' + encodeURIComponent(p));
+      (j.dirs || []).forEach(d => {
+        if (!d || !d.path || seen[d.path]) return;
+        seen[d.path] = 1;
+        DIR_POOL.items.push({ path: d.path, name: d.name || projName(d.path) });
+      });
+    } catch (e) { /* 某个盘读不了就跳过 */ }
+  }
+  return DIR_POOL.items;
+}
+
+/* 按输入框内容刷新候选:
+   ① 输入本身是有效目录 -> 第一项"打开它"
+   ② 该目录下的子文件夹(按最后一段过滤)
+   ③ 输入不带路径时, 再把这台 agent 用过的历史目录按名字过滤一遍 */
+async function refreshDirPick() {
+  const inp = document.getElementById('fDirPath');
+  const listEl = document.getElementById('dirList');
+  if (!inp || !listEl) return;
+
+  const raw = inp.value.trim().replace(/\\/g, '/');
+  // 输入框全空: 不给任何候选(以前会退化成"列默认目录", 看起来像空查询也能匹配)
+  if (!raw) {
+    DIR_CUR = '';
+    DIR_ERR = '';
+    DIR_ITEMS = [];
+    DIR_SEL = 0;
+    renderDirPickList();
+    return;
+  }
+  const q = splitDirQuery(raw);
+
+  // ⚠ getJson 直接返回响应体(不是 {ok,json}); 失败是抛异常 —— 早期代码按 {ok,json}
+  //   解, 拿到的一直是 undefined, 所以列表永远是空的(点"打开"也就没反应)。
+  let j = null, why = '';
+  try { j = await getJson(api('fs') + (q.parent ? '?path=' + encodeURIComponent(q.parent) : '')); }
+  catch (e) { j = null; why = (e && e.message) ? e.message : '读不到目录'; }
+  const ok = !!j;
+  DIR_CUR = ok ? (j.path || q.parent || '') : '';
+  DIR_ERR = ok ? '' : why;
+
+  const f = q.frag.toLowerCase();
+  const items = [];
+  const seen = {};
+  if (ok && j.parent) items.push({ path: j.parent, name: '..', up: true });   // 上一级
+
+  const push = (path, name) => {
+    if (!path || seen[path]) return;
+    const nm = String(name == null ? '' : name);
+    // 只按"文件夹名"过滤, 不拿整条路径比 —— 否则输入 work 会把 .../workspace/... 全捞进来
+    if (f && nm.toLowerCase().indexOf(f) < 0) return;
+    seen[path] = 1;
+    items.push({ path, name: nm || projName(path) });
+  };
+
+  if (ok && DIR_CUR) push(DIR_CUR, projName(DIR_CUR));
+  (ok ? (j.dirs || []) : []).forEach(d => push(d.path, d.name));
+
+  if (!q.parent) {
+    // 不带路径时（输入 "work" / "/work"）在"已知目录"里搜, 而不是去递归扫盘:
+    //   ① 这台 agent 用过的目录
+    //   ② 盘符 + 主目录的第一层（这样 C:/work 这种顶层目录能被 work 命中）
+    const target = DIR_TARGET || AG.id;
+    (HOSTS.list || []).forEach(h => {
+      if (h.agentId !== target) return;
+      (h.dirs || []).forEach(d => push(d.path, projName(d.path)));
+    });
+    if (f) {
+      const pool = await loadDirPool();
+      pool.forEach(d => push(d.path, d.name));
+    }
+  }
+
+  DIR_ITEMS = items;
+  // 默认高亮第一个真实目录(不选 ".."), 免得一按回车就往上跳
+  DIR_SEL = Math.max(0, items.findIndex(x => !x.up));
+  renderDirPickList();
+}
+
+/* 打开这个目录: 当前 agent 切工作区; 别的 agent 就跳过去(?id=&dir=) */
+function useDirPick(path) {
+  const target = DIR_TARGET || AG.id;
+  if (!path) return;
+  lsSet(DIRPICK_KEY + target, path);
+  closeDirDlg();
+  if (target === AG.id) {
+    setWorkdir(path);
+    if (window.JzUI) JzUI.toast('工作目录：' + path, 'ok');
+    return;
+  }
+  location.href = '?id=' + encodeURIComponent(target) + '&dir=' + encodeURIComponent(path);
+}
+
+function useDirDlg() { useDirPick(DIR_ITEMS[DIR_SEL] ? DIR_ITEMS[DIR_SEL].path : DIR_CUR); }
+
 
 /* ---- 终端(仅 cli 后端有; server 返回 404 就整块隐藏) ---- */
 function renderTerminal(d) {
@@ -948,7 +1033,6 @@ async function loadInfo() {
   }
   const d = await getJson(api('agent' + (want ? '?id=' + encodeURIComponent(want) : '')));
   AG.info = d.info || {};
-  AG.card = d.card || null;
   AG.kind = d.kind || '';
   AG.id = AG.info.agentId || want;
   // 从「主机」视图点别的 agent 的目录跳过来: 先落到本机记录, 再把 dir 从地址栏抹掉
@@ -958,10 +1042,11 @@ async function loadInfo() {
     lsSet(WD_KEY + AG.id, dq);
     u0.searchParams.delete('dir');
     history.replaceState(null, '', u0);
+    // 既然是在"打开某个目录"的动作里跳过来的, 落地就该是那个目录的文件列表,
+    // 不是对话页 —— 否则还要再点一次 rail 的文件图标
+    setSideView('files');
   }
 
-  document.getElementById('cardBody').innerHTML = cardHtml(AG.card);
-  renderNodes(AG.card);
 }
 
 async function loadTasks() {
@@ -995,7 +1080,7 @@ async function loadTasks() {
     scrollMode = isRunning(pick) ? 'bottom' : 'top';
   }
 
-  renderHead(); renderTask(false, scrollMode); renderLog(); renderSide(); syncComposer();
+  renderHead(); renderTask(false, scrollMode); renderSide(); syncComposer();
   watchRunning();
   schedulePoll();
 }
@@ -1098,12 +1183,90 @@ function schedulePoll() {
   AG.poll = setTimeout(() => { loadTasks(); }, 5000);
 }
 
+/* ---------------- 附图（多模态） ----------------
+   上限与后端 JZAgentCli::extractImages 对齐: 8 张 / 单张 8M 字符(data URL)。
+   前端先拦一道, 省得几 MB 的图传完才被后端 400 打回。 */
+const IMG_MAX = 8;
+const IMG_MAX_CHARS = 8 * 1024 * 1024;
+let PENDING_IMGS = [];      // [{name, dataUrl, w, h, bytes}]
+
+function fmtBytes(n) {
+  if (!n) return '未知大小';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+/* 输入框内的缩略图条: 图 + 右上角删除 + 悬停详情(文件名/尺寸/大小) */
+function renderImgs() {
+  const box = document.getElementById('imgList');
+  if (!box) return;
+  if (!PENDING_IMGS.length) {
+    box.innerHTML = '';
+    box.classList.add('hidden');
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = PENDING_IMGS.map((im, i) => `
+    <div class="cs-img">
+      <img class="cs-img__mx" src="${im.dataUrl}" alt="">
+      <button class="cs-img__x" type="button" data-del="${i}" title="移除">×</button>
+      <div class="cs-img__tip">${esc(im.name)}<br>${im.w || '?'}×${im.h || '?'} · ${fmtBytes(im.bytes)}</div>
+    </div>`).join('');
+}
+
+function clearImgs() {
+  PENDING_IMGS = [];
+  renderImgs();
+}
+
+function readImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('读取失败'));
+    fr.onload = () => {
+      const dataUrl = String(fr.result || '');
+      const probe = new Image();
+      const done = (w, h) => resolve({
+        name: file.name || '粘贴的图片', dataUrl, w, h, bytes: file.size || 0
+      });
+      probe.onload = () => done(probe.naturalWidth, probe.naturalHeight);
+      probe.onerror = () => done(0, 0);
+      probe.src = dataUrl;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+
+async function addImageFiles(files) {
+  const msg = document.getElementById('msg');
+  const picked = Array.from(files || []).filter(f => f && /^image\//.test(f.type || ''));
+  if (!picked.length) { msg.textContent = '只能加图片文件'; return; }
+  for (const f of picked) {
+    if (PENDING_IMGS.length >= IMG_MAX) { msg.textContent = `最多 ${IMG_MAX} 张图`; break; }
+    try {
+      const im = await readImageFile(f);
+      if (im.dataUrl.length > IMG_MAX_CHARS) {
+        msg.textContent = `「${im.name}」太大（超过 8MB），压缩后再试`;
+        continue;
+      }
+      PENDING_IMGS.push(im);
+      msg.textContent = '';
+    } catch (e) {
+      msg.textContent = '有一张图没读出来：' + (e && e.message ? e.message : e);
+    }
+  }
+  renderImgs();
+}
+
 let SUBMIT_LOCK = false;
 async function doSend() {
   const ta = document.getElementById('fPrompt');
   const msg = document.getElementById('msg');
   const text = ta.value.trim();
-  if (!text) { msg.textContent = '先写点要它做的事'; ta.focus(); return; }
+  const imgs = PENDING_IMGS.map(i => i.dataUrl);
+  // 只发图不发字也允许（后端 extractImages 支持 prompt 为空）
+  if (!text && !imgs.length) { msg.textContent = '先写点要它做的事，或加一张图片'; ta.focus(); return; }
   if (!AG.id) { msg.textContent = '还没有 agent'; return; }
   if (SUBMIT_LOCK) return;
   SUBMIT_LOCK = true;
@@ -1117,6 +1280,7 @@ async function doSend() {
     r = await sendMessage({
       agentId: AG.id,
       prompt: text,
+      images: imgs,
       verifyCmd: lsGet(VERIFY_KEY),
       // 选中了哪条任务, 这一轮就追加到那条任务里(同一个 taskId, 聊天区连续);
       // 没选(=新建)就照旧开一条新任务, 沿用本机记着的上次会话。
@@ -1149,6 +1313,7 @@ async function doSend() {
   if (r.contextId) lsSet(ctxKey, r.contextId);   // 同一 agent 的后续任务接着这条会话
   AG.ctx = r.contextId || '';                    // 后面再发就落在这条会话上
   ta.value = ''; ta.style.height = '';
+  clearImgs();                                   // 附件已经随请求发出去了, 清空待发队列
   msg.textContent = '';
   AG.sel = r.id;                                 // 新任务: 左栏选中 + 右栏滚到它
   await loadTasks();
@@ -1176,12 +1341,289 @@ function saveSettings() {
   if (window.JzUI) JzUI.toast('设置已保存', 'ok');
 }
 
-/* ---- tab ---- */
-const TABS = ['chat', 'log', 'card'];
-function curTab() { const t = (location.hash || '#chat').slice(1); return TABS.indexOf(t) >= 0 ? t : 'chat'; }
-function setTab(name) {
-  document.querySelectorAll('#tabs .tab').forEach(a => a.classList.toggle('is-on', a.dataset.tab === name));
-  document.querySelectorAll('.pane').forEach(p => p.classList.toggle('hidden', p.dataset.pane !== name));
+/* ---- 主区 tab ----
+   「对话」常驻且不可关; 点左侧文件树里的文件就多开一个, 标题是文件名。
+   tab 内容存在对象里, 切回来直接塞进 DOM —— chat 那一屏的 DOM **从不销毁**
+   (几十条消息、滚动位置、正在拼的流式文本都在里面), 重建一次就全废了。 */
+/* 这一屏叫「会话」: 它本质就是一次和 agent 的会话(多轮指令 + 它的思考/工具/回复),
+   「对话」太口语, 「任务」又只剩派活那一下, 丢了来回交流的意思。
+   为了不重名, 侧栏那个列队列表的视图改叫「任务」—— 那里面本来就是一条条任务。 */
+const ED = { list: [{ id: 'chat', kind: 'chat', title: '会话' }], act: 'chat' };
+const edById = (id) => ED.list.filter(t => t.id === id)[0];
+const edFileId = (p) => 'f:' + p;
+
+function renderTabs() {
+  const box = document.getElementById('tabs');
+  if (!box) return;
+  box.innerHTML = ED.list.map(t => `<button class="tab${t.id === ED.act ? ' is-on' : ''}"
+      type="button" data-tab-id="${esc(t.id)}" title="${esc(t.path || t.title)}"
+      ><span class="tab__t">${esc(t.title)}</span>${t.kind === 'chat' ? ''
+        : `<span class="tab__x" data-close="${esc(t.id)}" title="关闭">×</span>`}</button>`).join('');
+  box.querySelectorAll('button[data-tab-id]').forEach(b => {
+    b.onclick = (ev) => {
+      const x = ev.target && ev.target.closest ? ev.target.closest('[data-close]') : null;
+      if (x) { ev.stopPropagation(); closeTab(x.getAttribute('data-close')); return; }
+      activateTab(b.getAttribute('data-tab-id'));
+    };
+  });
+}
+function activateTab(id) {
+  const t = edById(id) || ED.list[0];
+  ED.act = t.id;
+  // 两个内容区互斥: 对话 / 文件
+  document.querySelectorAll('.pane').forEach(p => {
+    const on = t.kind === 'chat' ? p.dataset.pane === 'chat' : p.dataset.pane === 'preview';
+    p.classList.toggle('hidden', !on);
+  });
+  if (t.kind === 'file') paintFileTab(t);
+  renderTabs();
+}
+function closeTab(id) {
+  const i = ED.list.findIndex(t => t.id === id);
+  if (i < 0 || ED.list[i].kind === 'chat') return;      // 对话不给关
+  ED.list.splice(i, 1);
+  if (ED.act === id) activateTab((ED.list[i] || ED.list[i - 1] || ED.list[0]).id);
+  else renderTabs();
+}
+/* 语法高亮: 语言按扩展名给, **不用** hljs 的自动检测 —— 它会把 .h 猜成 C、
+   短 Python 猜成 Ruby, 这些文件恰恰是我们天天看的。 */
+const HLJS_LANG = {
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+  ts: 'typescript', tsx: 'typescript',
+  cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', h: 'cpp', inl: 'cpp',
+  c: 'c',
+  py: 'python', pyw: 'python',
+  json: 'json', css: 'css', scss: 'scss', less: 'less',
+  html: 'xml', htm: 'xml', xml: 'xml', svg: 'xml', vue: 'xml',
+  md: 'markdown', markdown: 'markdown',
+  sh: 'bash', bash: 'bash', zsh: 'bash', bat: 'dos', cmd: 'dos', ps1: 'powershell',
+  yml: 'yaml', yaml: 'yaml', toml: 'ini', ini: 'ini', conf: 'ini',
+  sql: 'sql', go: 'go', rs: 'rust', java: 'java', lua: 'lua', php: 'php', rb: 'ruby',
+};
+/* 超过这个尺寸就不高亮: hljs 是同步的, 几百 KB 的文件会明显卡住切 tab */
+const HLJS_MAX = 200 * 1024;
+
+function fileExt(path) {
+  const s = String(path || '');
+  const i = s.lastIndexOf('.');
+  return i < 0 ? '' : s.slice(i + 1).toLowerCase();
+}
+
+/* 行号: 在每行开头插一个 <span class="prev-ln">, 数字由 CSS 计数器打出来。
+   为什么不用"按行 split 再包一层": hljs 的 token <span> 会跨行(多行字符串/注释),
+   按文本切会切断标签, 结构就烂了。插占位 span 不碰已有标签, 安全。 */
+function withLineNumbers(html) {
+  const s = String(html || '').replace(/\r\n/g, '\n');
+  return '<span class="prev-ln"></span>' + s.split('\n').join('\n<span class="prev-ln"></span>');
+}
+
+function paintFileTab(t) {
+  const pp = document.getElementById('prevPath');
+  const meta = document.getElementById('prevMeta');
+  const body = document.getElementById('prevBody');
+  const copy = document.getElementById('btnPrevCopy');
+  if (pp) { pp.textContent = t.path; pp.title = t.path; }
+  if (meta) meta.textContent = t.note || '';
+  if (body) {
+    // 行号列宽度 = 最长行号的位数(单位 ch): 800 行就别按 4 位数的宽度留白
+    const whole = String(t.text || '').replace(/\r\n/g, '\n').split('\n').length;
+    body.style.setProperty('--ln-w', Math.max(2, String(whole).length) + 'ch');
+    const lang = HLJS_LANG[fileExt(t.path)];
+    if (window.hljs && lang && t.text && t.text.length <= HLJS_MAX) {
+      // hljs 自己会把 <>& 转义掉, 这里可以直接 innerHTML; 语言名来自白名单
+      body.innerHTML = withLineNumbers(
+        hljs.highlight(t.text, { language: lang, ignoreIllegals: true }).value);
+      body.classList.add('hljs');
+    } else {
+      body.innerHTML = withLineNumbers(esc(t.text || ''));
+      body.classList.remove('hljs');
+    }
+  }
+  if (copy) copy.disabled = !t.text;
+}
+/* ---- 新建文件夹 / 新建文件 ----
+   边界在服务端判(与 cli 的区域模型一致: 工作区可写、外面只读) —— server 不知道
+   网页当前切到哪个目录(那是浏览器的 localStorage), 所以 root 由这里带上去。 */
+const NEW = { mode: 'create', dir: '', kind: 'dir', path: '' };
+
+function openNewDlg(kind) {
+  const dlg = document.getElementById('dlgNew');
+  if (!dlg) return;
+  NEW.mode = 'create';
+  NEW.dir = CTX.path;
+  NEW.kind = kind;
+  const isDir = kind === 'dir';
+  document.getElementById('dlgNewTitle').textContent = isDir ? '新建文件夹' : '新建文件';
+  document.getElementById('lblNewName').textContent = isDir ? '文件夹名' : '文件名';
+  document.getElementById('newNote').textContent = '在 ' + relPath(NEW.dir) + ' 下创建';
+  const inp = document.getElementById('fNewName');
+  inp.value = '';
+  inp.placeholder = isDir ? '例如 components' : '例如 notes.md';
+  if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+  else dlg.setAttribute('open', '');
+  setTimeout(() => inp.focus(), 30);
+}
+
+/* 重命名: 复用同一个输入框, 预填当前名字(不用 prompt —— 它会被拦、样式也不受控) */
+function openRenameDlg(path) {
+  const dlg = document.getElementById('dlgNew');
+  if (!dlg) return;
+  NEW.mode = 'rename';
+  NEW.path = path;
+  document.getElementById('dlgNewTitle').textContent = '重命名';
+  document.getElementById('lblNewName').textContent = '新名字';
+  document.getElementById('newNote').textContent = relPath(path);
+  const inp = document.getElementById('fNewName');
+  inp.value = baseName(path);
+  inp.placeholder = '新名字';
+  if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
+  else dlg.setAttribute('open', '');
+  setTimeout(() => { inp.focus(); inp.select(); }, 30);
+}
+
+function closeNewDlg() {
+  const dlg = document.getElementById('dlgNew');
+  if (!dlg) return;
+  if (typeof dlg.close === 'function') { if (dlg.open) dlg.close(); }
+  else dlg.removeAttribute('open');
+}
+
+/* 路径的父目录(前端侧, 与服务端 parentDirOf 同规则) */
+function dirOf(p) {
+  const s = String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const i = s.lastIndexOf('/');
+  if (i < 0) return '';
+  if (i === 2 && s[1] === ':') return s.slice(0, 3);
+  return s.slice(0, i) || '/';
+}
+
+/* 作废某个目录的缓存再重画(增删改之后都要走一遍, 否则树上还是旧的) */
+async function refreshTreeDir(dir) {
+  if (dir) {
+    delete FS.nodes[dir];
+    await fsLoad(dir);
+  }
+  fsRender();
+}
+
+async function submitNew() {
+  const inp = document.getElementById('fNewName');
+  const name = (inp.value || '').trim();
+  if (!name) {
+    if (window.JzUI) JzUI.toast('名字不能为空', 'warn');
+    inp.focus();
+    return;
+  }
+  const btn = document.getElementById('btnNewOk');
+  btn.disabled = true;
+  try {
+    if (NEW.mode === 'rename') {
+      const old = NEW.path;
+      const r = await postJson(api('fs/rename'), { root: workdir(), path: old, name: name });
+      if (!r.ok) {
+        if (window.JzUI) JzUI.toast((r.json && r.json.error) || '重命名失败', 'fail');
+        return;
+      }
+      closeNewDlg();
+      FS.sel = (r.json && r.json.path) || old;
+      await refreshTreeDir(dirOf(old));
+      if (window.JzUI) JzUI.toast('已重命名为 ' + name, 'ok');
+      return;
+    }
+    const parent = NEW.dir;
+    const kind = NEW.kind;
+    const r = await postJson(api('fs/create'), {
+      root: workdir(), dir: parent, name: name, kind: kind,
+    });
+    if (!r.ok) {
+      if (window.JzUI) JzUI.toast((r.json && r.json.error) || '创建失败', 'fail');
+      return;
+    }
+    closeNewDlg();
+    const made = (r.json && r.json.path) || (parent + '/' + name);
+    // 父目录缓存作废再重载; 新建的是目录就顺手展开它, 不展开会以为没建成
+    delete FS.nodes[parent];
+    await fsLoad(parent);
+    if (kind === 'dir') {
+      FS.open[made] = true;
+      await fsLoad(made);
+    }
+    fsRender();
+    if (window.JzUI) JzUI.toast('已创建 ' + name, 'ok');
+  } catch (e) {
+    if (window.JzUI) JzUI.toast('操作失败：' + (e && e.message ? e.message : e), 'fail');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* 删除: 目录是**递归**删, 所以必须确认; 工作区根目录服务端也不让删 */
+async function deleteEntry(path, isDir) {
+  const name = baseName(path);
+  const what = isDir ? ('目录「' + name + '」及其全部内容') : ('文件「' + name + '」');
+  let ok = false;
+  if (window.JzUI && JzUI.confirm) {
+    ok = await JzUI.confirm('确定删除' + what + '？此操作不可撤销。',
+                            { title: '删除', danger: true, okText: '删除' });
+  } else {
+    ok = window.confirm('确定删除' + what + '？');
+  }
+  if (!ok) return;
+  try {
+    const r = await postJson(api('fs/delete'), { root: workdir(), path: path });
+    if (!r.ok) {
+      if (window.JzUI) JzUI.toast((r.json && r.json.error) || '删除失败', 'fail');
+      return;
+    }
+    FS.sel = '';
+    delete FS.open[path];
+    await refreshTreeDir(dirOf(path));
+    if (window.JzUI) JzUI.toast('已删除 ' + name, 'ok');
+  } catch (e) {
+    if (window.JzUI) JzUI.toast('删除失败：' + (e && e.message ? e.message : e), 'fail');
+  }
+}
+
+/* 点文件树里的文件: 已经开着就切过去, 没开过才新建一个 tab */
+async function openFileTab(path) {
+  const id = edFileId(path);
+  if (edById(id)) { activateTab(id); return; }
+  const seg = String(path).replace(/[\\/]+$/, '').split(/[\\/]/);
+  const t = { id, kind: 'file', path, title: seg[seg.length - 1] || path, text: '', note: '读取中…' };
+  ED.list.push(t);
+  activateTab(id);
+
+  const show = () => { if (ED.act === id) paintFileTab(t); };
+  let r = null;
+  try { r = await fetchT(withToken(api('fs/raw') + '?path=' + encodeURIComponent(path)), null, 15000); }
+  catch (e) { t.note = '读取失败：' + netReason(e); show(); return; }
+  if (!r || !r.ok) {
+    let msg = 'HTTP ' + (r ? r.status : '?');
+    try { msg = await r.text(); } catch (e) {}
+    t.note = msg; show(); return;
+  }
+  const size = Number(r.headers.get('X-File-Size') || 0);
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  const dec = decodeBytes(bytes);
+  if (dec.binary) { t.note = '二进制文件 · ' + fmtSize(size); show(); return; }
+  t.text = dec.text;
+  const truncated = size > bytes.length;
+  t.note = `${dec.encoding.toUpperCase()} · ${fmtSize(size)}`
+    + (truncated ? ' · 已截断（只显示前 1MB）' : '');
+  show();
+}
+
+/* 点弹窗背景关闭: 必须"按在背景 + 抬在背景"才算。
+   只判 click 的 target 不够 —— 在弹窗里框选文字、把鼠标拖到外面再松开时,
+   click 会被派发到"按下/抬起的共同祖先"(也就是 dialog 本身), 弹窗就被误关了。 */
+function bindBackdropClose(dlg, closeFn) {
+  if (!dlg) return;
+  let downOnBackdrop = false;
+  dlg.addEventListener('mousedown', (e) => { downOnBackdrop = (e.target === dlg); });
+  dlg.addEventListener('click', (e) => {
+    if (downOnBackdrop && e.target === dlg) closeFn();
+    downOnBackdrop = false;
+  });
 }
 
 /* 绑定 onclick 的 null 安全版本: 少一个元素不该把整页初始化打断
@@ -1198,43 +1640,28 @@ function initChatPage() {
   on('btnVerify', openSettings);
   on('btnSetSave', saveSettings);
   on('btnSetClose', closeSettings);
-  const dlgSet = document.getElementById('dlgSettings');
-  if (dlgSet) dlgSet.addEventListener('click', (e) => {
-    if (e.target.id === 'dlgSettings') closeSettings();
-  });
+  bindBackdropClose(document.getElementById('dlgSettings'), closeSettings);
 
-  // 工作目录选择(弹窗由「主机」里的「＋ 打开文件夹…」打开)
-  on('btnDirClose', closeDirDlg);
+  // 工作目录选择(仿 VSCode Quick Open: 输入即筛选, ↑↓/Enter/Esc)
   on('btnDirUse', useDirDlg);
-  on('btnDirGo', () => {
-    const el = document.getElementById('fDirPath');
-    const v = el ? el.value.trim() : '';
-    if (v) loadDir(v);
-  });
-  on('btnDirUp', () => { if (DIR_PARENT) loadDir(DIR_PARENT); });
-  on('btnDirCancel', closeDirDlg);
   const fDirPath = document.getElementById('fDirPath');
-  if (fDirPath) fDirPath.addEventListener('keydown', (e) => {
-    if (e.key !== 'Enter' || e.isComposing) return;
-    e.preventDefault();
-    const v = e.target.value.trim();
-    if (v) loadDir(v);
-  });
-  const fDirFilter = document.getElementById('fDirFilter');
-  if (fDirFilter) {
-    fDirFilter.addEventListener('input', renderDirList);
-    fDirFilter.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' || e.isComposing) return;
+  if (fDirPath) {
+    fDirPath.addEventListener('input', () => {
+      clearTimeout(DIR_TIMER);
+      DIR_TIMER = setTimeout(refreshDirPick, 160);
+    });
+    fDirPath.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;   // 输入法组字中的回车不算
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveDirSel(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveDirSel(-1); return; }
+      if (e.key !== 'Enter') return;
       e.preventDefault();
-      // 回车: 有唯一匹配就进去, 否则用第一个
-      const first = document.querySelector('#dirList button[data-dir]');
-      if (first) { const p = first.dataset.dir; lsSet(DIRPICK_KEY + AG.id, p); loadDir(p); }
+      const it = DIR_ITEMS[DIR_SEL];
+      if (it) useDirPick(it.path);
+      else if (DIR_CUR) useDirPick(DIR_CUR);
     });
   }
-  const dlgDir = document.getElementById('dlgDir');
-  if (dlgDir) dlgDir.addEventListener('click', (e) => {
-    if (e.target.id === 'dlgDir') closeDirDlg();
-  });
+  bindBackdropClose(document.getElementById('dlgDir'), closeDirDlg);
 
   // Activity Bar: 文件 / 主机 / 会话
   document.querySelectorAll('#rail .rail-btn[data-view]').forEach(b => {
@@ -1247,15 +1674,53 @@ function initChatPage() {
   on('btnFsRefresh', () => fsEnter(true));
   on('btnSideCollapse', () => { FS.collapsed = !FS.collapsed; fsApplyCollapse(); });
   on('btnFsCollapse', () => { FS.open = {}; fsRender(); });
-  on('btnPrevBack', () => setTab('chat'));
   on('btnPrevCopy', () => {
-    if (!PREV_TEXT || !navigator.clipboard) return;
-    navigator.clipboard.writeText(PREV_TEXT)
+    const t = edById(ED.act);
+    if (!t || !t.text || !navigator.clipboard) return;
+    navigator.clipboard.writeText(t.text)
       .then(() => { if (window.JzUI) JzUI.toast('已复制', 'ok'); })
       .catch(() => {});
   });
 
+  // ---- 附图：按钮 / 选择文件 / 粘贴截图 / 拖进来 ----
+  const fImg = document.getElementById('fImg');
+  on('btnImg', () => { if (fImg) fImg.click(); });
+  if (fImg) {
+    fImg.addEventListener('change', () => {
+      addImageFiles(fImg.files);
+      fImg.value = '';          // 同一张图连选两次也要能触发 change
+    });
+  }
+  const imgBox = document.getElementById('imgList');
+  if (imgBox) {
+    imgBox.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-del]');
+      if (!b) return;
+      PENDING_IMGS.splice(Number(b.dataset.del), 1);
+      renderImgs();
+    });
+  }
+  const composerBox = document.querySelector('.jz-composer__box');
+  if (composerBox) {
+    composerBox.addEventListener('dragover', (e) => { e.preventDefault(); });
+    composerBox.addEventListener('drop', (e) => {
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) { e.preventDefault(); addImageFiles(files); }
+    });
+  }
+
   const ta = document.getElementById('fPrompt');
+  ta.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    const files = [];
+    for (const it of items) {
+      if (it.kind === 'file' && /^image\//.test(it.type)) {
+        const f = it.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (files.length) { e.preventDefault(); addImageFiles(files); }
+  });
   ta.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
     e.preventDefault();
@@ -1269,7 +1734,7 @@ function initChatPage() {
   // 左栏(窄屏是抽屉)
   const btnNew = document.getElementById('btnNewTask');
   if (btnNew) btnNew.onclick = () => {
-    setTab('chat');
+    activateTab('chat');
     AG.ctx = '';                       // 新建 = 另起会话, 不接上一条
     lsSet('jz.ctx.' + AG.id, '');
     selectTask('', false);
@@ -1286,8 +1751,58 @@ function initChatPage() {
   const scrim = document.getElementById('scrim');
   if (scrim) scrim.onclick = closeNav;
 
-  setTab(curTab());
-  window.addEventListener('hashchange', () => setTab(curTab()));
+  // 文件树右键菜单: 点条目执行, 点别处 / Esc / 滚动都关掉
+  const ctxMenu = document.getElementById('ctxMenu');
+  if (ctxMenu) {
+    ctxMenu.querySelectorAll('button[data-act]').forEach(b => {
+      b.onclick = (ev) => {
+        ev.stopPropagation();
+        const act = b.getAttribute('data-act');
+        if (act === 'copy') copyPath(CTX.path, '路径');
+        else if (act === 'copy-rel') copyPath(relPath(CTX.path), '相对路径');
+        else if (act === 'copy-name') copyPath(baseName(CTX.path), '名称');
+        else if (act === 'new-dir') openNewDlg('dir');
+        else if (act === 'new-file') openNewDlg('file');
+        else if (act === 'rename') openRenameDlg(CTX.path);
+        else if (act === 'delete') deleteEntry(CTX.path, CTX.isDir);
+        hideCtxMenu();
+      };
+    });
+    document.addEventListener('click', (ev) => {
+      if (!ctxMenu.contains(ev.target)) hideCtxMenu();
+    });
+    document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') hideCtxMenu(); });
+    window.addEventListener('resize', hideCtxMenu);
+    // 菜单是 fixed 的, 不跟内容滚: 任何容器一滚就关掉
+    document.addEventListener('scroll', hideCtxMenu, true);
+  }
+
+  // F2 = 重命名当前选中的那一项(文件管理器里的通行手势)
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'F2') return;
+    const tag = (ev.target && ev.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    const path = FS.sel || (CTX.path || '');
+    if (!path) return;
+    ev.preventDefault();
+    openRenameDlg(path);
+  });
+
+  // 新建文件夹/文件 的输入框
+  const dlgNew = document.getElementById('dlgNew');
+  if (dlgNew) {
+    document.getElementById('btnNewOk').onclick = submitNew;
+    document.getElementById('btnNewCancel').onclick = closeNewDlg;
+    document.getElementById('btnNewClose').onclick = closeNewDlg;
+    document.getElementById('fNewName').onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); submitNew(); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); closeNewDlg(); }
+    };
+  }
+
+  activateTab('chat');
+  // 老书签带 #log / #card: 没有对应面板了, 一律回落到对话
+  window.addEventListener('hashchange', () => { if (location.hash === '#chat') activateTab('chat'); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { clearTimeout(AG.poll); AG.poll = 0; }
     else { loadTasks(); }
@@ -1325,7 +1840,7 @@ function initChatPage() {
 /* 最左侧一列按钮切三个视图: 文件 / 主机 / 会话。同一时间只显示一个 side-view。 */
 
 const SIDE_KEY = 'jz.sideview';
-const SIDE_TITLE = { files: '文件', hosts: '主机', chats: '会话' };
+const SIDE_TITLE = { files: '文件', hosts: '主机', chats: '任务' };
 const SIDE = { view: 'files' };
 
 function setSideView(name) {
@@ -1411,7 +1926,15 @@ function initSplitter() {
 }
 
 /* ---- 文件: 当前工作区的只读文件树(懒加载子目录) ---- */
-const FS = { root: '', open: {}, nodes: {}, collapsed: false };
+const FS = { root: '', open: {}, nodes: {}, collapsed: false, sel: '' };
+
+/* 记"当前选中的那一项": F2 和右键都靠它定位(没有多选, 就是最近点过的那行) */
+function markTreeSel(btn) {
+  document.querySelectorAll('#fsTree .fs-row.is-sel').forEach(x => x.classList.remove('is-sel'));
+  btn.classList.add('is-sel');
+  FS.sel = btn.dataset.file || btn.dataset.dir || '';
+  FS.selIsDir = !!btn.dataset.dir;
+}
 
 /* 标题栏显示的项目名: 目录末段, 大写(仿 VSCode) */
 function fsTitle() {
@@ -1463,6 +1986,76 @@ function fmtSize(n) {
   return (n / 1024 / 1024).toFixed(1) + ' MB';
 }
 
+/* ---- 文件树右键菜单 ----
+   不用浏览器原生菜单(在文件树上尽是"审查元素/另存为"), 换成只用得上的几项。
+   全局只放一个节点, 每次右键把目标路径记下来再摆位置。 */
+const CTX = { path: '', isDir: false };
+
+function showCtxMenu(ev, path, isDir) {
+  ev.preventDefault();
+  const m = document.getElementById('ctxMenu');
+  if (!m) return;
+  CTX.path = path || '';
+  CTX.isDir = !!isDir;
+  // "新建"只对目录有意义(在文件上新建是没道理的)
+  m.querySelectorAll('[data-act="new-dir"],[data-act="new-file"],[data-sep]').forEach(el => {
+    if (CTX.isDir) el.removeAttribute('hidden');
+    else el.setAttribute('hidden', '');
+  });
+  // 先量尺寸再定位: 靠右下角右键时会超出视口, 往回收
+  m.classList.remove('hidden');
+  m.style.left = '0px'; m.style.top = '0px';
+  const r = m.getBoundingClientRect();
+  const x = Math.min(ev.clientX, window.innerWidth - r.width - 8);
+  const y = Math.min(ev.clientY, window.innerHeight - r.height - 8);
+  m.style.left = Math.max(8, x) + 'px';
+  m.style.top = Math.max(8, y) + 'px';
+}
+
+function hideCtxMenu() {
+  const m = document.getElementById('ctxMenu');
+  if (m) m.classList.add('hidden');
+}
+
+/* 相对路径: 相对当前工作区根(派活时写相对路径比绝对路径短, 模型也更好读) */
+function relPath(p) {
+  const root = String(workdir() || '').replace(/[\/\\]+$/, '');
+  const s = String(p || '');
+  if (root && (s === root || s.indexOf(root + '/') === 0 || s.indexOf(root + '\\') === 0))
+    return s.slice(root.length + 1).replace(/\\/g, '/') || '.';
+  return s.replace(/\\/g, '/');
+}
+
+function baseName(p) {
+  const s = String(p || '').replace(/[\/\\]+$/, '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  return i < 0 ? s : s.slice(i + 1);
+}
+
+/* 复制路径(文件树右键用): 派活/命令行里要的常常是绝对路径,
+   从页面上右键拿走比手抄快。cliboard 不可用时退回 execCommand。 */
+function copyPath(p, label) {
+  const s = String(p || '');
+  if (!s) return;
+  const done = (ok) => {
+    if (window.JzUI) JzUI.toast(ok ? '已复制' + (label || '路径') : '复制失败(剪贴板不可用)', ok ? 'ok' : 'fail');
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(s).then(() => done(true)).catch(() => done(false));
+    return;
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    done(ok);
+  } catch (e) { done(false); }
+}
+
 function fsRender() {
   const box = document.getElementById('fsTree');
   if (!box) return;
@@ -1471,14 +2064,18 @@ function fsRender() {
   box.querySelectorAll('button[data-dir]').forEach(b => {
     b.onclick = async () => {
       const path = b.dataset.dir;
+      markTreeSel(b);
       if (FS.open[path]) { delete FS.open[path]; fsRender(); return; }
       FS.open[path] = true;
       fsRender();
       if (!FS.nodes[path]) { await fsLoad(path); fsRender(); }
     };
+    b.oncontextmenu = (ev) => { markTreeSel(b); showCtxMenu(ev, b.dataset.dir, true); };
   });
   box.querySelectorAll('button[data-file]').forEach(b => {
-    b.onclick = () => openPreview(b.dataset.file);
+    b.onclick = () => { markTreeSel(b); openFileTab(b.dataset.file); };
+    // 右键 = 打开菜单(新建/重命名/删除/复制路径), 浏览器自己的菜单挡掉
+    b.oncontextmenu = (ev) => { markTreeSel(b); showCtxMenu(ev, b.dataset.file, false); };
   });
 }
 
@@ -1492,13 +2089,15 @@ function fsRows(path, depth) {
   let out = '';
   n.dirs.forEach(d => {
     const open = !!FS.open[d.path];
-    out += `<button class="fs-row" type="button" data-dir="${esc(d.path)}" style="padding-left:${ind}px">
+    out += `<button class="fs-row" type="button" data-dir="${esc(d.path)}" style="padding-left:${ind}px"
+      title="${esc(d.path)}&#10;右键复制路径">
       <span class="fs-row__ico">${open ? '▾' : '▸'}</span>
       <span class="fs-row__name">📁 ${esc(d.name)}</span></button>`;
     if (open) out += fsRows(d.path, depth + 1);
   });
   n.files.forEach(f => {
-    out += `<button class="fs-row" type="button" data-file="${esc(f.path)}" style="padding-left:${ind + 14}px">
+    out += `<button class="fs-row" type="button" data-file="${esc(f.path)}" style="padding-left:${ind + 14}px"
+      title="${esc(f.path)}&#10;右键复制路径">
       <span class="fs-row__ico">📄</span>
       <span class="fs-row__name">${esc(f.name)}</span>
       <span class="fs-row__meta">${fmtSize(f.size)}</span></button>`;
@@ -1506,9 +2105,7 @@ function fsRows(path, depth) {
   return out;
 }
 
-/* ---- 文件预览(只读): 后端给原始字节, 这里判编码 ---- */
-let PREV_TEXT = '';
-
+/* ---- 文件内容(只读): 后端给原始字节, 这里判编码 ---- */
 function decodeBytes(bytes) {
   if (!bytes.length) return { text: '', encoding: 'utf-8' };
   for (let i = 0; i < bytes.length && i < 8192; i++)
@@ -1517,43 +2114,6 @@ function decodeBytes(bytes) {
   catch (e) { /* 不是合法 UTF-8 */ }
   try { return { text: new TextDecoder('gb18030').decode(bytes), encoding: 'gb18030' }; }
   catch (e) { return { binary: true }; }
-}
-
-async function openPreview(path) {
-  PREV_TEXT = '';
-  const body = document.getElementById('prevBody');
-  const meta = document.getElementById('prevMeta');
-  const copy = document.getElementById('btnPrevCopy');
-  const pp = document.getElementById('prevPath');
-  if (pp) pp.textContent = path;
-  if (meta) meta.textContent = '读取中…';
-  if (body) body.textContent = '';
-  if (copy) copy.disabled = true;
-  setTab('preview');
-
-  let r = null;
-  try { r = await fetchT(withToken(api('fs/raw') + '?path=' + encodeURIComponent(path)), null, 15000); }
-  catch (e) { if (meta) meta.textContent = '读取失败：' + netReason(e); return; }
-  if (!r || !r.ok) {
-    let msg = 'HTTP ' + (r ? r.status : '?');
-    try { msg = await r.text(); } catch (e) {}
-    if (meta) meta.textContent = msg;
-    return;
-  }
-
-  const size = Number(r.headers.get('X-File-Size') || 0);
-  const bytes = new Uint8Array(await r.arrayBuffer());
-  const dec = decodeBytes(bytes);
-  if (dec.binary) {
-    if (meta) meta.textContent = '二进制文件 · ' + fmtSize(size);
-    return;
-  }
-  PREV_TEXT = dec.text;
-  if (body) body.textContent = dec.text;
-  if (copy) copy.disabled = false;
-  const truncated = size > bytes.length;
-  if (meta) meta.textContent = `${dec.encoding.toUpperCase()} · ${fmtSize(size)}`
-    + (truncated ? ' · 已截断（只显示前 1MB）' : '');
 }
 
 /* ---- 主机: 所有 agent + 各自用过的目录(不显示 node) ---- */
@@ -1610,8 +2170,9 @@ function renderHosts() {
         <span class="host-row__arrow">${open ? '▾' : '▸'}</span>
         <span class="host-row__dot${h.online ? '' : ' off'}"></span>
         <span class="host-row__name">${esc(h.agentId)}</span>
-        ${h.agentId === AG.id ? '<span class="host-row__cur">当前</span>' : ''}
       </button>
+      <button class="host-add" type="button" data-agent="${esc(h.agentId)}"
+        title="在 ${esc(h.agentId)} 上打开文件夹（新目录 = 新会话的工作目录）">＋</button>
       ${open ? h.dirs.map(d => {
         const key = h.agentId + '|' + d.path;
         const cls = (d.path === cur && h.agentId === AG.id) ? ' is-on'
@@ -1623,8 +2184,6 @@ function renderHosts() {
           <span class="dir-row__go" title="在 ${esc(h.agentId)} 上打开">→</span>
         </button>`;
       }).join('') : ''}
-      ${open && h.agentId === AG.id ? `<button class="dir-row dir-row--add" type="button" data-add="1">
-          <span class="dir-row__name">＋ 打开文件夹…</span></button>` : ''}
     </div>`;
   }).join('');
 
@@ -1650,7 +2209,10 @@ function renderHosts() {
       else location.href = '?id=' + encodeURIComponent(a) + '&dir=' + encodeURIComponent(d);
     };
   });
-  box.querySelectorAll('.dir-row--add').forEach(b => { b.onclick = openDirDlg; });
+  // 主机行右侧的 ＋：不展开也能直接打开文件夹（别的 agent 选完会跳过去）
+  box.querySelectorAll('.host-add').forEach(b => {
+    b.onclick = (ev) => { ev.stopPropagation(); openDirDlg(b.dataset.agent); };
+  });
   const sub = document.getElementById('sideSub');
   if (sub && SIDE.view === 'hosts') sub.textContent = HOSTS.list.length + ' 个 agent';
 }

@@ -53,8 +53,3 @@ target_link_libraries(test_net_compress JZFramework)
 add_executable(test_sse test_sse.cpp)
 target_link_libraries(test_sse JZFramework)
 
-# 必应搜索结果页(HTML)解析: 纯离线(内嵌样本, 无网络/无服务), 解析器在 agent_tool 库里
-# 覆盖: b_algo 分块 / <strong> 清理 / &ensp; 实体 / ck/a 的 base64url 链接还原 / 非结果块排除
-add_executable(test_search_parse test_search_parse.cpp)
-target_link_libraries(test_search_parse JZFramework agent_tool)
-add_test(NAME net.search_parse COMMAND test_search_parse)

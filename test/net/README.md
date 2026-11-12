@@ -15,7 +15,6 @@
 | `test_mqtt.cpp` | MQTT 单线程 + 多线程回环测试 |
 | `test_http.cpp` | HTTP 单线程 + 多线程回显测试（JZNetworkAccessManager） |
 | `test_netServer.cpp` | JZNetServer 高层服务测试 |
-| `test_search_parse.cpp` | 必应搜索结果页(HTML)解析测试（**纯离线**，内嵌样本，无网络/无服务） |
 | `net_test_common.h/.cpp` | 公共工具（TPS 计数、参数、退出看门狗、错误判定） |
 | **`test_tcp_bench.cpp`** | TCP/UDP 上下行吞吐压测（独立程序，配合 iperf3 对测） |
 
@@ -64,29 +63,6 @@ cmake --build build --target test_net -j4
 | JZNetServer | 高层服务端收发 | 内部指定 |
 
 每模块结束都会用 `NetTpsCounter` 统计 TPS 并与阈值（默认 200）对比，不达标视为失败。
-
----
-
-## 一·补、必应结果页解析（`test_search_parse`）
-
-`web_search` 的默认源是必应 **RSS（主）→ HTML 结果页（兜底）**。解析器坏掉的表现是
-"搜索一律无结果"，模型侧看不出来，所以单独做了离线回归：
-
-```bash
-cmake --build build --target test_search_parse --config Debug
-./build/test/bin/Debug/test_search_parse            # 内嵌样本，期望 ALL PASS
-```
-
-覆盖：`li.b_algo` 分块、标题里的 `<strong>` 清理、`&ensp;` 实体还原、
-`ck/a?...&u=a1<base64url>` 跳转链接本地解码、缺摘要条目、非结果块（`b_ans`）排除、验证页返回 false。
-
-**排障模式**：把一份真实结果页存盘再解析，用来区分"解析器坏了"还是"页面改版了"：
-
-```bash
-curl -sL -A "Mozilla/5.0 ... Chrome/126" \
-  "https://www.bing.com/search?q=%E5%86%AC%E7%93%9C&setlang=zh-CN&cc=CN" -o bing.html
-./build/test/bin/Debug/test_search_parse bing.html   # 打印解析出的条数与前 3 条
-```
 
 ---
 

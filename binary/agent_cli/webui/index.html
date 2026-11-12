@@ -7,7 +7,9 @@
 <link rel="stylesheet" href="/ui/tokens.css?v=2">
 <link rel="stylesheet" href="/ui/base.css?v=2">
 <link rel="stylesheet" href="/ui/components.css?v=2">
-<link rel="stylesheet" href="/app.css?v=46">
+<!-- 代码高亮: vendor 里是本地文件(不走 CDN, 断网也能用) -->
+<link rel="stylesheet" href="/vendor/atom-one-dark.min.css?v=1">
+<link rel="stylesheet" href="/app.css?v=53">
 </head>
 <body data-page="agent">
 <div class="ag-app" id="app">
@@ -15,7 +17,7 @@
   <nav class="ag-rail" id="rail">
     <button class="rail-btn is-on" type="button" data-view="files" title="文件">🗂</button>
     <button class="rail-btn" type="button" data-view="hosts" title="主机">🖥</button>
-    <button class="rail-btn" type="button" data-view="chats" title="会话">💬</button>
+    <button class="rail-btn" type="button" data-view="chats" title="任务">💬</button>
     <span class="rail-sp"></span>
     <button class="rail-btn" type="button" id="railTasks" title="全部任务">📋</button>
     <button class="rail-btn" type="button" id="railSettings" title="设置">⚙</button>
@@ -99,11 +101,8 @@
       <span id="connText">连接断开，正在重连…</span>
     </div>
 
-    <nav class="tabs ag-tabs" id="tabs">
-      <a class="tab is-on" href="#chat" data-tab="chat">对话</a>
-      <a class="tab" href="#log" data-tab="log">任务日志</a>
-      <a class="tab" href="#card" data-tab="card">AgentCard</a>
-    </nav>
+    <!-- 主区 tab 栏: 「对话」常驻不可关, 点左侧文件树里的文件在这里多开一个 -->
+    <nav class="tabs ag-tabs" id="tabs"></nav>
 
     <section class="pane" data-pane="chat">
       <div class="jz-chat cs-thread" id="thread"><div class="jz-empty">加载中…</div></div>
@@ -116,10 +115,13 @@
       <div class="jz-composer cs-composer">
         <div class="cs-bar">
           <span class="cs-chip hidden" id="btnVerify" title="点「设置」修改验证命令"></span>
+          <button class="jz-btn jz-btn--sm jz-btn--ghost cs-imgbtn" id="btnImg" type="button"
+            title="添加图片（也可以直接粘贴截图，或把图片拖进来）">🖼</button>
           <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnSettings" type="button">⚙ 设置</button>
           <span class="cs-bar__sp"></span>
         </div>
         <div class="jz-composer__box">
+          <div class="cs-imgs hidden" id="imgList"></div>
           <textarea id="fPrompt" class="jz-textarea cs-ta" rows="3"
             placeholder="说一下要它做什么，Enter 发送 / Shift+Enter 换行"></textarea>
           <div class="jz-composer__actions">
@@ -127,35 +129,14 @@
             <button id="btnSend" class="jz-btn jz-btn--primary jz-btn--sm" type="button">发送</button>
           </div>
         </div>
+        <input type="file" id="fImg" accept="image/*" multiple hidden>
         <div class="jz-composer__hint" id="msg"></div>
       </div>
     </section>
 
-    <section class="pane hidden" data-pane="log">
-      <div class="jz-table-wrap">
-        <table class="jz-table">
-          <thead><tr><th>时间</th><th>状态</th><th>指令</th><th>轮次</th><th>耗时</th><th>Task</th></tr></thead>
-          <tbody id="logBody"></tbody>
-        </table>
-      </div>
-      <p class="logbar__hint">只列人下发的任务；agent 之间互相派活不算一条任务。</p>
-    </section>
-
-    <section class="pane hidden" data-pane="card">
-      <div class="jz-card"><div class="jz-card__bd" id="cardBody">加载中…</div></div>
-      <h2 class="sec">节点</h2>
-      <div class="jz-table-wrap">
-        <table class="jz-table">
-          <thead><tr><th>节点</th><th>地址</th><th>状态</th><th>工作区</th></tr></thead>
-          <tbody id="nodeBody"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- 文件预览(只读): 点左侧文件树里的文件切到这里 -->
+    <!-- 文件内容(只读): 点左侧文件树里的文件, 在 tab 栏多开一个, 内容画在这里 -->
     <section class="pane hidden" data-pane="preview">
       <div class="prev-bar">
-        <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnPrevBack" type="button" title="回到对话">←</button>
         <span class="prev-bar__path" id="prevPath">-</span>
         <span class="prev-bar__meta" id="prevMeta"></span>
         <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnPrevCopy" type="button"
@@ -189,30 +170,49 @@
   </div>
 </dialog>
 
-<dialog class="jz-dialog" id="dlgDir">
+<dialog class="dirpick" id="dlgDir">
+  <div class="dpick__hd">
+    <input id="fDirPath" class="dpick__input" spellcheck="false" autocomplete="off"
+      placeholder="输入路径或名字，例如 C:/work 或 work">
+    <button class="jz-btn jz-btn--primary" id="btnDirUse" type="button">打开</button>
+  </div>
+  <div class="dpick__list" id="dirList"></div>
+</dialog>
+
+<!-- 文件树右键菜单(全局一个, 按鼠标位置摆) -->
+<div class="ctx-menu hidden" id="ctxMenu" role="menu">
+  <button type="button" data-act="new-dir" role="menuitem">新建文件夹</button>
+  <button type="button" data-act="new-file" role="menuitem">新建文件</button>
+  <span class="ctx-menu__sep" data-sep role="separator"></span>
+  <button type="button" data-act="rename" role="menuitem">重命名<span class="ctx-menu__kbd">F2</span></button>
+  <button type="button" data-act="delete" class="ctx-menu__danger" role="menuitem">删除</button>
+  <span class="ctx-menu__sep" role="separator"></span>
+  <button type="button" data-act="copy" role="menuitem">复制路径</button>
+  <button type="button" data-act="copy-rel" role="menuitem">复制相对路径</button>
+  <button type="button" data-act="copy-name" role="menuitem">复制名称</button>
+</div>
+
+<!-- 新建文件夹 / 新建文件: 一个输入框, 两种 kind -->
+<dialog class="jz-dialog" id="dlgNew">
   <div class="jz-dialog__hd">
-    <h2 class="jz-dialog__title">工作目录</h2>
-    <button class="jz-dialog__x" id="btnDirClose" type="button" aria-label="关闭">×</button>
+    <h2 class="jz-dialog__title" id="dlgNewTitle">新建文件夹</h2>
+    <button class="jz-dialog__x" id="btnNewClose" type="button" aria-label="关闭">×</button>
   </div>
   <div class="jz-dialog__bd">
-    <div class="dir-bar">
-      <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnDirUp" type="button" title="上一级">↑</button>
-      <input id="fDirPath" class="jz-input" placeholder="C:/work/项目（回车打开）" spellcheck="false">
-      <button class="jz-btn jz-btn--sm" id="btnDirGo" type="button">打开</button>
+    <div class="jz-field">
+      <label for="fNewName" id="lblNewName">名字</label>
+      <input id="fNewName" class="jz-input" spellcheck="false" autocomplete="off">
     </div>
-    <div class="dir-roots" id="dirRoots"></div>
-    <div class="dir-quick" id="dirQuick"></div>
-    <input id="fDirFilter" class="jz-input dir-filter" placeholder="过滤当前目录（输入名字）" spellcheck="false">
-    <div class="dir-list" id="dirList"></div>
-    <div class="cs-note dir-cur" id="dirNote">当前：-</div>
+    <p class="cs-note" id="newNote"></p>
   </div>
   <div class="jz-dialog__ft">
-    <button class="jz-btn jz-btn--ghost" id="btnDirCancel" type="button">取消</button>
-    <button class="jz-btn jz-btn--primary" id="btnDirUse" type="button">打开此文件夹</button>
+    <button class="jz-btn" id="btnNewCancel" type="button">取消</button>
+    <button class="jz-btn jz-btn--primary" id="btnNewOk" type="button">创建</button>
   </div>
 </dialog>
 
 <script src="/ui/jz-ui.js?v=2"></script>
-<script src="/app.js?v=46"></script>
+<script src="/vendor/highlight.min.js?v=1"></script>
+<script src="/app.js?v=74"></script>
 </body>
 </html>

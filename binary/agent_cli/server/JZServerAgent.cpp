@@ -300,10 +300,10 @@ bool JZServerAgent::setRootDir(const string &dir, string &error)
     }
 
     // 终端/工具宿主/系统提示都绑在旧目录上, 拆掉重建
-    if (m_terminal)
+    if (m_termPool)
     {
-        m_terminal->deleteLater();
-        m_terminal = nullptr;
+        delete m_termPool;
+        m_termPool = nullptr;
     }
     if (m_agent)
     {
@@ -371,12 +371,11 @@ bool JZServerAgent::build(string &error)
     connect(&m_agent->sigError, this, &JZServerAgent::onError);
     connect(&m_agent->sigFinished, this, &JZServerAgent::onFinished);
 
-    // 本机执行面
-    m_terminal = new JZVirtualTerminal(this);
-    m_terminal->setId("server");
-    m_terminal->setTerminalConfig(m_toolHost->toolTerminalConfig());
-    m_agent->addTool(new JZTerminalRunTool(m_terminal));
-    m_agent->addTool(new JZTerminalCancelTool(m_terminal));
+    // 本机执行面(池: 每次 terminal_run 借一台, 并发调用各占一台)
+    m_termPool = new JZTerminalPool(8);
+    m_termPool->setConfig(m_toolHost->toolTerminalConfig());
+    m_agent->addTool(new JZTerminalRunTool(m_termPool));
+    m_agent->addTool(new JZTerminalCancelTool(m_termPool));
     auto *readFile = new JZReadFileTool();
     readFile->setHost(m_toolHost.get());
     m_agent->addTool(readFile);
@@ -451,8 +450,8 @@ void JZServerAgent::cancel()
     if (!m_agent || !m_busy)
         return;
     m_cancelled = true;
-    if (m_terminal)
-        m_terminal->cancel();   // stop() 只停止 Agent 等待, 在跑的那条命令要显式收尾
+    if (m_termPool)
+        m_termPool->cancelAll();   // stop() 只停止 Agent 等待, 在跑的命令要显式收尾
     m_agent->stop();
 }
 

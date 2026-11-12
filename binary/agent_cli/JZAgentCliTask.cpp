@@ -161,7 +161,7 @@ static std::string logTextLine(const char *tag, const std::string &text)
 
 #include "JZTimer.h"          // 重试前的延时(JZTimer::singleShot)
 
-#include "JZTerminalTools.h"  // 本地终端工具(JZTerminalRunTool 等)
+#include "JZTerminalTools.h"  // 本地终端工具(JZTerminalRunTool 等; 池定义在 JZVirtualTerminal.h)
 #include "JZMcpClient.h"      // MCP 客户端(连外部 MCP 服务器, 把远端工具挂进本 agent)
 
 #include <iostream>
@@ -238,6 +238,9 @@ JZAgentCliTask::JZAgentCliTask(JZAgentCli *cli, JZObject *parent)
 
 JZAgentCliTask::~JZAgentCliTask()
 {
+    // 工具(m_agent 名下)先销毁, 再收池 —— 工具里存的是池指针
+    delete m_termPool;
+    m_termPool = nullptr;
 }
 
 bool JZAgentCliTask::init(const JZCliConfig &config, std::string &error)
@@ -317,9 +320,9 @@ Json::Value JZAgentCliTask::stateJson() const
 void JZAgentCliTask::endLoop()
 {
     killVerify();
-    if (m_terminal)
+    if (m_termPool)
     {
-        int killed = m_terminal->cancel() ? 1 : 0;
+        int killed = m_termPool->cancelAll();     // 并发时可能停掉多条
         if (killed > 0)
         {
             Json::Value e;
@@ -469,9 +472,11 @@ void JZAgentCliTask::onToolResult(const ToolCallResult &result)
 //   sigError, 所以 onError 里读到的就是本次错误的分类。
 // ---------------------------------------------------------------------------
 
-// "HTTP 402 错误: ..." -> 1=瞬时(原样重发有意义) / 2=可修复(原样重发必然再失败)。
-// 408/409/425/429 是超时/冲突/限流, 归瞬时; 其余 4xx 是"我们发出去的东西有问题"
-// (400 参数或工具调用 JSON 不合法、413/422 等), 归可修复: 把原因丢回模型让它改一版。
+// "HTTP 402 错误: ..." -> 1=瞬时(原样重发有意义) / 2=可修复(让模型换一版) / 3=不重试。
+// 408/409/425/429 是超时/冲突/限流, 归瞬时; **其余 4xx 一律不重试**:
+// 请求本身有问题(模型不支持多模态/模型名写错/欠费/key 失效/参数不合法), 原样重发必然
+// 同样的错。以前把 4xx 归"可修复"让模型改一版, 结果"400 not a multimodal model"这种
+// 配置问题白重试 4 次 —— 用关键字表去猜哪些能救又太脆, 不如统一不重试, 把原文抛给用户。
 // 没有状态码(连接失败/超时等)按瞬时处理。
 static int httpErrorMode(const std::string &err)
 {
@@ -483,7 +488,7 @@ static int httpErrorMode(const std::string &err)
         return 1;
     if (code >= 500 || code == 408 || code == 409 || code == 425 || code == 429)
         return 1;
-    return (code < 400) ? 1 : 2;
+    return (code < 400) ? 1 : 3;
 }
 
 
@@ -977,11 +982,11 @@ void JZAgentCliTask::onVerifyDone(int exitCode, const std::string& out)
 
 void JZAgentCliTask::setupAgent()
 {
-    m_terminal = new JZVirtualTerminal(this);
-    m_terminal->setId("default");
-    m_terminal->setTerminalConfig(m_host.toolTerminalConfig());
+    // 终端池: 一条任务一个池, 池里每台终端一次跑一条命令 —— 并发就多发几台
+    m_termPool = new JZTerminalPool(8);
+    m_termPool->setConfig(m_host.toolTerminalConfig());
     if (m_config.recycleSec > 0)
-        m_terminal->setRecycleMs(m_config.recycleSec * 1000);
+        m_termPool->setRecycleMs(m_config.recycleSec * 1000);
 
     auto addTool = [this](JZCodeTool *tool)
     {
@@ -993,15 +998,14 @@ void JZAgentCliTask::setupAgent()
     if (m_config.allowTerminal)
     {
         // 终端是这台机器上唯一的执行面: ls/cat/mkdir/rm/cp/mv/grep 都是 shell 命令,
-        // 由 terminal_run 覆盖; 这里只挂终端会话管理。
+        // 由 terminal_run 覆盖。
         //   ⚠ 不再注册 `command`（JZShellTool，Windows 上是 cmd /c）：它和 terminal_run 是
         //   两套 shell 规则（cmd 认 dir/echo 却不认 bash 语法、也不认 tsc/code_runtime 短名）,
         //   模型在里面敲 `tsc` 只会得到 "'tsc' 不是内部或外部命令"。执行面统一收敛到 terminal_run。
-        addTool(new JZTerminalRunTool(m_terminal));
-        addTool(new JZTerminalCancelTool(m_terminal));
-        addTool(new JZTerminalOpenTool(m_terminal));
-        addTool(new JZTerminalListTool(m_terminal));
-        addTool(new JZTerminalCloseTool(m_terminal));
+        //   ⚠ 也不再注册 terminal_open/list/close：执行是无状态的(只有 cwd 跨命令保留),
+        //   没有会话要开/查/关, 那两个工具只是让模型多绕一步。
+        addTool(new JZTerminalRunTool(m_termPool));
+        addTool(new JZTerminalCancelTool(m_termPool));
     }
 
     if (m_config.allowFileTools)
@@ -1092,7 +1096,6 @@ string JZAgentCliTask::buildSystemPrompt() const
     {
         text += "  terminal_run    执行一条 shell 命令(整条交给 shell, 一次一条; 细则见下面的 Shell notes)。\n";
         text += "  terminal_cancel 停掉当前正在跑的那条命令(不需要参数)。\n";
-        text += jzTerminalSessionNotes(false);
     }
     if (m_config.allowFileTools)
     {
@@ -1672,7 +1675,12 @@ JZAgentCliTask::RetryMode JZAgentCliTask::classifyError(JZAgent::AgentError code
         case JZAgent::ToolCallError:
             return RetryTransient;
         case JZAgent::HttpError:
-            return (httpErrorMode(err) == 2) ? RetryFix : RetryTransient;
+        {
+            int mode = httpErrorMode(err);
+            if (mode == 3)
+                return RetryNone;          // 4xx: 请求本身有问题, 重试只会重复同一条错误
+            return (mode == 2) ? RetryFix : RetryTransient;
+        }
         case JZAgent::MaxRoundError:
             // 轮次用尽只是"这一轮预算跑完": llmEnd() 已把轮次计数清零, 发条"继续"就能接着干
             // (总量仍受重试次数约束, 不会无限跑)。

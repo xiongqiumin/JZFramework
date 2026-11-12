@@ -83,6 +83,8 @@ JZCodeAgent::~JZCodeAgent()
     abortTools();
     if (m_tsServer)
         m_tsServer->shutdown();
+    delete m_termPool;      // 工具(在 m_tools 里)已随对象销毁, 这里只管池
+    m_termPool = nullptr;
 }
 
 void JZCodeAgent::init(const CodeAgentConfig &code)
@@ -1434,9 +1436,9 @@ void JZCodeAgent::applyZoneConfig()
 
     // 终端是真正的执行面, 区域与策略同样要同步过去：
     // 重定向目标和 edit_file 的越界判定都靠它。
-    // setTerminalConfig() 会把已有会话的 cwd 拉回工作区根 —— 换工作区时正好需要。
-    if (m_terminal)
-        m_terminal->setTerminalConfig(m_toolHost.toolTerminalConfig());
+    // 池里新建的终端都用这份配置; 已建好的下次借用时按新配置的 cwd 走。
+    if (m_termPool)
+        m_termPool->setConfig(m_toolHost.toolTerminalConfig());
 }
 
 void JZCodeAgent::buildAgent()
@@ -1491,17 +1493,16 @@ void JZCodeAgent::buildAgent()
     // 不再各做一个工具(两套做法只会让模型不知道该用哪个)。
     // 专门的文件工具只留三个: read_file(带行号/分段读, 避免大文件灌上下文)、
     // write_file(整文件覆盖)、modify_file(局部替换, sed 不校验唯一匹配, 且回上下文片段)。
-    if (!m_terminal)
+    if (!m_termPool)
     {
-        m_terminal = new JZVirtualTerminal(this);
-        m_terminal->setId("default");   // 单用户终端的会话 id(供 terminal_open/list 展示)
+        // 池: 每次 terminal_run 借一台、跑完归还 —— 并发调用各占一台
+        m_termPool = new JZTerminalPool(8);
+        m_termPool->setConfig(m_toolHost.toolTerminalConfig());
     }
-    addTool(new JZTerminalRunTool(m_terminal));
+    addTool(new JZTerminalRunTool(m_termPool));
 
-    addTool(new JZTerminalCancelTool(m_terminal));
-    addTool(new JZTerminalOpenTool(m_terminal));
-    addTool(new JZTerminalListTool(m_terminal));
-    addTool(new JZTerminalCloseTool(m_terminal));
+    addTool(new JZTerminalCancelTool(m_termPool));
+    // terminal_open/list/close 已删除: 执行无状态, 没有会话要管
     addTool(new JZReadFileTool());
     addTool(new JZWriteFileTool());
     addTool(new JZModifyFileTool());
@@ -1642,10 +1643,9 @@ std::string JZCodeAgent::buildSystemPrompt() const
     text << "代码风格class优先, 使用面向对象的风格进行编码\n";
     // 运行时边界(不是 Node: 没有 require / 裸名只能默认导入 / 句柄与退出语义见 jzTsRuntimeNotes)
     text << "\n" << jzTsRuntimeNotes();
-    // 终端语义(语法/前台/后台/超时/会话)与 agent_cli、remote_ssh 共用同一份,
-    // 否则这里注册了 terminal_open/close 却没告诉模型怎么用(它会拿很久的 timeout 前台干等)。
+    // 终端语义(语法/前台/后台/超时/无状态)与 agent_cli、remote_ssh 共用同一份,
+    // 别在这里另写一套 —— 那是之前漂移的根源。
     text << "\n" << jzTerminalRunNotes();
-    text << "\n" << jzTerminalSessionNotes(false);
 
     return text.str();
 }

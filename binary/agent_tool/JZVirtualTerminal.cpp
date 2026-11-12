@@ -605,7 +605,8 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
     // (报错里仍是原文 —— 那是用户写的那条)
     JZVirtualTerminal *self = this;
     int cmdTimeout = timeoutMs;
-    runOnThread(m_thread, [self, execCommand, cmdTimeout]()
+    const string cwd0 = m_cwd;      // 这一条的起点(在终端线程上读, 带给执行线程)
+    runOnThread(m_thread, [self, execCommand, cmdTimeout, cwd0]()
                 {
                     // ======== 这一段在终端自己的执行线程上(只有它能碰 m_shellImpl) ========
                     JZShell *sh = self->m_shellImpl;
@@ -629,6 +630,12 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
                         return;
                     }
 
+                    // ======== 无状态执行 ========
+                    // 每条命令都从基线重新开始: export / 变量 / 函数 / alias / pushd 栈一律不带过来,
+                    // cwd 用**宿主给的起点**(终端配置的工作区根 / link 请求里显式带的目录) ——
+                    // 上一条命令里的 `cd` 不回写, 所以下一条不会莫名停在上一条去过的地方。
+                    // 那种"模型看不见又一直留着"的状态是持久 shell 最容易踩的坑。
+                    sh->resetState(cwd0);
                     sh->setCommandTimeoutMs(cmdTimeout);
                     JZShell::Result r = sh->exec(execCommand);
                     const string cwd = sh->cwd();
@@ -790,9 +797,10 @@ void JZVirtualTerminal::finishRun(int exitCode, const string &out,
     else if (exitCode != 0)
         reason = "退出码 " + std::to_string(exitCode);
 
-    // 解释器是 cwd 的唯一真相: 每次收尾镜像回来(审核/展示都用它)
-    if (!cwd.empty())
-        m_cwd = cwd;
+    // ⚠ 不把解释器的 cwd 镜像回 m_cwd: 执行是无状态的, 命令里的 `cd` 只对这一条有效。
+    //   回写就等于"跨命令保留了一个模型看不见的状态"—— 上一条 cd 到哪, 下一条就从哪开始。
+    //   m_cwd 只由宿主设置(终端配置的工作区根 / link 请求里显式带的 cwd), 命令改不了它。
+    (void)cwd;
 
     m_tasks.clear();
     touch();
@@ -800,5 +808,116 @@ void JZVirtualTerminal::finishRun(int exitCode, const string &out,
     if (!finished)
         return;
     finished(reason.empty(), text, reason);
+}
+
+// ==========================================================================
+// JZTerminalPool —— 见 JZVirtualTerminal.h 类头
+// ==========================================================================
+
+JZTerminalPool::JZTerminalPool(int maxLive)
+    : m_maxLive(maxLive)
+{
+}
+
+JZTerminalPool::~JZTerminalPool()
+{
+    std::lock_guard<std::mutex> lk(m_mu);
+    for (JZVirtualTerminal *t : m_idle)
+        delete t;
+    m_idle.clear();
+    // 借出去的不动: 那边还有回调在等它收尾, 析构顺序由调用方保证
+    m_busy.clear();
+}
+
+void JZTerminalPool::setConfig(const JZVirtualTerminalConfig &cfg)
+{
+    std::lock_guard<std::mutex> lk(m_mu);
+    m_cfg = cfg;
+}
+
+int JZTerminalPool::liveCount()
+{
+    std::lock_guard<std::mutex> lk(m_mu);
+    return m_live;
+}
+
+JZVirtualTerminal *JZTerminalPool::acquire(const string &cwd, string &error)
+{
+    std::lock_guard<std::mutex> lk(m_mu);
+
+    // 1) 有空闲的先用 —— 复用比新建便宜(省一次线程 + 解释器)
+    while (!m_idle.empty())
+    {
+        JZVirtualTerminal *t = m_idle.back();
+        m_idle.pop_back();
+        string err;
+        if (cwd.empty() || t->changeDir(cwd, err))
+        {
+            m_busy.push_back(t);
+            return t;
+        }
+        // 这台去不了目标目录(目录被删/越界), 销毁它继续找下一台
+        --m_live;
+        delete t;
+    }
+
+    // 2) 到上限就拒绝(不排队)
+    if (m_maxLive > 0 && m_live >= m_maxLive)
+    {
+        error = "并发上限 " + std::to_string(m_maxLive) +
+                " 已满: 等前面的命令结束再来(长任务建议串行跑)";
+        return nullptr;
+    }
+
+    // 3) 新建
+    JZVirtualTerminal *t = new JZVirtualTerminal();
+    t->setTerminalConfig(m_cfg);
+    if (m_recycleMs > 0)
+        t->setRecycleMs(m_recycleMs);
+    if (!t->changeDir(cwd, error))
+    {
+        delete t;
+        return nullptr;
+    }
+    ++m_live;
+    m_busy.push_back(t);
+    return t;
+}
+
+void JZTerminalPool::release(JZVirtualTerminal *term)
+{
+    if (!term)
+        return;
+
+    std::lock_guard<std::mutex> lk(m_mu);
+    auto it = std::find(m_busy.begin(), m_busy.end(), term);
+    if (it != m_busy.end())
+        m_busy.erase(it);
+
+    // 空闲留太多没意义(每台占一个线程), 超出 keepIdle 的直接回收
+    if (m_keepIdle >= 0 && (int)m_idle.size() >= m_keepIdle)
+    {
+        --m_live;
+        delete term;
+        return;
+    }
+    m_idle.push_back(term);
+}
+
+int JZTerminalPool::cancelAll()
+{
+    // 先拷一份再出锁调 cancel: cancel 会碰终端自己的状态, 不占池子的锁
+    std::vector<JZVirtualTerminal *> targets;
+    {
+        std::lock_guard<std::mutex> lk(m_mu);
+        targets = m_busy;
+    }
+    int n = 0;
+    for (JZVirtualTerminal *t : targets)
+    {
+        if (t && t->cancel())
+            ++n;
+    }
+    return n;
 }
 

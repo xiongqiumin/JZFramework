@@ -160,6 +160,12 @@ public:
     void onApiFs(JZHttpServerClient *client, const JZHttpRequest &req);
     // 文件内容(原始字节, 不解码): 前端自己 TextDecoder 判 UTF-8 / GB18030
     void onApiFsRaw(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 在工作区内新建目录/空文件(文件树的写入口, 边界 = root 之内)
+    void onApiFsCreate(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 重命名(只改名, 不移动目录)
+    void onApiFsRename(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 删除(目录递归)
+    void onApiFsDelete(JZHttpServerClient *client, const JZHttpRequest &req);
     // 主机视图: 每个 agent + 它用过的目录(从任务记录聚合, 很轻)
     void onApiProjects(JZHttpServerClient *client, const JZHttpRequest &req);
     // 从"曾经连过"的列表里删掉一台(默认保留它的任务记录, withTasks=1 连记录一起删)
@@ -304,7 +310,9 @@ private:
     void finishTaskStreams(const std::string &taskId);
     TaskRecord *findTask(const std::string &taskId);
     // evLimit > 0: 只给最后一页(起点对齐 user_msg); <= 0: 全量(落盘/内部用)
-    Json::Value taskJson(const TaskRecord &r, int evLimit = 200) const;
+    // 1000 而不是 200: 200 条事件在长任务里三四十个块就到了, "加载更多"动不动就冒出来,
+    // 用户以为是没显示全。绝大多数任务 1000 条一次到底; 真超了还有 /api/tasks/events 往前翻。
+    Json::Value taskJson(const TaskRecord &r, int evLimit = 1000) const;
     // ---- 会话上下文存档: 一个 contextId 一个文件, 只留最新一份 ----
     // 为什么不塞进任务记录: 同一会话链第 N 条再把前 N 轮存一遍 → tasks.jsonl 涨成 O(n²);
     // 而且续聊只需要"这条会话当前的状态", 不需要任意回溯某条历史任务。

@@ -15,6 +15,7 @@
 
 class JZAgentTool;
 class JZVirtualTerminal;
+class JZTerminalPool;
 class JZNetworkAccessManager;
 class JZHttpServerClient;
 class JZProcess;
@@ -243,7 +244,6 @@ public:
     void markIdle(int64_t nowMs) { m_idleSinceMs = nowMs; }
     void markBusy() { m_idleSinceMs = 0; }
     JZAgent *agent() const { return m_agent; }
-    JZVirtualTerminal *terminal() const { return m_terminal; }
 
     // 当前状态快照(SSE 新连接时推过去)
     Json::Value stateJson() const;
@@ -307,7 +307,8 @@ protected:
     JZCliConfig m_config;             // 进程配置的副本, 任务自足
     JZCliToolHost m_host;
     JZAgent *m_agent = nullptr;
-    JZVirtualTerminal *m_terminal = nullptr;
+    // 终端池: 每次 terminal_run 借一台、跑完归还, 并发调用各占一台
+    JZTerminalPool *m_termPool = nullptr;
     JZNetworkAccessManager *m_netMan = nullptr;
     std::vector<JZAgentTool *> m_tools;
     JZMemoryTool *m_memory = nullptr;

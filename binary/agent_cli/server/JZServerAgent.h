@@ -25,6 +25,7 @@
 
 class JZAgent;
 class JZVirtualTerminal;
+class JZTerminalPool;
 class JZAgentCliServer;
 class JZServerAgentToolHost;
 
@@ -99,7 +100,7 @@ private:
     JZServerAgentConfig m_cfg;
     JZAgentCliServer *m_srv = nullptr;
     JZAgent *m_agent = nullptr;
-    JZVirtualTerminal *m_terminal = nullptr;
+    JZTerminalPool *m_termPool = nullptr;   // 终端池: 并发调用各占一台
     std::unique_ptr<JZServerAgentToolHost> m_toolHost;
 
     bool m_busy = false;

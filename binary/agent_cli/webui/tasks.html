@@ -3,25 +3,24 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Task · JZAgent 管理台</title>
+<title>Task · JZAgent 控制台</title>
 <link rel="stylesheet" href="/ui/tokens.css?v=2">
 <link rel="stylesheet" href="/ui/base.css?v=2">
 <link rel="stylesheet" href="/ui/components.css?v=2">
-<link rel="stylesheet" href="/app.css?v=5">
+<link rel="stylesheet" href="/app.css?v=46">
 </head>
 <body data-page="tasks">
 <header class="jz-topbar">
   <div class="jz-brand">
     <span class="jz-brand__logo">JZ</span>
     <div>
-      <div class="jz-brand__title">Task</div>
+      <div class="jz-brand__title">Task 记录</div>
       <div class="jz-brand__sub" id="meta">加载中…</div>
     </div>
   </div>
   <nav class="jz-tools" id="nav">
-    <a class="jz-btn jz-btn--sm" href="./" data-nav="agents">Agent</a>
-    <a class="jz-btn jz-btn--sm" href="tasks" data-nav="tasks">Task</a>
-    <a class="jz-btn jz-btn--sm jz-btn--primary" href="new" data-nav="new">下发指令</a>
+    <a class="jz-btn jz-btn--sm" href="./" title="回到对话页">对话</a>
+    <button class="jz-btn jz-btn--sm" id="btnReload" type="button">刷新</button>
   </nav>
 </header>
 
@@ -30,6 +29,10 @@
     <div class="jz-field" style="flex:0 0 160px">
       <label for="fAgent">agent</label>
       <select id="fAgent" class="jz-input"><option value="">全部</option></select>
+    </div>
+    <div class="jz-field" style="flex:0 0 160px">
+      <label for="fProject">project</label>
+      <select id="fProject" class="jz-input"><option value="">全部</option></select>
     </div>
     <div class="jz-field" style="flex:0 0 190px">
       <label for="fState">state（A2A TaskState）</label>
@@ -51,14 +54,16 @@
       <label for="fLimit">条数</label>
       <input id="fLimit" class="jz-input" type="number" value="50" min="1" max="500">
     </div>
-    <button id="btnReload" class="jz-btn">刷新</button>
+    <label class="jz-row" style="gap:6px;font-size:var(--jz-fs-2);padding-bottom:8px">
+      <input id="fAllOrigin" type="checkbox"> 含 agent 内部任务
+    </label>
     <span class="logbar__hint" id="hint"></span>
   </div>
 
   <div class="jz-table-wrap">
     <table class="jz-table">
       <thead><tr>
-        <th>Task</th><th>agent</th><th>状态</th><th>最近事件</th><th>耗时</th><th>提交时间</th><th>指令</th>
+        <th>Task</th><th>agent</th><th>状态</th><th>最近事件</th><th>耗时</th><th>提交时间</th><th>指令</th><th>操作</th>
       </tr></thead>
       <tbody id="listBody"></tbody>
     </table>
@@ -66,7 +71,7 @@
 
   <section id="detail" class="hidden">
     <h2 class="sec">Task 详情（GetTask / SubscribeToTask）
-      <button id="btnClose" class="jz-btn jz-btn--sm jz-btn--ghost">关闭</button></h2>
+      <button id="btnClose" class="jz-btn jz-btn--sm jz-btn--ghost" type="button">关闭</button></h2>
     <div id="detailHead"></div>
     <div class="jz-row" id="detailActs" style="flex-wrap:wrap"></div>
     <div class="detail-cols">
@@ -87,6 +92,6 @@
 </div>
 
 <script src="/ui/jz-ui.js?v=2"></script>
-<script src="/app.js?v=5"></script>
+<script src="/app.js?v=46"></script>
 </body>
 </html>

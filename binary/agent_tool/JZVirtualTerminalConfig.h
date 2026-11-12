@@ -21,10 +21,19 @@
 //   ⚠ Windows 上模型给的是 Git Bash 风格路径(`/tmp/x`、`/c/...`、`/dev/null`): 判定前先翻成
 //     真实 Windows 路径(zoneCheckPath), 否则 `/tmp/x` 会被当成"区域外"拒掉。
 //
-// 整档切换另有 AccessLevel(见下): 除了上面这套"按区域分档", 还有一档
-//   Unrestricted = 全部不检查(什么都放行)。
+// 上面这套是"默认档(standard)"的取值。另有 strict / loose 两档, 见下面的
+// PermissionProfile: 档位只是预设, applyProfile() 展开成上面这些字段。
+// 三档共同的**安全底线**(提权 / 改账号 / 改系统设置 / 关机 / 格式化 / 删工作区外)
+// 与档位无关, 永远生效。
 //
-// ⚠ 这不是安全边界(白名单里有 g++ 就等于能执行任意代码), 它管的是副作用收敛
+// 命令策略 = **黑名单口径**(2026-11-12 按用户要求从白名单放宽):
+//   默认允许(表里没登记的程序也允许, 见 allowUnknownPrograms), 只拦两类:
+//     ① 特别危险: 关机 / 格式化 / 提权 / 删工作区外的文件(dd / mkfs / sudo / shutdown ...)
+//     ② 改变环境: 安装/升级/卸载依赖(npm install / pip install / apt ...)与改系统设置的
+//        命令(reg / netsh / sc ...)
+//   "能不能跑"由 shell 的 PATH 决定; 这里只管"该不该跑"。
+//
+// ⚠ 这不是安全边界(能跑的程序就等于能执行任意代码), 它管的是副作用收敛
 //   与防误操作; 真正的边界只能是沙箱/容器。
 // ---------------------------------------------------------------------------
 
@@ -63,29 +72,42 @@ enum Flags
 };
 }
 
-// 权限等级(整档切换)
-enum class AccessLevel
+// ---------------------------------------------------------------------------
+// 权限档位(三个预设)
+//
+// 档位只是**预设值**: applyProfile() 把下面那组字段填一遍, 判定层(checkExec /
+// zoneCheckAccess / checkCriticalFloor)永远只看字段, 不看档位 —— 所以加档位/改档位
+// 只动 applyProfile 一张表, 不必改判定逻辑。
+//
+//   严格 strict   : 只跑登记过的命令(白名单口径) + 区外只读 + 禁联网 + 禁装依赖
+//   默认 standard : 未登记命令放行(黑名单口径) + 区外只读 + 允许联网 + 禁装依赖
+//   宽松 loose    : 默认 + 允许装/卸依赖(授信目录也可写)
+//
+// 三档共同的"安全底线"(与档位无关, 没有开关): 提权 / 改账号 / 改系统设置 /
+// 关机 / 分区格式化 / 往块设备写 / 删除工作区外的文件 —— 见
+// JZShellPolicy::checkCriticalFloor。
+// ---------------------------------------------------------------------------
+enum class PermissionProfile
 {
-    // 按区域分档(默认, 推荐): 就是上面那张表, 由下面的
-    // workspaceAccess / trustedAccess / outsideAccess 决定每档给哪些位。
-    Standard = 0,
-
-    // 全部不检查: 目录边界、读 / 写 / 执行、程序白名单、危险命令(dd / sudo / shutdown ...)、
-    // 包管理与联网开关 —— 一律放行, 命令原样交给 shell 跑。
-    // ⚠ 语义是"我信任这个终端里跑的一切"(本机单人开发、一次性脚本), 它**不是**安全边界:
-    //    开着它就别把终端暴露给不受信任的输入(远端 agent_node 尤其)。
-    Unrestricted,
+    Strict = 0,
+    Standard,
+    Loose,
 };
+
+// "strict" / "standard" / "loose"(web / 配置 / 日志共用一份文案)
+const char *permissionProfileText(PermissionProfile p);
+bool permissionProfileFromText(const std::string &text, PermissionProfile &out);
 
 struct JZVirtualTerminalConfig
 {
-    // ---- 权限等级 ----
-    // Standard     = 按区域分档
-    // Unrestricted = 全部不检查(见 AccessLevel 的注释)
-    AccessLevel level = AccessLevel::Standard;
-    bool unrestricted() const { return level == AccessLevel::Unrestricted; }
+    // ---- 权限档位 ----
+    // ⚠ 只用于 applyProfile() 填默认值; 想在某一档上单独放开/收紧某项, 直接改下面
+    //   对应的字段即可(applyProfile 之后再赋值), 判定层读的永远是字段。
+    PermissionProfile profile = PermissionProfile::Standard;
+    void applyProfile(PermissionProfile p);
 
     // ---- 文件访问: 按区域分档(位组合 FileAccess::*) ----
+    // ⚠ 下面这些字段才是判定依据, 默认值 = PermissionProfile::Standard 展开的结果。
     int workspaceAccess = FileAccess::All;                  // 工作区: 读 + 写 + 执行
     int trustedAccess   = FileAccess::Read | FileAccess::Exec;  // 授信目录: 默认只读可执行
     // 区外: 只读(编译要读系统头/库)。
@@ -93,8 +115,12 @@ struct JZVirtualTerminalConfig
     int outsideAccess   = FileAccess::Read;
 
     // ---- 命令策略 ----
-    bool allowPackageManager = false;   // 默认关: 不要装/升依赖
-    bool allowNetwork = false;          // 默认关: 不要下载
+    // 未登记的程序默认放行(黑名单口径): `ipconfig` / `uptime` / `netstat` / `cmake` 这类
+    // 没有登记在默认表里的命令不再被"程序不在白名单里"拦掉。
+    // 关掉它 = 回到旧的白名单口径(只有表里登记过的程序能跑)。
+    bool allowUnknownPrograms = true;
+    bool allowPackageManager = false;   // 默认关: 安装/升级/卸载依赖一律拒绝(程序本身可用)
+    bool allowNetwork = true;           // 默认开: 下载/联网本身不改环境, 放行
     // ⚠ 危险指令(dd / mkfs / sudo / shutdown ...)与改系统设置的命令(SystemAdmin)
     //   一律拒绝, 不提供开关。
 
@@ -120,7 +146,6 @@ struct JZVirtualTerminalConfig
     ZoneConfig zone;
 
     // 某个绝对路径适用哪些权限。授信目录按 TrustedDir.writable 单独加写权限。
-    // ⚠ level == Unrestricted 时一律返回 FileAccess::All(全部不检查)
     int accessOfPath(const std::string &absPath) const;
     int accessOfZone(Zone z, const std::string &absPath) const;
 };
@@ -141,7 +166,8 @@ const char *zoneText(Zone zone);
 //   /etc /var    -> <GitRoot>/etc | <GitRoot>/var
 //   /home[/<u>]  -> <GitRoot>/home...  ⚠ 实测**不是** C:\Users; 只有 `~` 才走 %USERPROFILE%
 //   /tmp[/...]   -> 系统临时目录(TEMP/TMP/TMPDIR, 见 zoneTempDirs) = %TEMP%
-//   /c/...、/cygdrive/c/... -> C:/...
+//   /c[/...]     -> C:/...(裸 `/c` 就是 C:\ 根; **不认** /cygdrive/c ——
+//                   Git Bash(MSYS2) 没有这个挂载点, 实测 `cd /cygdrive/c` 报错)
 //   /dev/*、/proc/* -> MSYS 虚拟设备/纯内存伪文件系统(硬盘上不存在) ⇒ 不翻, 报错时给提示
 // 翻不出来(如找不到 GitRoot)就原样返回 —— 宁可不翻, 也别编一个不存在的路径。
 // ---------------------------------------------------------------------------
@@ -169,7 +195,6 @@ bool zoneResolvePath(const ZoneConfig &cfg, const std::string &cwd, const std::s
                      std::string &absPath, Zone &zone, std::string &error, bool strict = true);
 
 // 统一权限判定: need 是 FileAccess 的位组合, 缺哪一位就报错(并返回该区域的权限说明)。
-// ⚠ cfg.level == Unrestricted 时直接放行(全部不检查)
 bool zoneCheckAccess(const JZVirtualTerminalConfig &cfg, const std::string &absPath,
                      int need, std::string &error);
 
@@ -199,14 +224,15 @@ enum class DenyReason
 // 拒绝原因的中文说明（用于日志与提示）
 const char *denyReasonText(DenyReason reason);
 
-// 外部程序白名单的分档。定位是"副作用管控", 不是安全边界。
+// 外部程序的分档。定位是"副作用管控", 不是安全边界。
+// ⚠ 表只是**黑名单的登记簿**: 没登记的程序按 allowUnknownPrograms 放行。
 enum class CmdCategory
 {
     Tool = 0,           // 编译/构建/测试：默认允许
     Shell,              // 基础 shell / coreutils：默认允许
-    PackageManager,     // pip/npm/conda 等：默认拒绝，设置里可开
-    Network,            // curl/wget 等：默认拒绝，设置里可开
-    SystemAdmin,        // reg/sc/net/setx 等：永不放行
+    PackageManager,     // pip/npm/apt 等：程序可用，但命中 denyVerbs(安装/卸载)时拒绝
+    Network,            // curl/wget 等：默认允许(下载不改环境)
+    SystemAdmin,        // reg/netsh/sc/setx 等：永不放行
     Dangerous           // dd/mkfs/sudo/shutdown/chown 等：永不放行
 };
 
@@ -217,6 +243,10 @@ struct ProgramSpec
     CmdCategory category = CmdCategory::Tool;
     std::vector<std::string> denyFlags;     // 禁止出现的参数（前缀匹配）
     std::vector<std::string> denyModules;   // 配合 -m：挡掉 python -m pip 这类
+    // 只在**子命令命中**时才拒绝(如 npm 的 install/uninstall), 用于"程序本身要能用、
+    // 但它的安装/卸载用法必须拦住"这一类: `npm run build` 放行, `npm install` 拒绝。
+    // 空 = 整个程序一律拒绝(apt / brew / winget 这种几乎只做安装的)。
+    std::vector<std::string> denyVerbs;
 };
 
 // 显式指定的可信程序：用全路径直接定位，优先于在授信目录里按名搜索。

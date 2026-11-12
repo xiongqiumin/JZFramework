@@ -41,6 +41,7 @@ struct JZServerAgentConfig
     int maxRounds = 40;
     int maxToken = 100000;
     std::string systemExtra;              // 宿主追加说明(可选)
+    std::string skillsDir;                // 全局 .jzagent 目录(空 = %USERPROFILE%/.jzagent)
 };
 
 // 一条事件: type = reply / tool_call / tool_result / done / error
@@ -60,13 +61,24 @@ public:
     bool init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, std::string &error);
 
     const JZServerAgentConfig &config() const { return m_cfg; }
+    // 网页上切换工作目录: 终端/工具/系统提示都绑在目录上, 只能整体重建。
+    // 正忙时拒绝(等任务结束再切)。目录不变则直接成功。
+    bool setRootDir(const std::string &dir, std::string &error);
     bool busy() const { return m_busy; }
     int round() const { return m_round; }
     const std::string &taskId() const { return m_taskId; }
     const std::string &lastEventType() const { return m_lastEvent; }
 
     // 提交一条任务(同步返回, 结果经 sigEvent(type="done") 异步回到宿主)
-    void submit(const std::string &taskId, const std::string &prompt, const std::string &verifyCmd);
+    // ctxJson: 续会话用。上一条任务存的 LLMContext.toJson()(跟任务记录一起落盘),
+    // 新任务照常 reset() 之后把它 loadContext 灌回去 —— reset() 依旧彻底清空。
+    // 空 = 新会话。
+    void submit(const std::string &taskId, const std::string &prompt, const std::string &verifyCmd,
+                const Json::Value &ctxJson = Json::Value());
+    // 上一轮结束时的对话快照: server 在 done 时存进任务记录(续会话靠它, 本类不缓存)
+    const Json::Value &lastContextJson() const { return m_lastCtxJson; }
+    // 已加载的 skill 名(项目 .jzagent/skills + 全局 ~/.jzagent/skills)
+    std::vector<std::string> skillNames() const;
     void cancel();
 
 jz_signals:
@@ -81,6 +93,8 @@ private:
     void onFinished();
     void emitEvent(const std::string &type, const std::string &data);
     std::string buildSystemPrompt() const;
+    // 按当前 m_cfg 建 agent/终端/工具/提示词(init 与切换目录共用)
+    bool build(std::string &error);
 
     JZServerAgentConfig m_cfg;
     JZAgentCliServer *m_srv = nullptr;
@@ -90,6 +104,7 @@ private:
 
     bool m_busy = false;
     bool m_everRan = false;     // 第二次任务前要 reset(仅 Idle 允许)
+    Json::Value m_lastCtxJson;  // 上一轮结束时的对话快照(存档由任务记录负责, 这里只留最近一份)
     bool m_failed = false;
     bool m_cancelled = false;
     int m_round = 0;

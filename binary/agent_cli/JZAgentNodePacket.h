@@ -29,6 +29,10 @@ enum
     NodePack_execCancel,                 // cli -> node: 停一条在跑的命令(任务被重置/超时时)
     NodePack_termQuery,                  // cli -> node: 按 runId 取状态/日志(等价 terminal_query)
     NodePack_termQueryResult,            // node -> cli: 上面那条的回应
+    NodePack_ping,                       // cli -> node: 保活(长命令期间也照发)
+    NodePack_pong,                       // node -> cli: ping 的回应
+    NodePack_sess,                       // cli -> node: 会话管理(open / close / list)
+    NodePack_sessResult,                 // node -> cli: 上面那条的回应
 };
 
 // cli -> node: 上线
@@ -75,6 +79,9 @@ public:
     std::string command;      // 整条交给 shell(与 terminal_run 同一套语义)
     std::string cwd;          // 空 = 节点工作区根; 非空会拼成 `cd <cwd> && <command>`
     int timeoutMs = 120000;
+    // 会话名(一条连接可以有多台终端, 各自独立 cwd/进程)。空 = 默认终端。
+    // ⚠ 追加字段: 老版本按空串读, 等价于"全都用默认终端", 行为与以前一致。
+    std::string session;
     // 后台执行(等价 terminal_run background=true): 节点立刻回一条 started 结果,
     // 之后用 NodePack_termQuery 查日志/状态、NodePack_execCancel 停掉。
     // ⚠ 追加字段: 老版本按默认 false 读, 不影响以前的"跑完才回包"语义。
@@ -158,6 +165,70 @@ public:
     virtual void loadFromStream(JZDataStream &s);
 
     std::string runId;
+    std::string session;      // 与 Exec 同一个会话名(空 = 默认终端)
+};
+
+// cli -> node: 保活。node 侧超过 20s 收不到就按"cli 掉线"处理 ——
+//   拔网线/断电/休眠时 socket 还是"通"的, 只有应用层保活才发现对方早没了。
+//   发现后做两件事: kill 它起的在跑命令 + 关连接(让它走正常重连)。
+// ⚠ 老 cli 不发 ping: node 只对"发过 ping 的连接"做判定, 免得误杀老客户端的长时间命令。
+class JZNodePackPing : public JZNetPack
+{
+public:
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string clientId;     // 日志用
+};
+
+// node -> cli: ping 的回应(带节点侧时间, cli 需要时可以算 RTT)
+class JZNodePackPong : public JZNetPack
+{
+public:
+    JZNodePackPong();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    int64_t atMs = 0;
+};
+
+// cli -> node: 会话(终端)管理。session 在节点上是"连接 + 名字"下的独立终端。
+//   op="open"  : 建一台终端(可选 cwd), 名字已存在则原样返回(幂等, 不重建)
+//   op="close" : 销毁该终端(在跑的命令会被终止)
+//   op="list"  : 列出这条连接名下的终端(名字 / cwd / 是否在跑)
+class JZNodePackSess : public JZNetPack
+{
+public:
+    JZNodePackSess();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string reqId;      // 回包配对(一次只发一条, 留着便于排障)
+    std::string op;         // open / close / list
+    std::string session;    // open/close 用; open 且为空 = 节点自己起个名字
+    std::string cwd;        // open 用(空 = 节点工作区根)
+};
+
+// node -> cli: 上面那条的回应。text 直接给模型看(open/close 一句说明, list 是清单)。
+class JZNodePackSessResult : public JZNetPack
+{
+public:
+    JZNodePackSessResult();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string reqId;
+    bool ok = false;
+    std::string error;
+    std::string session;    // open: 实际名字; close: 关掉的名字
+    std::string text;
 };
 
 // 注册全部 node 包(幂等; 必须在 JZNetPackInit 之后调用, 两边进程各调一次)

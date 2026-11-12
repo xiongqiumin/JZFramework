@@ -43,6 +43,7 @@ public:
     std::string name;         // 展示名
     std::string version;      // cli 版本
     std::string rootDir;      // 工作区(管理台展示/排障)
+    std::string project;      // 项目名(一个 cli 一个 project, 网页按它筛选)
     std::string modelName;    // 当前模型(不传 token)
     std::string nodes;        // 节点清单 JSON 数组: [{name,target,online,busy,nodeName,rootDir,shell,error}]
 };

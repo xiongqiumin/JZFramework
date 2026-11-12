@@ -8,21 +8,17 @@
 #include <map>
 #include <vector>
 
-#include "JZObject.h"
-#include "JZAgent.h"          // JZAgent / JZAgentConfig / ToolCall / ToolCallResult
-#include "JZCodeTools.h"      // ICodeToolHost / JZVirtualTerminalConfig / TrustedDir
-#include "JZVirtualTerminal.h"
+#include "JZAgentCliTask.h"
 
-class JZAgentTool;
-class JZVirtualTerminal;
-class JZNetworkAccessManager;
 class JZHttpServer;
 class JZHttpServerClient;
 class JZHttpRequest;
-class JZProcess;
-class JZMcpClient;
-class JZNodeLink;
 class JZHubLink;
+class JZNodeLink;
+class JZMcpClient;
+class JZTimer;
+class JZProcess;
+class JZNetworkAccessManager;
 
 // ---------------------------------------------------------------------------
 // MCP 客户端配置: 连一个外部 MCP 服务器, 把它的远端工具挂进本 agent 的工具表。
@@ -39,270 +35,9 @@ class JZHubLink;
 //     ③ 命名: 本地工具名默认 "<serverName>__<工具名>"(serverName 由对端 serverInfo
 //        给), 与本地工具重名的会被跳过(JZAgent::addMcp 只打 warning)。
 // ---------------------------------------------------------------------------
-struct JZCliMcpServer
-{
-    std::string name;                 // 标识(日志用); 也作为没配 toolPrefix 时的提示名
-    std::string transport = "stdio";  // stdio(起子进程, stdin/stdout 一行一条 JSON-RPC) / http(Streamable HTTP)
-    std::string command;              // stdio: 可执行文件(按 PATH 查找)
-    std::vector<std::string> args;    // stdio: 命令行参数
-    std::string url;                  // http: MCP 端点, 如 http://127.0.0.1:39000/mcp
-    std::string toolPrefix;           // 工具名前缀; 空 = 用对端 serverName 的 "<serverName>__"
-    int timeoutMs = 10000;            // 连接(server/discover + tools/list)超时(ms)
-    int callTimeoutMs = 120000;       // 单次 tools/call 超时(ms)
-};
-
-// ---------------------------------------------------------------------------
-// 一台 link 模式 agent_node 的连接配置(见 docs/agent-hub-design.md §6)
-//   ⚠ 列表是**静态**的: 启动时按配置连好, 运行期不增删(连不上就标离线)。
-//   多台 node 在模型侧只体现为一个 remote_ssh 工具的 host 参数。
-// ---------------------------------------------------------------------------
-struct JZCliNodeConfig
-{
-    std::string name;          // 对模型/日志的标识(remote_ssh 的 host)
-    std::string host;          // node 地址
-    int port = 7500;
-    std::string token;         // 与 node 的 token 一致
-    bool isDefault = false;    // host 省略时用这台(只有一个 node 时自动是它)
-};
-
-// ---------------------------------------------------------------------------
-// 控制面: 连 agent_cli_server(managed 模式, 见 docs/agent-hub-design.md §3)
-//   host 非空即 managed —— cli **出站**连 server, 内网机器不需要端口映射。
-//   managed 与 standalone **互斥**: managed 时不起 HTTP, 任务只从控制面来。
-// ---------------------------------------------------------------------------
-struct JZCliServerLinkConfig
-{
-    std::string host;       // server 地址; 空 = standalone(不起控制面)
-    int port = 8090;        // server 的 hub 端口(不是管理网页那个 8088)
-    std::string token;      // 与 server 的 hub.token 一致(JZNet 握手口令)
-    std::string agentId;    // server 侧登记的身份; 空 = 用 agentName
-};
-
-// ---------------------------------------------------------------------------
-// 任务队列(task.queues)
-//   queues = 队列数(**每个队列一个独立的 JZAgent + 一套工具**), 默认 1 = 现状。
-//   一个队列同一时刻只跑一个任务(会话上下文不能并行), 所以:
-//     · 提交时挑一个空闲队列; 全忙则进 master 的 FIFO 队列(master 排队, 顺序派发);
-//     · 全部在跑且排队数达到 maxPending ⇒ 直接拒绝(不让队列变成任务黑洞)。
-//   ⚠ 多个队列会**并发写同一个工作区**, 模型互相踩的风险由使用者承担
-//     (见 docs/agent-hub-design.md §9).
-// ---------------------------------------------------------------------------
-struct JZCliTaskConfig
-{
-    int queues = 1;        // 队列数(每个队列一个 JZAgent); 1 = 单任务(旧行为)
-    int maxPending = 32;   // 全忙时最多排多少条; <=0 表示不排队(忙就拒)
-};
-
-// ---------------------------------------------------------------------------
-// agent_cli 配置
-//   与 agent_node 类似, 但多了 LLM 连接信息(modelUrl/Name/Token) —— 因为 agent_cli
-//   自己就跑一个 JZAgent(直接驱动本地工具), 而不是把工具暴露给远端 agent 调。
-// ---------------------------------------------------------------------------
-struct JZCliConfig
-{
-    std::string agentName = "agent_cli";
-    std::string version = "1.0.0";
-
-    // ---- LLM ----
-    std::string modelUrl;
-    std::string modelName;
-    std::string modelToken;
-    int netTimeout = 120 * 1000;   // 网络请求超时(ms)
-    int maxRounds = 100;           // 单任务最大对话轮次(-1=不限)
-    int maxToken = 160000;         // 单任务 token 预算上限(上下文, 见 JZAgent::windowTokens())
-
-    // 请求体附加字段(llm.body): 各家私有参数 / 采样参数, 逐字段并进请求体, 同名以它为准。
-    // 治"输出复读"最有效的是服务端采样侧, 例如:
-    //   {"repeat_penalty": 1.05, "dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2}
-    Json::Value extraBody;
-    // 出错重试: 本地跑重试几乎没有成本, 所以预算给得比较宽 —— 瞬时错误(连接失败/超时/5xx)
-    // 发条"继续"就能接着干, 不该让整个任务判失败。
-    int maxRetries = 10;           // 瞬时错误后"接着发继续任务"的次数, 0=不重试
-    int maxFixRetries = 2;         // 可修复错误(请求被拒/上下文超长)后"让模型改一版"的次数
-    int retryDelayMs = 1000;       // 两次重试之间的等待(ms)
-
-    // ---- 循环检测(命中直接中止本轮, 报 JZAgent::LoopError) ----
-    //   两类"原地打转":
-    //     ① 工具反复用**相同参数**调同一个工具(每一步都成功 ⇒ 不报错), 只把上下文
-    //        一轮轮堆大(每轮重发整段 prompt), 一路烧到 maxRounds;
-    //     ② 思考/回复文本尾部原地打转(同一行刷屏、同一段反复、周期串复读),
-    //        输出能涨到上万 token 还不结束。
-    //   结果也相同 = 证据更强(再试必然还是这个结果), 阈值更低; 结果不同可能只是
-    //   合法轮询(等编译/等运行)。
-    //   中止后在 agent_cli 里按"换做法"重试(见 classifyError)。
-    bool loopDetect = true;
-    int loopWindow = 24;             // 工具: 只看最近 N 步工具调用(0=不限窗口)
-    int loopRepeat = 5;              // 工具: 同签名重复 N 次 -> 中止
-    int loopSameResult = 5;          // 工具: 同签名且结果也相同 N 次 -> 中止
-    // 轮询类工具(terminal_list): 同参数反复调用是正常用法(看终端是否在跑),
-    // 用上面的小阈值会误杀 ⇒ 单独放宽(见 JZLoopConfig::pollRepeat / pollSameResult)。
-    int loopPollRepeat = 16;         // 轮询类工具: 同签名重复 N 次 -> 中止
-    int loopPollSameResult = 6;      // 轮询类工具: 同签名且结果也相同 N 次 -> 中止
-    int loopLineRepeat = 6;          // 输出: 同一行连续重复 N 次 -> 中止
-    int loopBlockRepeat = 3;         // 输出: 同一段(空行分隔)连续重复 N 次 -> 中止
-    int loopPeriodMax = 256;         // 输出: 周期串最长多少字符
-    int loopPeriodRepeat = 8;        // 输出: 周期串至少重复多少次
-
-    // ---- 验证脚本门控循环的默认值(/task 的 max_verify_rounds / verify_timeout 可覆盖) ----
-    int verifyMaxRounds = 30;      // 验证失败最多喂回 agent 几轮
-    int verifyTimeoutMs = 60000;   // 单次验证脚本运行上限(ms)
-
-    // ---- 长期记忆(跨任务: 开工注入 + memory 工具读写) ----
-    //   每次任务开始时把记忆注入任务消息, 任务过程中模型用 memory 工具 append 结论。
-    //   注入放在任务消息里而不是 system prompt —— system prompt 是进程级的, 改它会连带
-    //   把 KV 前缀缓存整段作废; 任务消息本来就每次都是新的。
-    bool memoryEnabled = true;
-    std::string memoryFile;        // 记忆文件; 空 = <rootDir>/.agent_memory.md (相对路径按 rootDir 解析)
-    int memoryMaxBytes = 8192;     // 注入/读取上限(超出只给最近的; 追加的硬上限是它的 4 倍)
-
-    // ---- 宿主常驻说明(拼进 system prompt 一次) ----
-    //   典型用途: 玩法任务书 / 项目约定这类**整个会话都该在场**的约束。它只进 system prompt 一次,
-    //   之后每轮 /task 只叠加新消息 —— 不用把同一段介绍每轮重复贴一遍, 也不靠"模型还记得"。
-    //   extraFile 的相对路径按 rootDir 解析; 两个都给时 = 文件内容 + 内联文本(内联在后)。
-    std::string systemExtra;
-    std::string systemExtraFile;
-
-    // ---- 工作区 / 工具 ----
-    std::string rootDir;
-    std::vector<TrustedDir> trustedDirs;
-
-    // ---- 远端执行节点(link 模式 agent_node) ----
-    //   空 = 纯本地执行(工具表里不出现 remote_ssh)。
-    //   非空 = 注册一个 remote_ssh 工具, 按 host 路由到对应 node。
-    std::vector<JZCliNodeConfig> nodes;
-
-    bool allowTerminal = true;
-    bool allowFileTools = true;
-    bool allowPackageManager = false;
-    bool allowNetwork = false;
-    bool unrestricted = false;
-
-    // ---- 网络工具(web_search / web_fetch) ----
-    //   与上面的 allowNetwork 是两码事: 那个管"shell 命令能不能联网(下载)", 这个管
-    //   "给模型挂不挂联网工具"。agent_cli 是自己在本地跑, 所以默认开。
-    bool allowNetworkTools = true;
-    std::string webSearchUrl;      // 搜索接口模板(含 {q} 占位符); 空 = 内置源(Bing RSS)
-    // HTTP 代理(http / https 都走它, https 走 CONNECT 隧道); host 空 = 不用代理
-    std::string proxyHost;
-    int proxyPort = 0;
-    std::string proxyUser;
-    std::string proxyPassword;
-
-    // ---- MCP 客户端(连外部 MCP 服务器, 把远端工具挂进本 agent) ----
-    //   见 JZCliMcpServer: 加减 server 只改配置, 不用重编译; 启动时连一次, 之后不再变。
-    bool mcpEnabled = true;
-    std::vector<JZCliMcpServer> mcpServers;
-
-    std::string shellProgram;
-    int recycleSec = 15 * 60;
-    std::string logFile;
-
-    // 程序映射: 程序名 -> 可执行文件全路径(动态登记, 见 JZVirtualTerminalConfig::programPaths)
-    //   典型是 tsc / code_runtime 这类"随部署走、通常不在 PATH 里"的程序 —— 登记后:
-    //   进白名单(短名字能过审) + 执行时把命令里的短名换成全路径(短名字能找到程序)。
-    //   ⚠ 只认短名字: 写全路径走路径审核(区外拒), 需要就另外把它配进 rootDir/trustedDirs。
-    //   由外部(配置文件 terminal.programs / 宿主代码)传入; 没登记的程序 agent 就用不了。
-    std::map<std::string, std::string> programPaths;
-
-    // 注入给终端子进程的基础环境(导出): 如 JZ_CASE_INPUT = 本用例的输入文件路径。
-    // 输入不放在工程目录里(模型会删、会顺着 `..` 翻别人的), 而是放在工程外的输入目录,
-    // 由这个变量告诉运行时去哪儿读。
-    std::map<std::string, std::string> env;
-
-    // ---- HTTP 传输 ----
-    std::string httpBind = "127.0.0.1";
-    int httpPort = 8080;
-    std::string httpToken;             // 非空则要求 ?token= 或 Authorization: Bearer(防裸奔)
-    std::string httpDir;               // 网页静态目录; 空=exe 同目录/http
-
-    // ---- 任务队列 ----
-    JZCliTaskConfig task;
-
-    // ---- 控制面(managed 模式): 连 agent_cli_server ----
-    JZCliServerLinkConfig server;
-
-    // managed = 受 server 控制: 不起 HTTP、任务只从控制面来
-    bool managed() const { return !server.host.empty(); }
-};
-
-// ---------------------------------------------------------------------------
-// JZCliToolHost —— agent_cli 侧的工具宿主
-//   给 agent_tool 的通用工具喂区域配置 + 读文件(直读, 无缓存)。
-//   与 agent_node 的 JZAgentNodeHost 同一套逻辑, 只是配置来自 JZCliConfig。
-// ---------------------------------------------------------------------------
-class JZCliToolHost : public ICodeToolHost
-{
-public:
-    explicit JZCliToolHost(const JZCliConfig *config);
-
-    void refresh();
-
-    const JZVirtualTerminalConfig &toolTerminalConfig() const override { return m_terminalConfig; }
-    bool toolReadFile(const std::string &absPath, std::string &text, std::string &error) override;
-
-private:
-    const JZCliConfig *m_config = nullptr;
-    JZVirtualTerminalConfig m_terminalConfig;
-};
-
-// 一个 MCP 服务器在本进程里的状态: 配置里配了几个就有几条(按配置顺序)。
-// 连接是异步的, 所以它反映的是"当前"而不是"配置" —— 供 /info 与日志自检。
-struct JZCliMcpState
-{
-    std::string name;
-    std::string transport;   // stdio / http
-    std::string target;      // stdio: 命令行; http: url(只作展示)
-    bool ready = false;      // 连接成功且远端工具已登记进 agent
-    int tools = 0;           // 登记到的远端工具数
-    std::string error;       // 失败原因(连不上 / 挂载被拒); 空 = 没出错
-};
-
-// 本轮已发生的工具调用(供 SSE 连接时做当前状态快照)
-struct JZCliToolSnap
-{
-    std::string id;
-    std::string name;
-    std::string args;
-    bool hasResult = false;   // 已收到 tool_result?
-    bool ok = false;          // 结果是否成功(仅 hasResult 时有效)
-    std::string result;       // 工具返回(仅 hasResult 时有效)
-};
-
-// 最近任务的一条记录(长程任务: 网页不会一直开着, 重连时靠 hello / GET /info 的 recent 补回界面)
-struct JZCliHistoryItem
-{
-    int seq = 0;
-    std::string prompt;        // 请求原文("最近的请求")
-    std::string verifyCmd;
-    std::string status;        // running / success / failed / cancelled
-    std::string reply;         // agent 最终回复(结论)
-    std::string verifyOut;     // 最后一次验证输出
-    std::string error;
-    int rounds = 0;            // 验证轮次
-    int64_t startMs = 0;
-    int64_t endMs = 0;
-};
-
-// ---------------------------------------------------------------------------
-// JZAgentCli —— 通过 HTTP 暴露任务提交的 agent
-//
-// 传输: HTTP server。外部通过 POST /task 提交任务(JSON: prompt / images / verify_script /
-// verify_cmd / verify_timeout / max_verify_rounds / max_retries / max_fix_retries /
-// retry_delay_ms / use_memory / token?), 本端跑 JZAgent, 每轮结束跑验证脚本(返回 0 通过 / 1 失败),
-// 失败把输出喂回 agent 自动续跑, 直到验证通过或达最大轮次, 再一次性回 JSON
-// {status, verify_rounds, retries, agent_reply, last_verify_output, ...}。
-// agent 中途报错不会直接判失败: 在(分档的)重试预算内自动"接着干"(见 RetryMode)。
-//
-// images = 附带的图片(多模态): 数组, 元素是 dataURL(截图那种) 或 http(s) 链接, 与 prompt
-//   同属一条 user 消息(交给 JZAgent 的 requestWithImages, 与 code_agent 桌面版截图按钮同一条路)。
-//   也接受 OpenAI 的 messages 写法(content 数组里的 {"type":"image_url"})。
-//   文字与图片都空才算空任务 —— 允许"只发截图"。
-//
-// 工具由本端**本地执行**: JZAgent 直接调用 agent_tool 里的工具(走 JZAgentTool 接口),
-// 不经过 MCP。所以 agent_cli = "没有 UI 的 code_agent" + HTTP 传输层。
-// ---------------------------------------------------------------------------
 class JZAgentCli : public JZObject
 {
+    friend class JZAgentCliTask;   // 任务只借宿主的出口发事件/查配置, 自己不碰网络
 public:
     explicit JZAgentCli(JZObject *parent = nullptr);
     ~JZAgentCli() override;
@@ -324,12 +59,10 @@ public:
     bool hubOnline() const;
     JZHubLink *hub() const { return m_hub; }
 
-    // remote_ssh 的 host -> 连接(找不到返回 nullptr); 供工具与自检使用
+    // remote_ssh 的 host(节点名) -> 连接(名字为空或找不到返回 nullptr); 供工具与自检使用
     JZNodeLink *nodeLink(const std::string &name) const;
     // 节点状态(JSON 数组): /info、控制面 hello/心跳、管理台共用同一份口径
     Json::Value nodesJson() const;
-    // host 省略时用哪台(配置里 default 的那台; 没标就是第一台)
-    std::string defaultNodeName() const;
 
     // 起 MCP 客户端: 按配置(mcp.servers)逐个**异步**连接外部 MCP 服务器, 连上后把
     // 远端工具登记进 agent(见 JZMcpClient / JZAgent::addMcp)。
@@ -368,6 +101,29 @@ public:
     void pushEvent(const std::string &type, const Json::Value &data);   // 推给所有订阅者
     void removeEventClient(JZHttpServerClient *client);
 
+    // ------------------------------------------------------------------
+    // A2A 网页接口 —— 与 server 管理台**同一套 /api/***, 前端共用一份页面。
+    //   单 agent 的"当前任务 + 最近历史"映射成 A2A Task; 内部仍然走 submitTask
+    //   的队列/验证循环, 这里只做形状转换, 不另做一套执行逻辑。
+    //     GET  /api/tasks              列表(当前任务在最前)
+    //     POST /api/tasks              SendMessage(立即回 202 + Task)
+    //     GET  /api/tasks/detail?id=
+    //     POST /api/tasks/cancel?id=
+    //     POST /api/tasks/delete       删一条已结束的历史记录(body {"id":"h<seq>"})
+    //     GET  /api/tasks/subscribe?id= SSE(task / status_update / artifact_update)
+    //     GET  /api/agent              本机 agent 的信息 + AgentCard
+    //     GET  /api/status             只有自己一台(首页列表页复用)
+    // ------------------------------------------------------------------
+    void onApiTasks(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiTaskCancel(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiTaskDelete(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiTaskSubscribe(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiAgent(JZHttpServerClient *client, const JZHttpRequest &req);
+    void onApiStatus(JZHttpServerClient *client, const JZHttpRequest &req);
+    // 网页: <httpDir>/agent.html(单 agent 的对话页; 与 server 的 /agent 是同一份)
+    void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
+
     // 网页"后台任务"面板(给人看的, 不占模型的上下文):
     //   GET  /terminal              -> {running, session, cwd}
     //   POST /terminal/cancel              -> {ok,killed}  (单前台任务: 停当前那条)
@@ -379,26 +135,43 @@ public:
     //   {status, verify_rounds, agent_reply, last_verify_output, error?}。
     void submitTask(const Json::Value &req, std::function<void(const Json::Value &)> respond);
 
+    // ---- 任务池(动态创建 + 空闲回收) ----
+    //   HTTP / hub 提交时才创建 task; 任务结束标记空闲; 超过 keepAlive 且空闲超过
+    //   idleRecycleSec 的 task 由定时扫描回收。queues 是同时活动任务数的上限。
+    // 新建一个任务对象(不复用); wantRoot 是这条任务的工作目录(空 = m_config.rootDir)。
+    // 到 task.queues 上限时先丢掉已结束的对象; 还满就返回 nullptr 让调用方排队。
+    JZAgentCliTask *acquireTask(const std::string &wantRoot, std::string &error);
+    // 任务结束: 从池里摘掉并 deleteLater(一次性对象)
+    void releaseTask(JZAgentCliTask *task);
+    // 任务请求里的 rootDir(网页上切换目录): 空 = 用配置; 不是目录则返回空并给 error
+    std::string resolveRootDir(const Json::Value &req, std::string &error) const;
+    void recycleIdleTasks();
+
     // ---- 任务队列(task.queues) ----
     // 每个队列一个独立 JZAgent(独立会话/上下文), 队列内串行、队列间并发。
     Json::Value queuesJson() const;          // /info 用: [{queue, busy, round, taskId}]
     bool anyBusy() const;                    // 是否还有队列在跑(管理台/测试用)
     int pendingCount() const;                // 排队中的任务数
-    int queueCount() const { return (int)m_workers.size(); }
-
-    JZAgent *agent() const { return m_agent; }
+    int queueCount() const { return (int)m_tasks.size(); }
 
     // 生效的程序映射(即配置里传进来的那份), 供宿主打印/自检
     const std::map<std::string, std::string> &programPaths() const { return m_config.programPaths; }
 
 protected:
+    void onTaskReply(JZAgentCliTask* task, const std::string& text);
+    void onTaskThinking(JZAgentCliTask* task, const std::string& text);
+    void onTaskToolCall(JZAgentCliTask* task, const ToolCall& call);
+    void onTaskToolResult(JZAgentCliTask* task, const ToolCallResult& result);
+    void onTaskError(JZAgentCliTask* task,const std::string& err);
+    void onTaskFinished(JZAgentCliTask *task);
+
     void setupAgent();
     std::string buildSystemPrompt() const;
 
     // ---- 任务队列 ----
     bool initWorkers(std::string &error);     // queues>1: 建"工作实例"(每个一套 JZAgent + 工具)
     void runTask(const Json::Value &req, std::function<void(const Json::Value &)> respond);  // 引擎本体
-    void dispatchTo(int queue, const Json::Value &req, const std::string &taskId,
+    void dispatchTo(JZAgentCliTask *task, const Json::Value &req, const std::string &taskId,
                     std::function<void(const Json::Value &)> respond);
     void pumpQueue();                         // 有队列空出来时派发排队任务
     int idleWorker() const;                   // 找一个空闲队列, 没有返回 -1
@@ -425,25 +198,6 @@ protected:
     // 返回可直喂模型的 URL 列表; 有格式/大小/数量问题时写 error(调用方据此回 400)。
     std::vector<std::string> extractImages(const Json::Value &params, std::string &error);
 
-    // JZAgent 信号
-    void onReply(const std::string &text);
-    void onThinking(const std::string &text);
-    void onToolCall(const ToolCall &call);
-    void onToolResult(const ToolCallResult &result);
-    void onError(const std::string &err);
-    void onFinished();
-
-    // ---- 出错自动重试(在重试预算内"接着发继续任务") ----
-    // 分两档:
-    //   Transient 瞬时错误(连接失败/超时/5xx/轮次用尽): 原样"继续"就行, 预算 maxRetries;
-    //   Fix       可修复错误(4xx 请求被拒/上下文撑爆): 原样重发必然再失败, 改成"让模型换做法"
-    //             (重发合法的工具调用 / 别整段贴文件), 预算 maxFixRetries;
-    //   None      用户取消等: 不重试, 直接判失败。
-    enum RetryMode { RetryNone = 0, RetryTransient = 1, RetryFix = 2 };
-    static RetryMode classifyError(JZAgent::AgentError code, const std::string &err);
-    std::string buildRetryPrompt(RetryMode mode, JZAgent::AgentError code, const std::string &err) const;
-    void scheduleErrorRetry(RetryMode mode);
-
     // q0 看本地 SSE 或在线 hub; worker 看 master 的 eventSink(最终消费者由 master 统一分发)。
     bool hasEventConsumer() const
     {
@@ -452,20 +206,6 @@ protected:
 
     // HTTP 传输 + 验证脚本门控循环
     std::string deriveVerifyCmd(const std::string &script, const std::string &explicitCmd) const;
-    // 从候选里挑一个"本机真能跑"的解释器(配置 programPaths 优先, 否则探测):
-    // Windows cmd 下 python3 / bash 常常不存在, 硬写会让验证脚本永远起不来。
-    std::string resolveProgram(const std::vector<std::string> &cands, const std::string &fallback) const;
-    // 跑一次验证命令。**异步**: 起进程后立刻返回, 结果经 cb(exitCode, output) 回调。
-    // 为什么不用 _popen: ① 它是同步的, 会卡住主线程(SSE/HTTP/定时器全停, 网页看着像挂了);
-    // ② Windows 下根本没有超时手段(以前那段 timeout 包装是 #ifndef _WIN32) ⇒ 验证命令
-    //    一旦不退出, 整个 agent_cli 永久卡死, verify_timeout 形同虚设。
-    // 现在统一用 JZProcess + JZTimer 超时(到点连进程树一起杀, 见 JZProcess 的作业对象)。
-    void runVerifyAsync(const std::string &cmd, int timeoutMs, const std::string &cwd,
-                        const std::function<void(int, const std::string &)> &cb);
-    void killVerify();                       // 停掉在跑的验证进程(重置/收尾时用)
-    void finishVerify(int exitCode);         // 一次验证的收尾(截断输出 + 回调)
-    void onVerifyDone(int exitCode, const std::string &out);   // 验证结果的分发(正常路径)
-    void onLoopFinished();
 
     void respondTask(const std::string &status, int rounds, const std::string &reply,
                     const std::string &verifyOut, const std::string &err);
@@ -487,9 +227,10 @@ protected:
     void sendJson(JZHttpServerClient *client, int code, const Json::Value &j);
 
     JZCliConfig m_config;
-    JZCliToolHost m_host;
+    
     std::vector<JZNodeLink *> m_nodeLinks;    // 按 nodes[] 顺序(启动时建; 本对象所有)
     std::vector<JZCliMcpState> m_mcpStates;   // 每个 MCP server 的连接/挂载状态(见 startMcp)
+    std::vector<JZMcpClient *> m_mcpClients;  // 已连上的 MCP: 任务对象动态创建时挂进它的 agent
     // MCP 初始化闸门: 配置里的 server **全部有结果**(连上 / 连不上)之前拒绝新任务 ——
     // 否则任务先跑起来, 稍后连上的远端工具就挂不进 agent 了(只能重启进程, 见 onMcpFinished)。
     bool m_mcpInitDone = true;   // 没配 MCP(或没启用)时恒为 true
@@ -498,74 +239,38 @@ protected:
     // 联网工具(web_search / web_fetch)共享的访问管理器 —— 代理只在它上面设一次。
     // 是本对象的子对象; 没挂网络工具时为空。
     JZNetworkAccessManager *m_netMan = nullptr;
-    JZAgent *m_agent = nullptr;
-    std::vector<JZAgentTool *> m_tools;
-    JZMemoryTool *m_memory = nullptr;    // 非拥有(m_tools 持有); 未启用记忆时为空
-    int m_systemPromptBytes = 0;         // 启动时算一次的 system prompt 大小(GET /info 自检用)
-
-    std::atomic<bool> m_busy{false};
-    std::atomic<bool> m_failed{false};
-    std::atomic<bool> m_cancelled{false};
-    std::string m_lastError;
-
-    // 出错重试状态(每个任务一份: submitTask/resetSession 里清零)
-    JZAgent::AgentError m_lastErrorCode = JZAgent::None;  // 本次错误分类, sigError 时从 agent 取
-    int m_errorRetries = 0;          // 本任务已用掉的"瞬时错误"重试次数
-    int m_maxErrorRetries = 0;       // 瞬时错误预算(来自配置, 可被 /task 的 max_retries 覆盖)
-    int m_fixRetries = 0;            // 本任务已用掉的"可修复错误"重试次数
-    int m_maxFixRetries = 0;         // 可修复错误预算(可被 /task 的 max_fix_retries 覆盖)
-    int m_retryDelayMs = 1000;       // 重试等待(ms), 可被 /task 的 retry_delay_ms 覆盖
-    bool m_retryPending = false;     // 已排队一次延时重试, 等 JZTimer 触发
-    int m_loopEpoch = 0;             // 任务世代号: 新任务/重置时 +1, 作废在途的延时重试
 
     // HTTP 传输
     JZHttpServer *m_http = nullptr;
+    JZTimer *m_recycleTimer = nullptr;   // 空闲任务对象周期回收
 
     // 控制面(managed 模式): 到 server 的连接。standalone 下为空。
     JZHubLink *m_hub = nullptr;
 
     // ---- 任务队列(task.queues) ----
-    bool m_isWorker = false;                   // true = 只是队列的执行体(不碰 HTTP/控制面)
-    JZAgentCli *m_master = nullptr;             // worker 指向 master; 单任务取消也共用它做派发闸
-    std::vector<JZAgentCli *> m_workers;       // [0] = this; 其余由 initWorkers() 建
-    std::vector<std::string> m_workerTask;     // 每个队列正在跑的 taskId(空 = 空闲)
+    std::vector<JZAgentCliTask *> m_tasks;       // [0] = this; 其余由 initWorkers() 建
     struct QueuedTask
     {
         Json::Value req;
         std::string taskId;
+        std::string rootDir;      // 这条任务的工作目录(入队时已解析校验)
         std::function<void(const Json::Value &)> respond;
     };
+    // 任务对象是**一次性**的: 派发时新建, 回完包就销毁。m_tasks 里只有"正在跑"的。
     std::deque<QueuedTask> m_pending;          // 全忙时排队(FIFO 派发)
     std::string m_queueName = "q0";
     // worker -> master 的事件出口(带队列下标); master 自己为 null
     std::function<void(int, const std::string &, const Json::Value &)> m_eventSink;
-    // 节点路由: worker 自己不连 node, 用 master 的那批连接
-    std::function<JZNodeLink *(const std::string &)> m_nodeResolver;
-    std::function<std::string()> m_defaultNodeFn;
+    // 节点路由: worker 自己不连 node, 用 master 的那批连接(见 nodeLink())
     std::function<void(const void *)> m_nodeCancel;
     bool m_cancelling = false;                      // master 持有: 全局/单任务取消收尾期间禁止重入派发
+    bool m_pumping = false;                         // master 持有: pumpQueue 重入闸(同步拒绝回调会再次调用)
     // 控制面任务 id(server 生成)。非空 = 当前任务是 server 派下来的,
     // 事件流与回包都按它带回 server; HTTP 任务为空。
     std::string m_currentTaskId;
 
     JZHttpServerClient *m_pendingClient = nullptr;   // 当前在跑任务对应的 HTTP 连接(循环结束回包)
-    bool m_loopActive = false;                       // 是否处于"提交→验证循环"模式
-    int m_loopRound = 0;
-    int m_maxLoopRounds = 10;
-    std::string m_verifyCmd;                         // 推导好解释器的验证命令
-    int m_verifyTimeoutMs = 60000;
-    std::string m_accumReply;                        // 累积本轮 agent 最终回复
-    std::string m_lastVerifyOutput;
-    // 在跑的验证进程(异步): 收尾/重置时要能把它连同子孙一起停掉
-    JZProcess *m_verifyProc = nullptr;
-    bool m_verifyRunning = false;
-    bool m_verifyTimedOut = false;
-    int m_verifyGen = 0;                             // 世代号: 作废上一轮验证的定时器/信号
-    std::string m_verifyOut;                         // 本次验证的累积输出(共用 stdout/stderr)
-    // Windows: 命令写进的临时 .cmd 路径(见 runVerifyAsync 的说明), 收尾时删掉
-    std::string m_verifyScript;
-    // 分发用的回调: 起进程时存下来, sigFinished 里调
-    std::function<void(int, const std::string &)> m_verifyCb;
+   
 
     // 最近一次任务的回包。提交方(POST /task 的那条连接)断连后任务仍在跑完 —— 那时结果只能
     // 经 SSE 出口; 若订阅者也恰好不在(网页关了又开), 重连时的 hello 帧带上它, 让界面收尾。
@@ -597,6 +302,26 @@ protected:
 
     // SSE 订阅者(GET /events): 由连接析构回调摘除
     std::vector<JZHttpServerClient *> m_eventClients;
+
+    // ---- A2A 形状(给网页看的一层, 不改变内部任务模型) ----
+    struct A2aTask
+    {
+        std::string id, prompt, verifyCmd, state, reply, verifyOut, error;
+        long long startMs = 0, endMs = 0;
+        int rounds = 0, eventSeq = 0;
+        std::vector<Json::Value> events;      // 有界状态事件(只在本次运行期间留存)
+    };
+    A2aTask m_a2aLive;                        // 当前这条任务(active 时有效)
+    bool m_a2aLiveActive = false;
+    int m_a2aSeq = 0;
+    std::map<JZHttpServerClient *, std::string> m_a2aSubs;   // SSE 订阅: 连接 -> taskId
+    std::string a2aAgentId() const;
+    Json::Value a2aTaskJson(const A2aTask &t) const;
+    A2aTask a2aTaskFromRecent(const Json::Value &it) const;  // recent 一条 -> A2A
+    Json::Value a2aHistoryJson(int limit) const;             // 最近历史 -> A2A Task 数组
+    Json::Value a2aFindTask(const std::string &id, bool &live) const;
+    void a2aEmit(const std::string &type, const Json::Value &data);   // 给订阅者推一帧
+    void a2aFinish(const Json::Value &result);                        // 收尾: 落终态 + 关流
 };
 
 #endif // !JZ_AGENT_CLI_H_

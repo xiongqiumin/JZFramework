@@ -819,34 +819,35 @@ protected:
         if (r.isMember("agent_reply"))
             m_result.lastVerifyOutput += "\n[agent_reply] " + r["agent_reply"].asString();
 
-        // 抓取本用例累计 token(下一用例会重建 agent / context 清零)
-        if (m_cli && m_cli->agent())
+        // 本用例累计 token: 任务对象是一次性的(结束后 agent 就没了), 所以用量由任务随回包
+        // 带出(respondTask 里的 "usage"); 这里不再从 JZAgentCli 摸 agent。
+        if (r.isMember("usage") && r["usage"].isObject())
         {
-            const auto &u = m_cli->agent()->context()->usage;
-            m_result.promptTokens = u.prompt_tokens;
-            m_result.completionTokens = u.completion_tokens;
-            m_result.totalTokens = u.total_tokens;
-            m_result.cachedTokens = u.cached_tokens;
-            // 与"计费总量"不同口径: windowTokens() = 最后一轮实际会发出的上下文
+            const Json::Value &u = r["usage"];
+            m_result.promptTokens = u.get("prompt_tokens", 0).asInt();
+            m_result.completionTokens = u.get("completion_tokens", 0).asInt();
+            m_result.totalTokens = u.get("total_tokens", 0).asInt();
+            m_result.cachedTokens = u.get("cached_tokens", 0).asInt();
+            // 与"计费总量"不同口径: context_tokens = 最后一轮实际会发出的上下文
             // (锚点那条 usage.prompt_tokens, 含 system+工具+历史, 不含思考)。
-            m_result.contextTokens = m_cli->agent()->windowTokens();
+            m_result.contextTokens = u.get("context_tokens", 0).asInt();
             if (m_result.contextTokens > m_maxContextTokens)
             {
                 m_maxContextTokens = m_result.contextTokens;
                 m_maxContextName = m_result.name;
             }
-            m_result.promptMs = u.prompt_ms;
-            m_result.predMs = u.predicted_ms;
-            m_result.draftN = u.draft_tokens;
-            m_result.draftAccepted = u.draft_accepted_tokens;
-            m_totalPrompt += u.prompt_tokens;
-            m_totalCompletion += u.completion_tokens;
-            m_totalTokens += u.total_tokens;
-            m_totalCached += u.cached_tokens;
-            m_totalPromptMs += u.prompt_ms;
-            m_totalPredMs += u.predicted_ms;
-            m_totalDraft += u.draft_tokens;
-            m_totalDraftAccepted += u.draft_accepted_tokens;
+            m_result.promptMs = u.get("prompt_ms", 0).asDouble();
+            m_result.predMs = u.get("pred_ms", 0).asDouble();
+            m_result.draftN = u.get("draft_tokens", 0).asInt();
+            m_result.draftAccepted = u.get("draft_accepted_tokens", 0).asInt();
+            m_totalPrompt += m_result.promptTokens;
+            m_totalCompletion += m_result.completionTokens;
+            m_totalTokens += m_result.totalTokens;
+            m_totalCached += m_result.cachedTokens;
+            m_totalPromptMs += m_result.promptMs;
+            m_totalPredMs += m_result.predMs;
+            m_totalDraft += m_result.draftN;
+            m_totalDraftAccepted += m_result.draftAccepted;
         }
         m_totalLlmMs += m_result.llmMs;
 
@@ -1506,7 +1507,7 @@ static std::string detectProgram(const std::string &nameNoExt)
 // 这里刻意不写死任何端点/模型名: 写死的默认值换机器后只会变成"连着一个不存在的地址,
 // 报错还看不出是配置问题"。文件长这样(也接受平铺写法, 即 key 直接放顶层):
 //     { "llm": { "url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": "" } }
-// 取值规则与 agent_cli 的 config.json 一致: 先看 llm.<key>, 没有再回落顶层 <key>。
+// 取值: 先看 llm.<key>, 没有再回落顶层 <key>(本测试自己的容错; agent_cli 的 config.json 只认分组格式)。
 // 优先级: 命令行 > test_llm.json。
 static std::string llmConfigPath()
 {

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>对话 · JZAgent</title>
+<link rel="stylesheet" href="/ui/tokens.css?v=2">
+<link rel="stylesheet" href="/ui/base.css?v=2">
+<link rel="stylesheet" href="/ui/components.css?v=2">
+<link rel="stylesheet" href="/app.css?v=46">
+</head>
+<body data-page="agent">
+<div class="ag-app" id="app">
+  <!-- VSCode 那种最左侧竖排按钮: 切侧栏视图 -->
+  <nav class="ag-rail" id="rail">
+    <button class="rail-btn is-on" type="button" data-view="files" title="文件">🗂</button>
+    <button class="rail-btn" type="button" data-view="hosts" title="主机">🖥</button>
+    <button class="rail-btn" type="button" data-view="chats" title="会话">💬</button>
+    <span class="rail-sp"></span>
+    <button class="rail-btn" type="button" id="railTasks" title="全部任务">📋</button>
+    <button class="rail-btn" type="button" id="railSettings" title="设置">⚙</button>
+  </nav>
+
+  <aside class="ag-side" id="agSide">
+    <!-- 侧栏标题栏(仿 VSCode Explorer: 折叠箭头 + 大写名字 + 右侧图标组) -->
+    <div class="ag-side__hd">
+      <button class="side-toggle" id="btnSideCollapse" type="button" title="折叠">⌄</button>
+      <div class="ag-side__brand">
+        <div class="ag-side__title" id="sideTitle">文件</div>
+        <div class="ag-side__sub" id="sideSub">加载中…</div>
+      </div>
+      <div class="side-acts" id="sideActs">
+        <button class="side-icon" id="btnFsNewFile" type="button" title="新建文件（暂未实现）" disabled>
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.4 1.9H5A1.2 1.2 0 0 0 3.8 3.1v9.8A1.2 1.2 0 0 0 5 14.1h6a1.2 1.2 0 0 0 1.2-1.2V5.1z"/>
+            <path d="M9.4 1.9v3.2h3.2"/><path d="M8 7.7v3.1M6.5 9.25h3"/>
+          </svg>
+        </button>
+        <button class="side-icon" id="btnFsNewDir" type="button" title="新建文件夹（暂未实现）" disabled>
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 4.7a1.2 1.2 0 0 1 1.2-1.2h2.5l1.2 1.4h5.9A1.2 1.2 0 0 1 14 6.1v5.7a1.2 1.2 0 0 1-1.2 1.2H3.2A1.2 1.2 0 0 1 2 11.8z"/>
+            <path d="M8 7.5v3M6.5 9h3"/>
+          </svg>
+        </button>
+        <button class="side-icon" id="btnFsRefresh" type="button" title="刷新">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M13.4 8a5.4 5.4 0 1 1-1.6-3.8"/><path d="M13.6 2.1v3h-3"/>
+          </svg>
+        </button>
+        <button class="side-icon" id="btnFsCollapse" type="button" title="折叠全部">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="2.3" y="3.6" width="11.4" height="8.8" rx="1.4"/><path d="M5.4 8h5.2"/>
+          </svg>
+        </button>
+      </div>
+      <button class="jz-btn jz-btn--sm jz-btn--ghost ag-side__x" id="btnSideClose" type="button"
+        aria-label="关闭列表">×</button>
+    </div>
+
+    <!-- 视图: 文件(当前工作区的只读文件树) -->
+    <div class="side-view" data-view="files" id="viewFiles">
+      <div class="fs-tree ag-side__scroll" id="fsTree"><div class="jz-empty">加载中…</div></div>
+    </div>
+
+    <!-- 视图: 主机(所有 cli + 各自的目录) -->
+    <div class="side-view hidden" data-view="hosts" id="viewHosts">
+      <div class="hosts-body ag-side__scroll" id="hostsList"><div class="jz-empty">加载中…</div></div>
+    </div>
+
+    <!-- 视图: 会话(任务列表; 工作区在「主机」视图里切) -->
+    <div class="side-view hidden" data-view="chats" id="viewChats">
+      <div class="ag-side__new">
+        <button class="jz-btn jz-btn--primary ag-new" id="btnNewTask" type="button">＋ 新建任务</button>
+      </div>
+
+      <div class="ag-side__scroll" id="taskList"><div class="jz-empty">加载中…</div></div>
+    </div>
+  </aside>
+
+  <div class="ag-splitter" id="agSplitter" title="拖动调整宽度"></div>
+
+  <main class="ag-main">
+    <header class="cs-head">
+      <button class="jz-btn jz-btn--sm jz-btn--ghost ag-burger" id="btnSide" type="button"
+        aria-label="任务列表">☰</button>
+      <div class="cs-head__main">
+        <div class="cs-head__title" id="headTitle">agent</div>
+        <div class="cs-head__sub" id="headSub">加载中…</div>
+      </div>
+      <div class="cs-head__acts" id="headActs"></div>
+    </header>
+
+    <div class="conn-bar hidden" id="connBar" role="status" aria-live="polite">
+      <span class="conn-bar__dot"></span>
+      <span id="connText">连接断开，正在重连…</span>
+    </div>
+
+    <nav class="tabs ag-tabs" id="tabs">
+      <a class="tab is-on" href="#chat" data-tab="chat">对话</a>
+      <a class="tab" href="#log" data-tab="log">任务日志</a>
+      <a class="tab" href="#card" data-tab="card">AgentCard</a>
+    </nav>
+
+    <section class="pane" data-pane="chat">
+      <div class="jz-chat cs-thread" id="thread"><div class="jz-empty">加载中…</div></div>
+
+      <details class="ag-term hidden" id="termBox">
+        <summary>终端（后台命令）<span class="muted" id="termHint"></span></summary>
+        <div class="ag-term__body" id="termList"></div>
+      </details>
+
+      <div class="jz-composer cs-composer">
+        <div class="cs-bar">
+          <span class="cs-chip hidden" id="btnVerify" title="点「设置」修改验证命令"></span>
+          <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnSettings" type="button">⚙ 设置</button>
+          <span class="cs-bar__sp"></span>
+        </div>
+        <div class="jz-composer__box">
+          <textarea id="fPrompt" class="jz-textarea cs-ta" rows="3"
+            placeholder="说一下要它做什么，Enter 发送 / Shift+Enter 换行"></textarea>
+          <div class="jz-composer__actions">
+            <span class="cs-kbd">Enter 发送</span>
+            <button id="btnSend" class="jz-btn jz-btn--primary jz-btn--sm" type="button">发送</button>
+          </div>
+        </div>
+        <div class="jz-composer__hint" id="msg"></div>
+      </div>
+    </section>
+
+    <section class="pane hidden" data-pane="log">
+      <div class="jz-table-wrap">
+        <table class="jz-table">
+          <thead><tr><th>时间</th><th>状态</th><th>指令</th><th>轮次</th><th>耗时</th><th>Task</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+      <p class="logbar__hint">只列人下发的任务；agent 之间互相派活不算一条任务。</p>
+    </section>
+
+    <section class="pane hidden" data-pane="card">
+      <div class="jz-card"><div class="jz-card__bd" id="cardBody">加载中…</div></div>
+      <h2 class="sec">节点</h2>
+      <div class="jz-table-wrap">
+        <table class="jz-table">
+          <thead><tr><th>节点</th><th>地址</th><th>状态</th><th>工作区</th></tr></thead>
+          <tbody id="nodeBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 文件预览(只读): 点左侧文件树里的文件切到这里 -->
+    <section class="pane hidden" data-pane="preview">
+      <div class="prev-bar">
+        <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnPrevBack" type="button" title="回到对话">←</button>
+        <span class="prev-bar__path" id="prevPath">-</span>
+        <span class="prev-bar__meta" id="prevMeta"></span>
+        <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnPrevCopy" type="button"
+          title="复制内容" disabled>复制</button>
+      </div>
+      <pre class="prev-body" id="prevBody"></pre>
+    </section>
+  </main>
+</div>
+<div class="ag-scrim" id="scrim"></div>
+
+<dialog class="jz-dialog" id="dlgSettings">
+  <div class="jz-dialog__hd">
+    <h2 class="jz-dialog__title">设置</h2>
+    <button class="jz-dialog__x" id="btnSetClose" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="jz-dialog__bd">
+    <div class="jz-field">
+      <label for="fVerify">验证命令</label>
+      <input id="fVerify" class="jz-input" placeholder="例如 python verify.py（留空 = 跑完即通过）">
+    </div>
+    <div class="jz-field" style="margin-top:12px">
+      <label for="fToken">访问令牌（agent_cli 配置了 http.token 时填）</label>
+      <input id="fToken" class="jz-input" placeholder="留空 = 不带 token">
+    </div>
+    <p class="cs-note">退出码 0 视为通过；失败时把输出交回 agent 继续改。
+      设定后只在输入框上方显示一个小标记，不占版面。保存在本机浏览器里。</p>
+  </div>
+  <div class="jz-dialog__ft">
+    <button class="jz-btn jz-btn--primary" id="btnSetSave" type="button">保存</button>
+  </div>
+</dialog>
+
+<dialog class="jz-dialog" id="dlgDir">
+  <div class="jz-dialog__hd">
+    <h2 class="jz-dialog__title">工作目录</h2>
+    <button class="jz-dialog__x" id="btnDirClose" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="jz-dialog__bd">
+    <div class="dir-bar">
+      <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnDirUp" type="button" title="上一级">↑</button>
+      <input id="fDirPath" class="jz-input" placeholder="C:/work/项目（回车打开）" spellcheck="false">
+      <button class="jz-btn jz-btn--sm" id="btnDirGo" type="button">打开</button>
+    </div>
+    <div class="dir-roots" id="dirRoots"></div>
+    <div class="dir-quick" id="dirQuick"></div>
+    <input id="fDirFilter" class="jz-input dir-filter" placeholder="过滤当前目录（输入名字）" spellcheck="false">
+    <div class="dir-list" id="dirList"></div>
+    <div class="cs-note dir-cur" id="dirNote">当前：-</div>
+  </div>
+  <div class="jz-dialog__ft">
+    <button class="jz-btn jz-btn--ghost" id="btnDirCancel" type="button">取消</button>
+    <button class="jz-btn jz-btn--primary" id="btnDirUse" type="button">打开此文件夹</button>
+  </div>
+</dialog>
+
+<script src="/ui/jz-ui.js?v=2"></script>
+<script src="/app.js?v=46"></script>
+</body>
+</html>

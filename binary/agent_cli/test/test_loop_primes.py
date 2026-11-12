@@ -145,7 +145,7 @@ def find_agent_cli(explicit: str) -> str:
 def read_llm_config(exe_dir: str) -> dict:
     """读 <exe 目录>/test_llm.json —— 模型接入的**唯一来源**(脚本里不写死端点)。
 
-    形状(与 agent_cli 的 config.json 一致: 先看 llm.<key>, 没有再回落顶层 <key>):
+    形状(只看 llm.<key>; agent_cli 自己的 config.json 也是只认分组格式, 不回落顶层):
         {"llm": {"url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": ""}}
     找不到/读不动就返回空串项(调用方据此报"没配置模型"并给出该文件的完整路径)。
     """

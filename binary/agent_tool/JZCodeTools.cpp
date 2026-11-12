@@ -5,6 +5,7 @@
 #include <cstring>
 #include <vector>
 
+#include "JZByteArray.h"
 #include "JZDir.h"
 #include "JZFile.h"
 #include "JZFileInfo.h"
@@ -348,11 +349,14 @@ string jzTsRuntimeNotes()
     s += "  - 想查某个名字有哪些成员: 直接读工程里的 js_wrapper/<名字>/types/index.d.ts"
          "(裸名声明在同目录 ambient.d.ts; 目录名就是 import 的名字, 不确定就 read_file/search_file 找它)。\n";
     s += "  - 自己的模块用相对路径: `import { foo } from './foo'`(扩展名可省, 按运行根目录解析)。\n";
+#ifdef _WIN32
+    // Windows + Git Bash 挂载才有"两层路径": 终端能写 /c/tmp, 运行时按 Node 语义要 C:/tmp。
     s += "  - ⭐ 路径写法分两层, 别混:\n";
     s += "      终端(bash 风味): `/c/tmp/x` 能用 —— shell 会把它翻成 `C:/tmp/x` 再交给程序;\n";
     s += "      **你的 TS/JS 代码里(以及 fs/path 的参数)必须写 `C:/tmp/x`** —— 运行时按 Node 语义, "
          "`/c/tmp/x` 会被当成「当前盘根下的 c/tmp/x」(`C:\\c\\tmp\\x`), 找不到文件。\n";
     s += "    反例: `fs.readFileSync('/c/tmp/a.txt')` ✗   `fs.readFileSync('C:/tmp/a.txt')` ✓\n";
+#endif
     s += "  - 退出/保活(Node 的 handle ref 语义, 与 Node 一致): 打开着的套接字/服务端(监听中、连接中)、"
          "ref 着的定时器、跑着的 worker、连着的 modbus 连接、**在途的异步请求(fetch / modbus 读写的 promise "
          "还没结算)**都算「有事要等」, 进程不会退出(与真 Node 实测一致: 只发一个 fetch 不 await 也会等到回包); "
@@ -362,21 +366,47 @@ string jzTsRuntimeNotes()
     return s;
 }
 
+// 终端执行面的**唯一一份**口径说明: 本地 terminal_run / 远端 remote_ssh / code_agent / 评测共用。
+// 谁要改终端语义, 只改这里(别在执行体里各写一套, 那是之前漂移的根源)。
 string jzTerminalRunNotes()
 {
     string s;
-    s += "terminal_run 默认**前台**: 命令要等自己退出才回包, 到 timeout_ms 强杀。"
-         "要后台(常驻服务)就在末尾加 `&`, 与标准 shell 一致: 立刻回包。\n";
-    s += "  - ⭐ 跑一个**会自己退出**的程序(如 `cd build && code_runtime`)只需一次前台调用: "
-         "它的 stdout/stderr **就在这次回包里**, 不要重跑同一条命令。\n";
-    s += "  - `cmd &`: 回包是 `[1] <pid>`, 输出**跟命令自己的重定向走**。要留日志就得自己写 "
-         "`./srv > log.txt 2>&1 &`, 之后 `cat`/`tail` 那个文件看启动日志; "
-         "**没写重定向的输出就是丢掉的**(父 shell 已回包, 没人接)。"
-         "后台任务不占 timeout、也不会自己结束; `$!` 就是那个 pid, "
-         "内建命令/函数/管道的 `&` 没有独立进程号。\n";
-    s += "  - 超时**被杀前**已经打印的内容会一并回给你(端口/报错都在里面) —— 想冒烟就把 timeout_ms 调小"
-         "(如 3000~5000), 别设个很大的值干等, 更别为同一件事反复重跑。\n";
-    s += "  - 常驻服务的日志别指望回包: 起完就 `> log 2>&1 &`, 之后用 read_file / cat 读那个文件。\n";
+#ifdef _WIN32
+    s += "命令语法: **bash(Git Bash 风格)子集** —— 不是 cmd / PowerShell, 别写 dir / type / copy / Get-ChildItem。\n";
+#else
+    s += "命令语法: **bash 子集**(POSIX shell) —— 管道 / 重定向 / 通配符 / 变量 / `$( )` / heredoc 都是标准 bash 写法。\n";
+#endif
+    s += "  - 能用: 管道 `|`、重定向 `> >> 2>&1`、串联 `&& || ;`、通配符 `* ?`、变量 `$VAR` / `${VAR}`、"
+         "`$( )` / `$(( ))`、`~`、引号(`'...'` / `\"...\"` / `$'...'`)、heredoc `<<`、`if/for/while` 等复合语句。\n";
+#ifdef _WIN32
+    // 路径"两层"是 Windows + Git Bash 挂载特有的坑; POSIX 上 shell 与程序看到的是同一份路径, 不用说。
+    s += "  - 路径: shell 层可以用 Git Bash 写法(`/c/tmp/x`、`/tmp/x`、`~/x`), shell 会翻成 `C:/...` 再交给程序;"
+         "**程序自己的参数、脚本/代码里的路径要写 `C:/...`**(写成 `/c/...` 会被当成 `C:\\c\\...`)。\n";
+#endif
+    s += "  - 不支持: nohup/setsid/screen/tmux(脱离管理)、交互式程序(vim/top/REPL: stdin 是管道不是 tty)、"
+         "以及再套一层 shell(cmd / powershell / `bash -c \"...\"`: 里面那串命令审核看不到, 会被直接拒)。\n";
+    s += "命令默认**前台**: 要等它自己退出才回包, 到 timeout_ms 强杀(被杀前已经打印的内容照样回给你)。\n";
+    s += "  - ⭐ 会自己退出的程序(编译/测试/脚本, 如 `cd build && code_runtime`)**一次前台调用就够**: "
+         "stdout/stderr 就在这次回包里, 不要重跑同一条命令。\n";
+    s += "  - 常驻服务: 末尾写 `&` 并把输出重定向(`./srv > srv.log 2>&1 &`), 之后 `cat srv.log` / `tail -50 srv.log`;"
+         "**没写重定向的输出是丢掉的**(父 shell 已经回包, 没人接)。`$!` 就是它的 pid, 后台任务不占 timeout。\n";
+    s += "  - **单前台任务**: 上一条没结束, 下一条直接报忙(不排队); 要并行就另开一个会话(见 terminal_open)。\n";
+    s += "  - ⭐ 冒烟就把 timeout_ms 调小(如 3000~5000), 别设个很大的值干等, 更别为同一件事反复重跑。\n";
+    return s;
+}
+
+// 会话管理(terminal_open / terminal_list / terminal_close)。
+// needOpen=true: 该执行面的命令必须先进会话才能跑(agent_node 的 MCP 门面不自动开默认会话)。
+string jzTerminalSessionNotes(bool needOpen)
+{
+    string s;
+    s += "terminal_open / terminal_list / terminal_close: 多会话管理。\n";
+    s += "  - 每个会话是一个**有状态的 shell**: `cd` / `export` / 后台任务只在自己会话里有效, 会话之间互不影响。\n";
+    if (needOpen)
+        s += "  - ⚠ 这里**不自动开默认会话**: 必须先 terminal_open 拿到 session id, 之后的 terminal_run 都带上它。\n";
+    else
+        s += "  - 本地默认就有一个会话; 只有\"要并行跑两条\"或\"把常驻服务和前台命令分开\"时才需要自己开。\n";
+    s += "  - 不用的会话就 terminal_close, 别靠空闲回收清理(回收会把里面的后台进程一起收掉)。\n";
     return s;
 }
 
@@ -452,12 +482,17 @@ void JZCodeTool::finish(const ToolCall &call, bool ok, const string &text, DenyR
 // 翻不了的(`/usr/...`、`/dev/...`)说明该换成什么写法。
 static std::string bashPathHint(const std::string &input)
 {
+#ifdef _WIN32
+    // Git Bash 挂载路径的提示只在 Windows 上成立(POSIX 上 /usr 就是真的 /usr, 没有"两层")
     const string win = codeBashPathToWindows(input, zoneTempDirs());
     if (win != input)
         return "（Git Bash 路径, 已按映射解析为: " + win + "）";
     if (codeLooksLikeBashPath(input))
-        return "（这是 bash 风格路径（如 `/usr/...`、`/dev/...`）：在 terminal_run 里有效, 文件工具按 "
+        return "（这是 Git Bash 风格路径（如 `/usr/...`、`/dev/...`）：在 terminal_run 里有效, 文件工具按 "
                "Windows/工作区路径解析 —— 换成 `C:/...` 或工作区相对路径再试）";
+#else
+    (void)input;
+#endif
     return string();
 }
 
@@ -1784,10 +1819,20 @@ static string searchField(const Json::Value &obj, const std::vector<string> &key
     return string();
 }
 
-// 默认搜索源：必应网页搜索的 RSS 输出（常规网页结果、无需 API Key、中英文通用）。
-// 默认仅此一个内置源；如需多源自动回退，在 call() 里追加更多候选 URL 即可。
-static const char *kBingRssSearchUrl = "https://www.bing.com/search?q={q}&format=rss&count=15";
-// 接近浏览器的 UA，提高无 key 网页搜索接口（必应 RSS）的放行率
+// 默认搜索源：必应网页搜索的两个通道（无需 API Key、中英文通用），按序尝试：
+//   1) RSS（format=rss）：约 6KB、结构稳定、链接是直链 —— 体积只有 HTML 的 1/18，优先用；
+//   2) HTML 结果页：约 105KB，作 RSS 失败/改版时的兜底。
+// 两个通道的共同前提（都实测过，缺一不可）：
+//   - 必须带 setlang=zh-CN&cc=CN：不带时必应按 IP/默认市场返回，容易掉进"词典/无关结果"降级态；
+//   - 必须跟随 www.bing.com -> cn.bing.com 的 302（runNextSearch 里已显式放宽为允许跨主机）；
+//   - ⚠ 不要走代理：出口 IP 会被必应判滥用，两个通道都返回与查询无关的结果（实测搜 python
+//     返回 Lidl 超市）；国内直连才是正确路径。
+// ⚠ 历史教训：曾因"走代理复测到垃圾结果"误判 RSS 通道已降级（2026-11-12 上午），实际直连正常。
+static const char *kBingRssSearchUrl =
+    "https://www.bing.com/search?q={q}&format=rss&count=15&setlang=zh-CN&cc=CN";
+static const char *kBingHtmlSearchUrl =
+    "https://www.bing.com/search?q={q}&setlang=zh-CN&cc=CN&count=15";
+// 接近浏览器的 UA，提高无 key 网页搜索接口（必应 HTML）的放行率
 static const char *kSearchUserAgent =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0 Safari/537.36";
@@ -1913,6 +1958,236 @@ static void collectRssResults(const string &body, vector<string> &out)
     }
 }
 
+// ---------- 必应 HTML 结果页解析 ----------
+// 结构（2026-11 实测，cn.bing.com）：
+//   <li class="b_algo" ...>
+//     <h2><a href="https://...">标题</a></h2>
+//     <div class="b_caption"><p class="b_lineclamp2 b_algoSlug">摘要…</p></div>
+//   </li>
+// 结果直接来自初始 HTML（服务端渲染），不需要执行 JS —— 这是"不用浏览器也能搜"的原因。
+
+// 取标签内某属性的值（支持 href="x" / href='x' / href=x）
+static string htmlAttrValue(const string &tag, const string &name)
+{
+    string key = name + "=";
+    size_t p = tag.find(key);
+    while (p != string::npos)
+    {
+        // 必须是独立属性名：前一个字符是空白或标签开头（避免匹配到 data-href、v-href 之类）
+        bool standalone = (p == 0);
+        if (!standalone)
+        {
+            char prev = tag[p - 1];
+            standalone = (prev == ' ' || prev == '\t' || prev == '\r' || prev == '\n');
+        }
+        if (standalone)
+            break;
+        p = tag.find(key, p + 1);
+    }
+    if (p == string::npos)
+        return string();
+
+    size_t v = p + key.size();
+    if (v >= tag.size())
+        return string();
+    char q = tag[v];
+    if (q == '"' || q == '\'')
+    {
+        size_t e = tag.find(q, v + 1);
+        if (e == string::npos)
+            return string();
+        return tag.substr(v + 1, e - v - 1);
+    }
+    size_t e = tag.find_first_of(" \t\r\n>", v);
+    if (e == string::npos)
+        e = tag.size();
+    return tag.substr(v, e - v);
+}
+
+// 必应把部分结果链接包成 www.bing.com/ck/a?...&u=a1<base64url>，u 里才是真实地址。
+// 直连 cn.bing.com 时多数是直链，但两种都要能处理：这里是**纯本地解码**，
+// 不像搜狗的 /link?url=（JS 跳转页）必须再发一次请求才能拿到真实 URL。
+static string bingUnwrapLink(const string &href)
+{
+    if (href.find("/ck/a") == string::npos)
+        return href;
+    size_t p = href.find("u=a1");
+    if (p == string::npos)
+        return href;
+
+    size_t b = p + 4;                       // 跳过 "u=a1" 前缀
+    size_t e = href.find('&', b);
+    if (e == string::npos)
+        e = href.size();
+    string enc = href.substr(b, e - b);
+    if (enc.empty())
+        return href;
+
+    for (char &c : enc)                     // base64url -> 标准 base64
+    {
+        if (c == '-')
+            c = '+';
+        else if (c == '_')
+            c = '/';
+    }
+    while (enc.size() % 4 != 0)
+        enc.push_back('=');
+
+    JZByteArray raw = JZByteArray::fromBase64(JZByteArray(enc.data(), (int)enc.size()));
+    string url(raw.data(), (size_t)raw.size());
+    if (url.compare(0, 4, "http") == 0)
+        return url;
+    return href;                            // 解不出来就保留原链接（至少还能点开）
+}
+
+// 必应摘要里除常规实体外还有 &ensp;&#0183;&ensp;（" · " 分隔符），统一清掉
+static string bingCleanText(const string &s)
+{
+    string t = htmlUnescapeStr(stripHtmlTags(s));
+    replaceAllStr(t, "&ensp;", " ");
+    replaceAllStr(t, "&emsp;", " ");
+    replaceAllStr(t, "&#0183;", "·");
+    replaceAllStr(t, "&#183;", "·");
+    return str_trimmed(t);
+}
+
+// 前进到下一个 <li ... class="...b_algo..."> 块；block 取起始标签之后到 </li> 之间的内容
+static bool bingNextResultBlock(const string &html, size_t &pos, string &block)
+{
+    while (true)
+    {
+        size_t li = html.find("<li", pos);
+        if (li == string::npos || li + 3 >= html.size())
+            return false;
+
+        char nxt = html[li + 3];
+        if (nxt != ' ' && nxt != '>' && nxt != '\t' && nxt != '\r' && nxt != '\n')
+        {
+            pos = li + 3;                   // <link ...> 之类，不是列表项
+            continue;
+        }
+
+        size_t tagEnd = html.find('>', li);
+        if (tagEnd == string::npos)
+            return false;
+
+        string tag = html.substr(li, tagEnd - li + 1);
+        if (tag.find("b_algo") == string::npos)
+        {
+            pos = tagEnd + 1;
+            continue;
+        }
+
+        size_t end = html.find("</li>", tagEnd);
+        if (end == string::npos)
+            return false;
+
+        block.assign(html, tagEnd + 1, end - tagEnd - 1);
+        pos = end + 5;
+        return true;
+    }
+}
+
+bool jzParseBingHtmlResults(const string &html, vector<string> &out)
+{
+    size_t pos = 0;
+    string block;
+    while (bingNextResultBlock(html, pos, block))
+    {
+        string title, url, snippet;
+
+        size_t h2 = block.find("<h2");
+        if (h2 != string::npos)
+        {
+            size_t a = block.find("<a", h2);
+            if (a != string::npos)
+            {
+                size_t aEnd = block.find('>', a);
+                if (aEnd != string::npos)
+                {
+                    string aTag = block.substr(a, aEnd - a + 1);
+                    url = bingUnwrapLink(htmlUnescapeStr(htmlAttrValue(aTag, "href")));
+                    size_t titleEnd = block.find("</a>", aEnd);
+                    if (titleEnd != string::npos)
+                        title = bingCleanText(block.substr(aEnd + 1, titleEnd - aEnd - 1));
+                }
+            }
+        }
+        if (title.empty())                  // 没有标题的块（广告位/占位）直接跳过
+            continue;
+
+        // 摘要取块内第一个 <p ...>...</p>；缺失不影响标题/链接
+        size_t p = block.find("<p");
+        while (p != string::npos)
+        {
+            char nxt = (p + 2 < block.size()) ? block[p + 2] : '\0';
+            if (nxt == ' ' || nxt == '>')
+                break;
+            p = block.find("<p", p + 2);
+        }
+        if (p != string::npos)
+        {
+            size_t pEnd = block.find('>', p);
+            size_t pClose = (pEnd == string::npos) ? string::npos : block.find("</p>", pEnd);
+            if (pEnd != string::npos && pClose != string::npos)
+                snippet = bingCleanText(block.substr(pEnd + 1, pClose - pEnd - 1));
+        }
+
+        string line = title + "\n";
+        if (!url.empty())
+            line += "  " + url + "\n";
+        if (!snippet.empty())
+            line += "  " + snippet + "\n";
+        out.push_back(line);
+    }
+    return !out.empty();
+}
+
+// 结果相关性粗判：查询词的每个 token（空白分隔、>=2 字节）在结果文本里**一个都没出现**，
+// 就认为抓取型源降级了（被限流/污染时会返回 200 + 一堆与查询无关的条目）。
+// 宁可报"无有效结果"也不要把垃圾当答案喂给模型。
+static string asciiLower(const string &s)
+{
+    string out = s;
+    for (char &c : out)
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c - 'A' + 'a');
+    return out;
+}
+
+bool jzSearchResultsRelevant(const string &query, const vector<string> &results)
+{
+    if (results.empty())
+        return false;
+
+    vector<string> tokens;
+    string cur;
+    for (char c : query)
+    {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        {
+            if (cur.size() >= 2)
+                tokens.push_back(asciiLower(cur));
+            cur.clear();
+        }
+        else
+            cur.push_back(c);
+    }
+    if (cur.size() >= 2)
+        tokens.push_back(asciiLower(cur));
+    if (tokens.empty())                  // 单字母查询无从判定，放行
+        return true;
+
+    for (const string &r : results)
+    {
+        string low = asciiLower(r);
+        for (const string &t : tokens)
+            if (low.find(t) != string::npos)
+                return true;
+    }
+    return false;
+}
+
 // 把收集到的条目拼成最终返回文本（0 条时给出友好提示）
 static string formatSearchResults(const vector<string> &results, int num)
 {
@@ -1981,7 +2256,8 @@ JZWebSearchTool::JZWebSearchTool()
     def.required_parameters.push_back("query");
     setToolDefine(def);
 
-    // 模板默认指向内置 Bing RSS；调用方可 setSearchUrlTemplate 覆盖
+    // 模板默认指向内置必应 RSS（体积小、结构稳）；调用方可 setSearchUrlTemplate 覆盖。
+    // 默认还会自动追加 HTML 通道兜底，见 call()
     m_searchUrlTemplate = kBingRssSearchUrl;
 }
 
@@ -2017,8 +2293,17 @@ void JZWebSearchTool::call(const ToolCall &params)
     ctx->call = params;
     ctx->query = query;
     ctx->num = num;
-    // 模板默认即内置 Bing RSS（构造时初始化），可被 setSearchUrlTemplate 覆盖
-    ctx->queue.push_back(m_searchUrlTemplate);
+    // 内置默认源：RSS 优先（~6KB）→ HTML 兜底（~105KB）；自定义模板则只用自己的源。
+    // 内置两个源都是抓取型，开相关性校验：被限流/污染时会返回 200 + 一堆无关结果，
+    // 不校验就会被当成"真结果"喂给模型（2026-11-12 走代理复测就是这么被骗的）。
+    if (m_searchUrlTemplate == kBingRssSearchUrl || m_searchUrlTemplate == kBingHtmlSearchUrl)
+    {
+        ctx->queue.push_back(kBingRssSearchUrl);
+        ctx->queue.push_back(kBingHtmlSearchUrl);
+        ctx->checkRelevance = true;
+    }
+    else
+        ctx->queue.push_back(m_searchUrlTemplate);
     m_calls[ctx->ctxId] = ctx;
 
     runNextSearch(ctx);
@@ -2079,6 +2364,8 @@ void JZWebSearchTool::runNextSearch(const std::shared_ptr<SearchCall> &ctx)
 
     JZNetworkRequest req(url);
     req.setHeader(JZNetworkRequest::UserAgentHeader, kSearchUserAgent);
+    // 必应按 Accept-Language 决定结果语言；不带时中文查询也可能返回英文/无关结果
+    req.setRawHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8");
     JZNetworkReply *reply = m_net->get(req);
     if (!reply)
     {
@@ -2139,6 +2426,22 @@ void JZWebSearchTool::parseSearch(const std::shared_ptr<SearchCall> &ctx, const 
 {
     vector<string> results;
 
+    // 收尾：内置抓取源先做相关性粗判，判为降级**直接报"搜索不可用"**；自定义源不校验（可能是语义搜索）。
+    // 为什么不切下一个源：内置 RSS / HTML 走的是同一个必应后端、同一个出口 IP，
+    // 一个被判无关说明整体不可用，再试另一个只是白等一轮（实测两通道结果完全一致）。
+    auto acceptResults = [&]()
+    {
+        if (ctx->checkRelevance && !jzSearchResultsRelevant(ctx->query, results))
+        {
+            finishSearch(ctx, false,
+                         "网络搜索不可用：搜索源返回的结果与查询词无关（可能被限流/降级，"
+                         "或网络出口被搜索引擎限制）。请改用已有信息或 web_fetch 已知链接，"
+                         "不要凭猜测作答；稍后可再试一次。");
+            return;
+        }
+        finishSearch(ctx, true, formatSearchResults(results, ctx->num));
+    };
+
     // ---------- JSON 源（数组 / results / RelatedTopics） ----------
     string trimmed = str_trimmed(body);
     if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '['))
@@ -2160,17 +2463,30 @@ void JZWebSearchTool::parseSearch(const std::shared_ptr<SearchCall> &ctx, const 
             if (arr)
             {
                 collectJsonResults(*arr, results);
-                finishSearch(ctx, true, formatSearchResults(results, ctx->num));
+                acceptResults();
                 return;
             }
         }
     }
 
-    // ---------- RSS/Atom 源（必应 format=rss 等） ----------
+    // ---------- RSS/Atom 源（内置必应 format=rss / 自定义 RSS 服务） ----------
     if (looksRssFeed(body))
     {
         collectRssResults(body, results);
-        finishSearch(ctx, true, formatSearchResults(results, ctx->num));
+        acceptResults();
+        return;
+    }
+
+    // ---------- 必应网页结果(HTML)，RSS 失败时的兜底 ----------
+    if (body.find("b_algo") != string::npos)
+    {
+        if (jzParseBingHtmlResults(body, results))
+        {
+            acceptResults();
+            return;
+        }
+        // 页面像必应结果页却一条都没解析出来：多半是验证页/改版，按失败切下一个源
+        failOverSearch(ctx, ctx->currentUrl + ": 必应结果页里没解析到条目（可能是验证页或页面改版）");
         return;
     }
 

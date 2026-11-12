@@ -95,11 +95,14 @@ void JZAgentNodeHost::refresh()
     // 是"这台机器的策略"唯一的事实来源。
     if (m_config)
     {
-        // 权限等级: 全部不检查时, 下面这些开关就不看了(见 JZVirtualTerminalConfig::level)
-        m_terminalConfig.level = m_config->unrestricted ? AccessLevel::Unrestricted
-                                                       : AccessLevel::Standard;
-        m_terminalConfig.allowPackageManager = m_config->allowPackageManager;
-        m_terminalConfig.allowNetwork = m_config->allowNetwork;
+        // 档位 = 预设: 先展开成字段, 再用显式配置的单项覆盖
+        m_terminalConfig.applyProfile(m_config->profile);
+        if (m_config->hasAllowPackageManager)
+            m_terminalConfig.allowPackageManager = m_config->allowPackageManager;
+        if (m_config->hasAllowNetwork)
+            m_terminalConfig.allowNetwork = m_config->allowNetwork;
+        if (m_config->hasAllowUnknownPrograms)
+            m_terminalConfig.allowUnknownPrograms = m_config->allowUnknownPrograms;
     }
 }
 
@@ -246,24 +249,21 @@ string JZAgentNode::buildInstructions() const
     string text;
     text += "你是运行在主机 \"" + m_config.nodeName + "\" 上的操作节点。\n";
     text += "工作区: " + m_config.rootDir + "  —— 相对路径以它为基准。\n";
-    text += "写权限: 工作区(读+写+执行)、系统临时目录(读+写, 如 /tmp)、授信目录(默认只读, "
-            "单独开了可写的才能写); 别处一律只读 —— 往那里写会被拒绝。\n";
-    text += "命令策略: " + string(m_config.allowPackageManager ? "允许" : "禁止") +
-            "装/升依赖(pip/npm/apt...), " + string(m_config.allowNetwork ? "允许" : "禁止") +
-            "联网下载(curl/wget...); 破坏性命令(dd/sudo/shutdown...)一律拒绝。\n\n";
+    text += "读写: 全盘可读(只读), 只有工作区/系统临时目录/标了可写的授信目录可写。\n";
+    text += "命令策略(默认放行): " + string(m_config.allowPackageManager ? "允许" : "禁止") +
+            "装/卸/升级依赖(pip/npm/apt...), " + string(m_config.allowNetwork ? "允许" : "禁止") +
+            "联网下载(curl/wget...); 普通命令(含未登记的 ipconfig/uptime 之类)都能跑, "
+            "只有破坏性命令(dd/sudo/shutdown...)与改系统设置的命令(reg/netsh/sc...)一律拒绝。\n\n";
 
     text += "可用工具:\n";
     if (m_config.allowTerminal)
     {
-        text += "  terminal_run    执行一条命令。命令**整条交给 shell**, "
-                "管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 的语义工作。\n";
-        text += "  terminal_open / terminal_list / terminal_close   多会话管理。⚠ terminal_run "
-                "**必须先 terminal_open** 拿到 session id 才能跑(节点不自动开默认会话)。\n";
+        text += "  terminal_run    执行一条命令(整条交给 shell, 一次一条)。\n";
+        text += jzTerminalSessionNotes(true);
         if (m_config.maxSessions > 0)
         {
-            text += "    会话上限 " + to_string(m_config.maxSessions) + " 个, 空闲 " +
-                    to_string(m_config.recycleSec) + " 秒会被自动回收 —— 不用了就 terminal_close, "
-                    "别靠回收清理。\n";
+            text += "  - 会话上限 " + to_string(m_config.maxSessions) + " 个, 空闲 " +
+                    to_string(m_config.recycleSec) + " 秒会被自动回收。\n";
         }
     }
     if (m_config.allowFileTools)
@@ -278,24 +278,13 @@ string JZAgentNode::buildInstructions() const
     if (!m_config.allowTerminal)
         return text;
 
-    text += "terminal_run 是**单前台任务**: 一次一条, 命令退出才回包(到 timeout 强杀)。\n";
-    text += "  - 要后台(常驻服务)就在命令末尾写 `&`, 并把输出重定向到文件"
-            "(`./srv > srv.log 2>&1 &`); 之后用 `cat srv.log` / `tail -50 srv.log` 看启动日志。\n";
-    text += "  - 没有 stream / background 参数, 也没有 run_id: 回包就是这条命令的输出。\n\n";
-
-    // ⚠ 这段是这个节点最重要的一段说明: 模型的 shell 直觉在这里只有一部分成立。
-    // ⚠ 终端已换成有状态解释器(JZVirtualTerminal 持有同一个 JZShell): cd/export 跨命令保留,
-    //   不能再写"每条命令一个新进程"(会把模型带偏)。
-    text += "⚠ 每个会话是**一个有状态的 shell**(命令在同一个解释器里跑):\n";
-    text += "  - `cd` / `export` 会保留到下一条命令; `cd X && <命令>` 之后相对路径按 X 解析,"
-            "权限也按 X 判 —— cd 到工作区外(临时目录除外)依然写不了。\n";
-    text += "  - 不确定当前目录就结果末尾那行 `[cwd]`(单独的 `pwd` 也返回它);"
-            "想回工作区根就 `cd <工作区根>`。\n";
-    text += "  - 单前台任务: 上一条没结束, 再跑一条会直接报忙(不排队)。\n";
-    text += "  - heredoc、`$( )`/反引号、进程替换都能用; 审核只看**能静态解析出来的命令**"
-            "(白名单 / 区域权限 / 危险指令), 藏在 `$( )` 或 heredoc body 里的命令不审、按可信处理。\n";
-    text += "  - 不支持: 后台 `&`、nohup/setsid/screen, 以及 for/while/if 等复合语句。\n";
-    text += "  - 交互式程序(vim / top / REPL)跑不了 —— 子进程的 stdin/stdout 是管道, 不是 tty。\n";
+    // 终端语义统一走 jzTerminalRunNotes(): 与本地 cli / remote_ssh / code_agent 同一份口径,
+    // 别在这里另写一套(以前这里写死了"不支持后台 &"等旧说法, 和实际行为对不上)。
+    text += jzTerminalRunNotes();
+    // 节点特有: 每个会话是有状态解释器, cd/export 跨命令保留
+    text += "  - 会话是有状态的: `cd` / `export` 保留到下一条命令; `cd X && <命令>` 之后相对路径按 X 解析,"
+            "权限也按 X 判。\n";
+    text += "  - 不确定当前目录就看结果末尾那行 `[cwd]`(单独的 `pwd` 也返回它)。\n";
     return text;
 }
 
@@ -432,25 +421,15 @@ void JZAgentNode::initLink(const JZNodeConfig &config)
     normalizeConfig(m_config);
     m_host.refresh();
 
-    // link 模式没有"多会话"概念: 一台终端, cwd 落在工作区根。
-    // (mcp 模式那套 terminal_open/close 是给模型自己管会话用的, remote_ssh 不需要。)
-    m_linkTerminal = new JZVirtualTerminal(this);
-    m_linkTerminal->setId("link");
-    m_linkTerminal->setTerminalConfig(m_host.toolTerminalConfig());
-    // 回包截断由本文件按协议包上限做(cutExecOutput); 这里关掉终端那层 32KB 上下文阀,
-    // 否则 120KB 的预算永远用不上。
-    m_linkTerminal->setReplyMaxBytes(0);
-
-    std::string dirError;
-    if (!m_linkTerminal->changeDir(m_config.rootDir, dirError))
-        jzWarning() << "link 模式设置工作目录失败:" << dirError;
+    // link 模式: 终端按"连接 + session"懒创建(见 linkTerm), 生命周期跟着连接走 ——
+    // 连接断(或被保活判死)就全部销毁, 没有空闲回收。
+    // mcp 模式那套 terminal_open/close 是给模型自己管会话用的, remote_ssh 不需要。
 
     jzInfo().noquote().nospace() << "agent_node(link) 就绪: name=" << m_config.nodeName
                                  << " root=" << m_config.rootDir
                                  << " shell=jz_shell(内建)"
-                                 << " 并发=1(单终端串行)"
-                                 << " maxConcurrent=" << m_config.maxConcurrent
-                                 << "(预留, 当前版本不生效)"
+                                 << " 每连接终端上限=" << m_config.maxSessions
+                                 << " 同时跑的命令上限=" << m_config.maxConcurrent
                                  << " 终端=" << (m_config.allowTerminal ? "开" : "关")
                                  << " 包管理=" << (m_config.allowPackageManager ? "开" : "关")
                                  << " 联网=" << (m_config.allowNetwork ? "开" : "关");
@@ -487,8 +466,9 @@ bool JZAgentNode::startLinkServer(std::string &error)
     connect(&m_linkServer->sigDisconnected, this, [this](uint64_t conn)
     {
         jzInfo().nospace() << "cli 断开: conn=" << conn;
-        dropLinkRuns(conn);
+        dropLinkClient(conn);   // 终端生命周期 = 连接生命周期
     });
+    startLinkWatchdog();
 
     if (!m_linkServer->listen(m_config.host, m_config.port))
     {
@@ -510,7 +490,105 @@ void JZAgentNode::sendLinkResult(uint64_t conn, const JZNodePackExecResult &resu
 {
     if (!m_linkServer)
         return;
+    // 连接已经没了(kill 之后收尾一定晚于断连): sendPacket 找不到 conn 会断言, 直接丢
+    if (m_linkClients.find(conn) == m_linkClients.end())
+        return;
     m_linkServer->sendPacket(conn, &result);
+}
+
+int JZAgentNode::linkRunningCount(const LinkClient &client) const
+{
+    int n = 0;
+    for (const auto &kv : client.sessions)
+        if (!kv.second.runId.empty())
+            ++n;
+    return n;
+}
+
+// 取(必要时懒建)某条连接名下的某台终端。session 为空 = 默认终端。
+JZVirtualTerminal *JZAgentNode::linkTerm(uint64_t conn, const std::string &session, std::string &error)
+{
+    LinkClient &client = m_linkClients[conn];
+    auto it = client.sessions.find(session);
+    if (it != client.sessions.end())
+        return it->second.term;
+
+    // 每连接的终端数上限: 终端是有状态的 shell(cwd/export 各自独立), 不设上限会被
+    // 一条连接一路开下去(每个都占一个执行线程)。
+    if (m_config.maxSessions > 0 && (int)client.sessions.size() >= m_config.maxSessions)
+    {
+        error = "这条连接上的终端数已达上限(" + std::to_string(m_config.maxSessions) +
+                "): 换一个 session 名, 或调大配置里的 maxSessions";
+        return nullptr;
+    }
+
+    JZVirtualTerminal *t = new JZVirtualTerminal(this);
+    t->setId(session.empty() ? std::string("link") : ("link-" + session));
+    t->setTerminalConfig(m_host.toolTerminalConfig());
+    // 回包截断由本文件按协议包上限做(cutExecOutput); 这里关掉终端那层 32KB 上下文阀,
+    // 否则 120KB 的预算永远用不上。
+    t->setReplyMaxBytes(0);
+
+    // cwd 落在节点工作区根(空 = 进程 cwd; normalizeConfig 已把它补成绝对路径)
+    std::string dirError;
+    if (!t->changeDir(m_config.rootDir, dirError))
+        jzWarning().noquote().nospace() << "link 模式设置工作目录失败: " << dirError;
+
+    LinkSession s;
+    s.term = t;
+    client.sessions[session] = s;
+    jzInfo().noquote().nospace() << "开终端 session=" << (session.empty() ? "(默认)" : session)
+                                 << " conn=" << conn << " (这条连接共 "
+                                 << client.sessions.size() << " 台)";
+    return t;
+}
+
+// 连接断开(或被保活判死): 销毁它名下全部终端 —— 析构会 kill 在跑的进程。
+// 这正是 shell 的语义: 终端没了, 前台任务跟着死, 不做断线续跑。
+void JZAgentNode::dropLinkClient(uint64_t conn)
+{
+    auto it = m_linkClients.find(conn);
+    if (it == m_linkClients.end())
+        return;
+
+    for (auto &kv : it->second.sessions)
+    {
+        if (!kv.second.runId.empty())
+            jzInfo().noquote().nospace() << "停掉掉线 cli 的命令: " << kv.second.runId
+                                         << " (session=" << (kv.first.empty() ? "默认" : kv.first) << ")";
+        delete kv.second.term;   // 析构里 cancel + 等执行线程退出
+    }
+    m_linkClients.erase(it);
+}
+
+void JZAgentNode::startLinkWatchdog()
+{
+    if (m_linkWatchdog)
+        return;
+    m_linkWatchdog = new JZTimer(this);
+    connect(&m_linkWatchdog->sigTimeout, this, [this]() { checkLinkAlive(); });
+    m_linkWatchdog->start(5000);   // 与 cli 的 ping 周期同频, 判定阈值 20s(4 次没到)
+    jzInfo().noquote().nospace() << "保活看门狗已启动(5s 扫描 / 20s 判定)";
+}
+
+void JZAgentNode::checkLinkAlive()
+{
+    if (!m_linkServer || m_linkClients.empty())
+        return;
+
+    const int64_t now = JZDateTime::currentMSecsSinceEpoch();
+    std::vector<uint64_t> dead;
+    for (const auto &kv : m_linkClients)
+        if (kv.second.lastPingMs > 0 && now - kv.second.lastPingMs > 20000)
+            dead.push_back(kv.first);
+
+    for (uint64_t conn : dead)
+    {
+        // 与"真断开"同一条收口路径: 销毁终端(kill 在跑的命令), 再关连接(对面会走退避重连)
+        jzWarning().noquote().nospace() << "cli 静默超时(>20s), 按掉线处理: conn=" << conn;
+        dropLinkClient(conn);
+        m_linkServer->closeClient(conn);
+    }
 }
 
 void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
@@ -519,17 +597,40 @@ void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
         return;
 
     const int type = pack->packetType();
+
+    // 任何包都说明这条链路活着; 只有"发过 ping"的连接才进超时判定(老 cli 不发 ping)
+    const int64_t nowMs = JZDateTime::currentMSecsSinceEpoch();
+    LinkClient &client = m_linkClients[conn];
+    if (client.lastPingMs > 0)
+        client.lastPingMs = nowMs;
+
+    if (type == NodePack_ping)
+    {
+        const bool firstPing = (client.lastPingMs == 0);
+        client.lastPingMs = nowMs;   // 这条连接会保活: 从下一次扫描起参与超时判定
+        if (firstPing)
+            jzInfo().noquote().nospace() << "cli 开始保活(ping): conn=" << conn;
+        JZNodePackPong pong;
+        pong.atMs = nowMs;
+        m_linkServer->sendPacket(conn, &pong);
+        return;
+    }
+
+    if (type == NodePack_pong)
+        return;   // 节点不发 ping, 收到 pong 只可能是对面回显: 忽略
+
     if (type == NodePack_hello)
     {
         JZNodePackHello *hello = (JZNodePackHello *)pack.get();
         JZNodePackHelloAck ack;
-        ack.ok = (m_linkTerminal != nullptr);
-        ack.error = ack.ok ? std::string() : std::string("节点未初始化执行终端");
+        // 终端是懒创建的(session 由 cli 在 exec 里指定), 这里只报能力
+        ack.ok = m_config.allowTerminal;
+        ack.error = ack.ok ? std::string() : std::string("节点没开终端(allowTerminal=false)");
         ack.nodeName = m_config.nodeName;
         ack.version = m_config.version;
         ack.rootDir = m_config.rootDir;
         // 终端用内建解释器, 没有可配的外部 shell; 这个字段保留给 cli 展示。
-        ack.shell = m_linkTerminal ? std::string("jz_shell") : std::string();
+        ack.shell = m_config.allowTerminal ? std::string("jz_shell") : std::string();
         m_linkServer->sendPacket(conn, &ack);
         jzInfo().noquote().nospace() << "cli 上线: id=" << hello->clientId << " v" << hello->cliVersion
                                      << " conn=" << conn;
@@ -539,7 +640,8 @@ void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
     if (type == NodePack_exec)
     {
         JZNodePackExec *exec = (JZNodePackExec *)pack.get();
-        runLinkExec(conn, exec->runId, exec->command, exec->cwd, exec->timeoutMs, exec->background);
+        runLinkExec(conn, exec->session, exec->runId, exec->command, exec->cwd,
+                    exec->timeoutMs, exec->background);
         return;
     }
 
@@ -556,45 +658,108 @@ void JZAgentNode::onLinkPacket(uint64_t conn, JZNetPackPtr pack)
         return;
     }
 
+    if (type == NodePack_sess)
+    {
+        JZNodePackSess *req = (JZNodePackSess *)pack.get();
+        JZNodePackSessResult res;
+        res.reqId = req->reqId;
+        auto cit = m_linkClients.find(conn);
+        const bool haveClient = (cit != m_linkClients.end());
+
+        if (!m_config.allowTerminal)
+            res.error = "节点没开终端(allowTerminal=false)";
+        else if (req->op == "open")
+        {
+            // 名字省略 = 节点起一个; 同名已存在则复用(幂等, 不重建 —— 重建会把在跑的命令杀掉)
+            const std::string name = req->session.empty() ? ("s" + std::to_string(++m_linkSessionGen))
+                                                         : req->session;
+            const bool existed = haveClient &&
+                cit->second.sessions.find(name) != cit->second.sessions.end();
+            std::string err;
+            JZVirtualTerminal *t = linkTerm(conn, name, err);
+            if (!t)
+                res.error = err;
+            else if (!req->cwd.empty() && !t->changeDir(req->cwd, err))
+                res.error = "cwd 不可用: " + err;
+            else
+            {
+                res.ok = true;
+                res.session = name;
+                res.text = (existed ? "会话已存在(复用)" : "已开终端") + std::string(" session=") + name +
+                           " cwd=" + t->info().cwd +
+                           "\n之后用 session=\"" + name + "\" 在这台终端上跑命令(它的 cwd/export 独立保留)";
+            }
+        }
+        else if (req->op == "close")
+        {
+            auto sit = haveClient ? cit->second.sessions.find(req->session) : cit->second.sessions.end();
+            if (sit == cit->second.sessions.end())
+                res.error = "没有这个会话: " + req->session;
+            else
+            {
+                JZVirtualTerminal *t = sit->second.term;
+                const std::string running = sit->second.runId;
+                cit->second.sessions.erase(sit);
+                delete t;   // 析构会 kill 在跑的命令
+                res.ok = true;
+                res.session = req->session;
+                res.text = "已关闭 session=" + req->session +
+                           (running.empty() ? std::string() : ("(在跑的命令已终止: " + running + ")"));
+            }
+        }
+        else if (req->op == "list")
+        {
+            res.ok = true;
+            std::string text = "会话数: ";
+            const int n = haveClient ? (int)cit->second.sessions.size() : 0;
+            text += std::to_string(n);
+            if (n == 0)
+                text += "\n(这条连接还没有终端: run 时会自动建一个, 或先 open 命名)";
+            else
+            {
+                for (const auto &kv : cit->second.sessions)
+                {
+                    text += "\n  - ";
+                    text += kv.first.empty() ? std::string("(默认)") : kv.first;
+                    text += "  cwd=" + kv.second.term->info().cwd;
+                    text += kv.second.runId.empty() ? std::string("  空闲") : ("  在跑 " + kv.second.runId);
+                }
+            }
+            res.text = text;
+        }
+        else
+            res.error = "未知的会话操作: " + req->op;
+
+        m_linkServer->sendPacket(conn, &res);
+        return;
+    }
+
     if (type == NodePack_execCancel)
     {
         JZNodePackExecCancel *cancel = (JZNodePackExecCancel *)pack.get();
-        if (!m_linkTerminal || m_activeLinkRun.conn != conn || m_activeLinkRun.runId != cancel->runId)
+        auto cit = m_linkClients.find(conn);
+        if (cit == m_linkClients.end())
+            return;
+        auto sit = cit->second.sessions.find(cancel->session);
+        if (sit == cit->second.sessions.end() || sit->second.runId != cancel->runId)
         {
-            // 已结束(或不是这条连接发起的): 明确忽略。**绝不能**直接 cancel():
-            // 终端只有一个前台任务, 那时在跑的很可能是别人/后来的命令。
-            jzInfo().nospace() << "取消: " << cancel->runId << " 不是当前在跑的那条, 忽略";
+            // 已结束(或不是这个会话在跑的那条): 明确忽略。**绝不能**直接 cancel():
+            // 那时在跑的很可能是同会话后来的命令。
+            jzInfo().noquote().nospace() << "取消: " << cancel->runId
+                                         << " 不是该会话在跑的那条, 忽略";
             return;
         }
 
-        jzInfo().nospace() << "取消执行: " << cancel->runId;
-        m_linkTerminal->cancel();
+        jzInfo().noquote().nospace() << "取消执行: " << cancel->runId
+                                     << " (session=" << (cancel->session.empty() ? "默认" : cancel->session) << ")";
+        sit->second.term->cancel();
         return;
     }
 }
 
-JZAgentNode::LinkRunKey JZAgentNode::linkKey(uint64_t conn, const std::string &runId)
-{
-    LinkRunKey k;
-    k.conn = conn;
-    k.runId = runId;
-    return k;
-}
-
-void JZAgentNode::dropLinkRuns(uint64_t conn)
-{
-    if (m_activeLinkRun.conn != conn)
-        return;   // 在跑的不是这条连接的命令, 不动
-    if (m_linkTerminal && !m_activeLinkRun.runId.empty())
-    {
-        jzInfo().nospace() << "停掉掉线 cli 的命令: " << m_activeLinkRun.runId;
-        m_linkTerminal->cancel();
-    }
-    m_activeLinkRun = LinkRunKey();
-}
-
-void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
-                              const std::string &cwd, int timeoutMs, bool background)
+void JZAgentNode::runLinkExec(uint64_t conn, const std::string &session, const std::string &runId,
+                              const std::string &command, const std::string &cwd, int timeoutMs,
+                              bool background)
 {
     auto fail = [this, conn, &runId](const std::string &why)
     {
@@ -610,16 +775,32 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
         fail("节点未开放终端(allowTerminal=false)");
         return;
     }
-    if (!m_linkTerminal)
+
+    // 同一会话(终端)同时只能跑一条命令: 忙就直接失败, 不排队 —— 排队会让调用方
+    // 以为"已经在跑了", 而 cwd 还停在上一条中途。
+    auto cit = m_linkClients.find(conn);
+    if (cit != m_linkClients.end())
     {
-        fail("节点没有可用的执行终端");
-        return;
+        auto sit = cit->second.sessions.find(session);
+        if (sit != cit->second.sessions.end() && sit->second.term->isRunning())
+        {
+            fail(session.empty() ? std::string("节点忙: 默认终端上一条命令还在跑, 等它结束再来")
+                                 : ("节点忙: 会话 " + session + " 上一条命令还在跑, 等它结束再来"));
+            return;
+        }
+        // 整个连接的并发上限(maxConcurrent): 不同 session 之间也限一下, 免得一台设备被跑满
+        if (m_config.maxConcurrent > 0 && linkRunningCount(cit->second) >= m_config.maxConcurrent)
+        {
+            fail("节点忙: 这条连接已有 " + std::to_string(m_config.maxConcurrent) + " 条命令在跑");
+            return;
+        }
     }
-    // 终端只有一个前台任务: 上一条没结束就明确说"忙", 不排队。
-    // ⚠ maxConcurrent 是预留字段: 单终端串行是硬约束, 配几都不改变(见 docs §6.4)。
-    if (m_linkTerminal->isRunning())
+
+    std::string termError;
+    JZVirtualTerminal *term = linkTerm(conn, session, termError);
+    if (!term)
     {
-        fail("节点忙: 上一条命令还在跑, 等它结束再来");
+        fail("没有可用的执行终端: " + termError);
         return;
     }
 
@@ -629,7 +810,7 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
     if (!cwd.empty())
     {
         std::string dirError;
-        if (!m_linkTerminal->changeDir(cwd, dirError))
+        if (!term->changeDir(cwd, dirError))
         {
             fail("cwd 不可用: " + dirError);
             return;
@@ -637,11 +818,11 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
     }
 
     const int64_t startMs = JZDateTime::currentMSecsSinceEpoch();
-    const LinkRunKey key = linkKey(conn, runId);
-
     auto finished = std::make_shared<bool>(false);
 
-    auto cb = [this, conn, runId, startMs, key, finished, background]
+    // ⚠ 不捕获 term: 连接断开时终端会被销毁, 回调可能晚一步到, 拿指针就是野指针。
+    //   需要 cwd 就从"连接/会话还在不在"里查。
+    auto cb = [this, conn, session, runId, startMs, finished, background]
               (bool ok, const std::string &output, const std::string &error)
     {
         if (*finished)
@@ -649,8 +830,19 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
         *finished = true;
 
         // 这条跑完了: 若归属还是它, 清空(cancel 才能正确判定"没有在跑的")
-        if (m_activeLinkRun.conn == key.conn && m_activeLinkRun.runId == key.runId)
-            m_activeLinkRun = LinkRunKey();
+        std::string cwdNow;
+        auto ci = m_linkClients.find(conn);
+        if (ci != m_linkClients.end())
+        {
+            auto si = ci->second.sessions.find(session);
+            if (si != ci->second.sessions.end())
+            {
+                if (si->second.runId == runId)
+                    si->second.runId.clear();
+                if (si->second.term)
+                    cwdNow = si->second.term->info().cwd;
+            }
+        }
 
         if (background)
         {
@@ -668,15 +860,15 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
         if (!background)
             res.output = cutExecOutput(output);
         res.error = error;
-        if (m_linkTerminal)
-            res.cwd = m_linkTerminal->info().cwd;
+        res.cwd = cwdNow;
         sendLinkResult(conn, res);
     };
 
-    JZResult<void> ret = m_linkTerminal->run(command, timeoutMs, cb);
+    JZResult<void> ret = term->run(command, timeoutMs, cb);
     if (ret.isOk())
     {
-        m_activeLinkRun = key;   // cancel 归属
+        // cancel 归属: 只认"这条会话当前在跑的 runId"
+        m_linkClients[conn].sessions[session].runId = runId;
 
         if (background)
         {
@@ -687,7 +879,7 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
             res.runId = runId;
             res.started = true;
             res.ok = true;
-            res.cwd = m_linkTerminal->info().cwd;
+            res.cwd = term->info().cwd;
             sendLinkResult(conn, res);
         }
     }
@@ -699,7 +891,7 @@ void JZAgentNode::runLinkExec(uint64_t conn, const std::string &runId, const std
         res.runId = runId;
         res.ok = false;
         res.error = ret.errorMessage();
-        res.cwd = m_linkTerminal->info().cwd;
+        res.cwd = term->info().cwd;
         sendLinkResult(conn, res);
     }
 }

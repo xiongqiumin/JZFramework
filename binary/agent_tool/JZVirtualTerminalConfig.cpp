@@ -138,13 +138,15 @@ string codeBashPathToWindows(const string &input, const vector<string> &tempDirs
             return tempDirs.front() + p.substr(4);
     }
 
-    // /cygdrive/c/... 与 /c[/...] -> C:/...
-    static const string kCyg = "/cygdrive/";
-    if (p.size() >= kCyg.size() + 2 && p.compare(0, kCyg.size(), kCyg) == 0 &&
-        isalpha((unsigned char)p[kCyg.size()]) && p[kCyg.size() + 1] == '/')
-        return string(1, (char)toupper((unsigned char)p[kCyg.size()])) + ":" + p.substr(kCyg.size() + 1);
+    // /c[/...] -> C:/...   (Git Bash 的挂载点形式, **只有**这一种)
+    // ⚠ 裸盘符(`/c` = 挂载点)必须给 `C:/` 而不是 `C:`: `C:` 在 Windows 里是"该盘的当前
+    //   目录", 拿去判目录多半不存在 —— 于是 `cd /c` 会报 No such file or directory
+    //   (Git Bash 里 `cd /c; pwd` 给 `/c`)。
+    // ⚠ 不认 `/cygdrive/c`: Git Bash(MSYS2) 没有这个挂载点, `cd /cygdrive/c` 在那里就是
+    //   报错; 保留它会让两边行为不一致(实测 bash 5.2.37)。
     if (isalpha((unsigned char)p[1]) && (p.size() == 2 || p[2] == '/'))
-        return string(1, (char)toupper((unsigned char)p[1])) + ":" + p.substr(2);
+        return string(1, (char)toupper((unsigned char)p[1])) + ":" +
+               (p.size() == 2 ? string("/") : p.substr(2));
 
     // Git 虚拟根: /usr... /bin /etc /var /home... -> <GitRoot>/...
     const string git = codeGitRoot();
@@ -307,10 +309,6 @@ bool zoneResolvePath(const ZoneConfig &cfg, const string &cwd, const string &inp
 // 注意参数叫 z 不叫 zone: 后者会把成员 zone(ZoneConfig) 遮蔽掉
 int JZVirtualTerminalConfig::accessOfZone(Zone z, const string &absPath) const
 {
-    // 全部不检查: 任何区域都给满权限(这一处是所有权限判定的唯一出口)
-    if (unrestricted())
-        return FileAccess::All;
-
     if (z == Zone::Workspace)
         return workspaceAccess;
 
@@ -350,6 +348,77 @@ int JZVirtualTerminalConfig::accessOfPath(const string &absPath) const
     return accessOfZone(zoneOfPath(zone, absPath), absPath);
 }
 
+// ===========================================================================
+// 权限档位: 三张预设表(判定层不读 profile, 只读下面填出来的字段)
+// ===========================================================================
+const char *permissionProfileText(PermissionProfile p)
+{
+    switch (p)
+    {
+    case PermissionProfile::Strict: return "strict";
+    case PermissionProfile::Loose:  return "loose";
+    case PermissionProfile::Standard: break;
+    }
+    return "standard";
+}
+
+bool permissionProfileFromText(const string &text, PermissionProfile &out)
+{
+    const string t = str_toLower(text);
+    if (t == "strict" || text == "严格")
+    {
+        out = PermissionProfile::Strict;
+        return true;
+    }
+    if (t == "standard" || t == "default" || text == "默认")
+    {
+        out = PermissionProfile::Standard;
+        return true;
+    }
+    if (t == "loose" || t == "relaxed" || text == "宽松")
+    {
+        out = PermissionProfile::Loose;
+        return true;
+    }
+    return false;
+}
+
+void JZVirtualTerminalConfig::applyProfile(PermissionProfile p)
+{
+    profile = p;
+
+    // 区域权限(三档一致): 全盘可读; 工作区读写执行; 授信目录(SDK/工具链)只读可执行
+    workspaceAccess = FileAccess::All;
+    trustedAccess   = FileAccess::Read | FileAccess::Exec;
+    outsideAccess   = FileAccess::Read;
+
+    switch (p)
+    {
+    case PermissionProfile::Strict:
+        // 白名单口径: 只有登记过的程序能跑; 不联网、不装依赖
+        allowUnknownPrograms = false;
+        allowPackageManager  = false;
+        allowNetwork         = false;
+        break;
+
+    case PermissionProfile::Loose:
+        // 默认口径 + 允许装/卸依赖; 授信目录也可写
+        trustedAccess        = FileAccess::All;
+        allowUnknownPrograms = true;
+        allowPackageManager  = true;
+        allowNetwork         = true;
+        break;
+
+    case PermissionProfile::Standard:
+    default:
+        // 黑名单口径: 未登记命令放行; 联网放行; 装/卸依赖仍拒
+        allowUnknownPrograms = true;
+        allowPackageManager  = false;
+        allowNetwork         = true;
+        break;
+    }
+}
+
 bool zoneCheckAccess(const JZVirtualTerminalConfig &cfg, const string &absPath,
                      int need, string &error)
 {
@@ -359,10 +428,6 @@ bool zoneCheckAccess(const JZVirtualTerminalConfig &cfg, const string &absPath,
     string where = string(zoneText(z));
 
     error.clear();
-
-    // 全部不检查: 不问区域、不问读写执行位
-    if (cfg.unrestricted())
-        return true;
 
     if ((need & FileAccess::Read) && !(access & FileAccess::Read))
     {

@@ -203,9 +203,9 @@ void JZAgent::setStreamEnabled(bool enabled)
     m_streamEnabled = enabled;
 }
 
-void JZAgent::setThinkEnabled(bool enabled)
+void JZAgent::setThinkMode(ThinkMode mode)
 {
-    m_thinkEnabled = enabled;
+    m_thinkMode = mode;
 }
 
 std::string JZAgent::readFile(std::string filepath)
@@ -279,32 +279,51 @@ void JZAgent::init(JZAgentConfig config)
         m_systemPrompt = system_root;
         if (m_systemPrompt.size() == 0 || m_systemPrompt.back() != '\n')
             m_systemPrompt.append("\n");
-
-        JZDir skills_dir(m_config.rootPath + "/skills");
-        if (skills_dir.exists())
-        {
-            // 使用JZDir遍历目录：仅文件、排除.和..、按名称排序
-            std::vector<JZFileInfo> file_list =
-                skills_dir.entryInfoList(JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
-
-            // 遍历所有技能文件
-            for (const auto& file_info : file_list)
-            {
-                auto ret = loadSkill(file_info.fileName(), file_info.filePath() + "/skill.md");
-                if (!ret.isOk())
-                {
-                    jzWarning() << "JZAgent: skip skill \"" << file_info.fileName()
-                                << "\" : " << ret.errorMessage();
-                    continue;
-                }
-                m_skills.push_back(ret.value());
-            }
-        }
     }
     else
     {
         m_systemPrompt = "你是一个人助理,请友好的回答问题,并协助用户完成任务.";
     }
+
+    // skills: 项目自己的 (`<root>/.jzagent/skills`) 先加载, 然后是旧的 `<root>/skills`
+    // (兼容), 最后是全局 `~/.jzagent/skills` —— 全局**总是加载**, 只补项目没有的。
+    // ⚠ 以前这段在 system.md 存在时才跑: 没有 system.md 的项目会连 skill 一起丢掉。
+    loadSkillsFromDir(m_config.rootPath + "/.jzagent/skills");
+    loadSkillsFromDir(m_config.rootPath + "/skills");
+    for (const auto &dir : m_config.globalSkillsDirs)
+        loadSkillsFromDir(dir);
+}
+
+// 加载一个 skills 目录(下一级每个子目录一个 skill, 入口 skill.md)。
+// 同名 skill 已存在就跳过 —— 调用顺序决定优先级: 项目 > 旧目录 > 全局。
+void JZAgent::loadSkillsFromDir(const std::string &dir)
+{
+    JZDir skills_dir(dir);
+    if (!skills_dir.exists())
+        return;
+    std::vector<JZFileInfo> file_list =
+        skills_dir.entryInfoList(JZDir::Dirs | JZDir::NoDotAndDotDot, JZDir::SortName);
+    for (const auto &file_info : file_list)
+    {
+        const std::string name = file_info.fileName();
+        if (skill(name))
+            continue;                       // 项目里已有同名: 全局的不覆盖
+        auto ret = loadSkill(name, file_info.filePath() + "/skill.md");
+        if (!ret.isOk())
+        {
+            jzWarning() << "JZAgent: skip skill \"" << name << "\" : " << ret.errorMessage();
+            continue;
+        }
+        m_skills.push_back(ret.value());
+    }
+}
+
+std::vector<std::string> JZAgent::skillNames() const
+{
+    std::vector<std::string> names;
+    for (const auto &s : m_skills)
+        names.push_back(s.name);
+    return names;
 }
 
 std::string JZAgent::systemPrompt()
@@ -695,12 +714,13 @@ void JZAgent::llmRequest()
         request_body["tool_choice"] = "auto";
     }
 
-    if(!m_thinkEnabled)
+    // 思考开关(三态): Auto 什么都不发 —— 由端点默认值决定, 对 OpenAI / Azure 这类
+    // 严格校验的服务端最友好(它们不认 chat_template_kwargs, 发过去就是 400);
+    // On/Off 才显式发 enable_thinking。见 JZAgent.h 的 ThinkMode。
+    if (m_thinkMode != ThinkMode::Auto)
     {
         Json::Value chat_template_kwargs(Json::objectValue);
-        chat_template_kwargs["enable_thinking"] = m_thinkEnabled;
-
-        Json::Value local_extra_body(Json::objectValue);
+        chat_template_kwargs["enable_thinking"] = (m_thinkMode == ThinkMode::On);
         request_body["chat_template_kwargs"] = chat_template_kwargs;
     }
     // 调用方自定义字段(各家私有参数)最后合并, 允许覆盖上面的默认值

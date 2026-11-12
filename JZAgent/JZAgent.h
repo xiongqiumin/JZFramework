@@ -171,6 +171,22 @@ public:
 };
 typedef std::shared_ptr<JZAgentRequest> JZAgentRequestPtr;
 
+// ---------------------------------------------------------------------------
+// 思考开关(三态)
+//   Auto = **不发送**任何思考字段, 由端点自己的默认值决定 —— 最兼容: OpenAI / Azure
+//          这类严格校验的服务端不认 chat_template_kwargs, 发过去就是 400;
+//   On   = 显式发 chat_template_kwargs.enable_thinking=true(需要服务端开了 reasoning
+//          parser, 否则字段被忽略、思考仍然混在 content 里);
+//   Off  = 显式发 false(明确不要思考, 省 token)。
+// ⚠ 三态的差别只在"发不发这个字段", 不是"能不能思考"(那由服务端决定)。
+// ---------------------------------------------------------------------------
+enum class ThinkMode
+{
+    Auto = 0,
+    On,
+    Off,
+};
+
 class JZFRAMEWORK_API JZAgentConfig
 {
 public:
@@ -180,6 +196,10 @@ public:
     };
 
     std::string rootPath;
+
+    // 额外的 skills 根目录(每个都是 ".../skills" 这一级), **在项目 skills 之后加载**,
+    // 同名 skill 不覆盖项目里的 —— 用来实现"全局 .jzagent 共用, 总是加载"。
+    std::vector<std::string> globalSkillsDirs;
     
     std::string modelUrl;
     std::string modelName;
@@ -281,7 +301,9 @@ public:
 
     bool streamEnabled() const;
     void setStreamEnabled(bool enabled);
-    void setThinkEnabled(bool enabled);
+    // 思考开关: Auto(默认, 不发字段) / On / Off(显式发 enable_thinking)
+    void setThinkMode(ThinkMode mode);
+    ThinkMode thinkMode() const { return m_thinkMode; }
 
     // 事务(批量提交): transaction() 之后提交的多条消息先入队不发送, commit() 时
     // 合并成一次请求发出(多条消息进同一轮)。与"运行期禁止提交"是两回事:
@@ -316,8 +338,13 @@ public:
     // 仅 Idle 状态允许; WaitingReply(请求在途)与 Inactive(无需重置)会被 jzWarning 拒绝。
     void reset();
 
+    // 加载一个 skills 目录(下一级每个子目录一个 skill, 入口 skill.md); 同名跳过。
+    void loadSkillsFromDir(const std::string &dir);
+
     void addSkill(const SkillDefine& tool);
     const SkillDefine* skill(const std::string& name);
+    // 已加载的 skill 名(项目 .jzagent/skills + 旧 skills/ + 全局), 供卡片/排障展示
+    std::vector<std::string> skillNames() const;
     JZResult<SkillDefine> loadSkill(std::string skill_name, const std::string& skill_path);
 
     std::string errorString();
@@ -417,10 +444,10 @@ protected:
     std::vector<SkillDefine> m_skills;
     std::atomic<int> m_paramIdGen{ 0 };
 
-    // 配置项(不是运行态): 只由 setStreamEnabled/setThinkEnabled 改, reset() 不该动它们 ——
+    // 配置项(不是运行态): 只由 setStreamEnabled/setThinkMode 改, reset() 不该动它们 ——
     // 否则"清空历史重开一个任务"会把流式/思考设置一起抹掉(第二个任务起悄悄退回非流式)。
-    bool m_streamEnabled = false;  //是否流式传输
-    bool m_thinkEnabled = true;    //是否思考
+    bool m_streamEnabled = false;            //是否流式传输
+    ThinkMode m_thinkMode = ThinkMode::Auto; //思考开关(见 ThinkMode)
 
     JZAgentTool *m_readSkill;
     LLMContext m_context;

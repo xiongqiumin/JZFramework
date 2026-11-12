@@ -46,10 +46,12 @@ public:
     void setTrustedPrograms(const std::vector<TrustedProgram> &programs);
     const std::map<std::string, std::string> &trustedPrograms() const { return m_trustedPrograms; }
 
-    // 程序白名单。构造时会装一份默认表。
+    // 程序登记簿(黑名单口径: 没登记的按 config.allowUnknownPrograms 放行)。
+    // denyVerbs 非空时 = 只有命中这些子命令才拒(`npm run build` 放行 / `npm install` 拒绝)。
     void addProgram(const std::string &name, std::vector<std::string> exeNames, CmdCategory category,
                     std::vector<std::string> denyFlags = std::vector<std::string>(),
-                    std::vector<std::string> denyModules = std::vector<std::string>());
+                    std::vector<std::string> denyModules = std::vector<std::string>(),
+                    std::vector<std::string> denyVerbs = std::vector<std::string>());
     std::vector<std::string> availablePrograms() const;   // 供提示词/自检
     void buildDefaultPrograms();                          // 装默认表(构造时调)
 
@@ -75,15 +77,17 @@ public:
                      const std::string &base = std::string()) const;
 
     // ==================== 细粒度判定(暴露给执行器/自检) ====================
-    // `rm -rf /`、`dd of=/dev/sda` 这类: 单看程序名审不出来(rm/dd 本身在白名单里),
+    // `rm -rf /`、`dd of=/dev/sda` 这类: 单看程序名审不出来(rm/dd 本身是普通命令),
     // 得看参数组合。返回 nullptr 表示用法没问题。
     const char *dangerousArgReason(const std::string &program,
                                    const std::vector<std::string> &args,
                                    const std::string &base = std::string()) const;
 
-    // 安全底线: 即便 AccessLevel::Unrestricted(全部不检查)也始终生效, 执行之前最后一道闸。
+    // 安全底线: 与档位无关(严格/默认/宽松都一样), 执行之前最后一道闸, 没有开关。
     // 覆盖两类永远不许的:
-    //   1) 特别危险的指令(关机 / 格式化磁盘 / 往块设备写 ...)
+    //   1) 提权 / 改账号 / 改系统设置 / 关机 / 分区格式化 / 往块设备写
+    //      (sudo su runas reg netsh systemctl shutdown mkfs dd of=/dev/... ...)
+    //      —— 与 CmdCategory::Dangerous / SystemAdmin 同源, 但不看档位
     //   2) 删除工作区外的文件(rm / rmdir 的目标不在工作区树内 —— 含根目录本身)
     // 返回 Allow 表示通过底线(其余检查在不限制档里本来就跳过)。
     const char *criticalDangerReason(const std::string &program,

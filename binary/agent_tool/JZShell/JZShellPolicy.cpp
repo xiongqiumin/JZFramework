@@ -41,6 +41,35 @@ bool looksLikePath(const string &program)
         return true;
     return p.size() > 1 && p[1] == ':';
 }
+
+// 子命令 = 程序名之后第一个不以 '-' 开头的参数(`npm --prefix x install` 里是 install)。
+// ⚠ args[0] 是程序名本身(argv), 必须跳过 —— 否则 `npm install` 会把 "npm" 当子命令,
+//   安装子命令永远匹配不上(实测 pip install 就这么漏过去了)。
+// 没有则返回空(如 `npm --version`)。
+string firstVerb(const vector<string> &args)
+{
+    for (size_t i = 1; i < args.size(); i++)
+    {
+        const string &a = args[i];
+        if (a.empty() || a[0] == '-')
+            continue;
+        string v = str_toLower(toSlash(a));
+        size_t pos = v.find_last_of('/');
+        if (pos != string::npos)
+            v = v.substr(pos + 1);
+        return v;
+    }
+    return string();
+}
+
+// 子命令是否命中某个登记项: 精确匹配, 或带 scope 后缀(`install:foo` / `add:dev`)。
+// 不用前缀匹配 —— "i" 会把 "init" 也吃掉。
+bool verbMatches(const string &verb, const string &bad)
+{
+    if (verb == bad)
+        return true;
+    return str_startsWith(verb, bad + ":");
+}
 } // namespace
 
 JZShellPolicy::JZShellPolicy()
@@ -88,7 +117,8 @@ void JZShellPolicy::setTrustedPrograms(const std::vector<TrustedProgram> &progra
 }
 
 void JZShellPolicy::addProgram(const string &name, vector<string> exeNames, CmdCategory category,
-                               vector<string> denyFlags, vector<string> denyModules)
+                               vector<string> denyFlags, vector<string> denyModules,
+                               vector<string> denyVerbs)
 {
     ProgramSpec spec;
     spec.name = name;
@@ -96,6 +126,7 @@ void JZShellPolicy::addProgram(const string &name, vector<string> exeNames, CmdC
     spec.category = category;
     spec.denyFlags = std::move(denyFlags);
     spec.denyModules = std::move(denyModules);
+    spec.denyVerbs = std::move(denyVerbs);
     m_programs[programKey(name)] = spec;
 
     // 可执行文件别名也要能查到: 否则 `python3 x.py` 会因为表里只有 "python" 被当成
@@ -189,15 +220,9 @@ JZShellPolicy::Verdict JZShellPolicy::checkExec(const string &program,
     Verdict v;
     string cwd = effectiveBase(base);
 
-    // 全部不检查(AccessLevel::Unrestricted): 程序白名单、危险命令、包管理/联网、
-    // denyFlags、危险参数组合 一概不问 —— 到这里就放行。
-    if (m_config.unrestricted())
-    {
-        v.decision = Decision::Allow;
-        v.detail = "全部不检查(Unrestricted): " + program;
-        return v;
-    }
-
+    // ⚠ 判定只看 config 字段(由档位 applyProfile 展开), 不看 profile 本身 ——
+    //   三档的差别全在 allowUnknownPrograms / allowPackageManager / allowNetwork 上。
+    //   安全底线(criticalDangerReason)由调用方(JZVirtualTerminal::startRun)先跑过一遍。
     if (looksLikePath(program))
     {
         // 相对路径(./hello、build/app)必须按基准目录解析, 否则会被当成区外程序拒掉
@@ -248,9 +273,19 @@ JZShellPolicy::Verdict JZShellPolicy::checkExec(const string &program,
     auto it = m_programs.find(key);
     if (it == m_programs.end())
     {
+        // 黑名单口径(2026-11-12): 没登记的程序默认放行 —— `ipconfig` / `uptime` /
+        // `netstat` / `cmake` 这类不该因为"表里没有"就被拦。
+        // ⚠ 没登记 = 不知道它干什么: 危险动作只靠 Shell 层的 detach/compound 与
+        //   安全底线(关机/格式化/删工作区外)兜底, 文件读写仍按 zone 判。
+        if (m_config.allowUnknownPrograms)
+        {
+            v.decision = Decision::Allow;
+            v.detail = "未登记的命令, 默认放行: " + program;
+            return v;
+        }
         v.decision = Decision::Deny;
         v.reason = DenyReason::ProgramDenied;
-        v.detail = "程序不在白名单里: " + program;
+        v.detail = "程序不在白名单里(allowUnknownPrograms=false): " + program;
         return v;
     }
 
@@ -272,10 +307,28 @@ JZShellPolicy::Verdict JZShellPolicy::checkExec(const string &program,
     }
     if (spec.category == CmdCategory::PackageManager && !m_config.allowPackageManager)
     {
-        v.decision = Decision::Deny;
-        v.reason = DenyReason::EnvChange;
-        v.detail = "禁止安装/升级依赖(策略未放行): " + program;
-        return v;
+        // 有 denyVerbs = 只拦"装/卸/升级"这类改环境的子命令:
+        //   `npm install` 拒绝, `npm run build` / `pip list` 照常放行。
+        // denyVerbs 为空 = 整程序拒绝(apt / brew / winget 几乎只做安装)。
+        if (spec.denyVerbs.empty())
+        {
+            v.decision = Decision::Deny;
+            v.reason = DenyReason::EnvChange;
+            v.detail = "禁止安装/升级依赖(只读用法请直接看文件或用程序自身的 list 子命令): " + program;
+            return v;
+        }
+
+        string verb = firstVerb(args);
+        for (const string &bad : spec.denyVerbs)
+        {
+            if (verbMatches(verb, bad))
+            {
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::EnvChange;
+                v.detail = "禁止安装/升级/卸载依赖(会改环境): " + program + " " + verb;
+                return v;
+            }
+        }
     }
     if (spec.category == CmdCategory::Network && !m_config.allowNetwork)
     {
@@ -323,7 +376,7 @@ JZShellPolicy::Verdict JZShellPolicy::checkExec(const string &program,
     }
 
     v.decision = Decision::Allow;
-    v.detail = "白名单程序";
+    v.detail = "已登记命令";
     return v;
 }
 
@@ -341,9 +394,10 @@ const char *JZShellPolicy::dangerousArgReason(const string &program,
         if (prog != "kill")
             return "终端不跟踪进程号, 无法判定归属: 停自己的命令请用 terminal_cancel";
 
-        for (const string &a : args)
+        // ⚠ args[0] 是程序名本身, 从 1 开始
+        for (size_t i = 1; i < args.size(); i++)
         {
-            if (a.empty() || a[0] == '-')
+            if (args[i].empty() || args[i][0] == '-')
                 continue;   // -9 / -TERM 等信号 / -l
             return "终端不跟踪进程号, 无法判定这个 pid 是不是自己起的: 停自己的命令请用 terminal_cancel";
         }
@@ -361,8 +415,10 @@ const char *JZShellPolicy::dangerousArgReason(const string &program,
                 recursive = true;
         }
 
-        for (const string &a : args)
+        // ⚠ args[0] 是程序名("rm"), 不是路径 —— 从 1 开始, 否则会被当成"删除 cwd/rm"
+        for (size_t i = 1; i < args.size(); i++)
         {
+            const string &a = args[i];
             if (a.empty() || a[0] == '-')
                 continue;
 
@@ -402,19 +458,40 @@ const char *JZShellPolicy::criticalDangerReason(const string &program,
                                                 const vector<string> &args) const
 {
     string p = str_toLower(program);
-    if (p == "shutdown" || p == "reboot" || p == "halt" || p == "poweroff" ||
-        p == "init" || p == "telinit" || p == "fdisk" || p == "parted" ||
-        p == "wipefs" || p == "mkswap" || p == "format" || p == "diskpart" ||
-        str_startsWith(p, "mkfs") || str_startsWith(p, "mke2fs"))
+    // 特别危险的一类: 提权 / 改账号 / 改系统设置 / 挂载 / 关机 / 分区格式化。
+    // 与 CmdCategory::Dangerous / SystemAdmin 表同源, 但**这里不看档位** ——
+    // 严格 / 默认 / 宽松 三档都拒, 且没有开关能关掉。
+    static const char *kNeverAllowed[] = {
+        // 提权与账号
+        "sudo", "doas", "su", "runas", "passwd", "chpasswd",
+        "useradd", "userdel", "usermod", "groupadd", "groupdel", "chroot",
+        // 权限归属
+        "chown", "chgrp", "setfacl", "chattr",
+        // 挂载 / 内核 / 防火墙 / 计划任务
+        "mount", "umount", "swapon", "swapoff", "modprobe", "insmod", "rmmod",
+        "iptables", "ip6tables", "ufw", "firewall-cmd", "sysctl", "crontab",
+        // 服务与系统设置(Windows 侧一并列上)
+        "systemctl", "service", "sc", "net", "reg", "setx", "schtasks", "netsh",
+        "bcdedit", "powercfg", "dism", "sfc", "icacls", "takeown", "cacls", "fsutil",
+        // 关机 / 分区 / 格式化
+        "shutdown", "reboot", "halt", "poweroff", "init", "telinit",
+        "fdisk", "sfdisk", "parted", "wipefs", "mkswap", "format", "diskpart",
+        // 杀别人的进程(自己的进程用 terminal_cancel 或 kill)
+        "killall", "pkill",
+    };
+    for (const char *c : kNeverAllowed)
     {
-        return "系统/磁盘危险指令(关机/格式化/分区), 即便 Unrestricted 也禁止";
+        if (p == c)
+            return "特别危险的指令(提权/改账号/改系统设置/关机/分区格式化), 任何档位都禁止";
     }
+    if (str_startsWith(p, "mkfs") || str_startsWith(p, "mke2fs"))
+        return "格式化磁盘的指令, 任何档位都禁止";
     if (p == "dd")
     {
         for (const string &a : args)
         {
             if (str_startsWith(a, "of=/dev/") && a != "of=/dev/null" && a != "of=/dev/zero")
-                return "不能往块设备写(dd of=/dev/...), 即便 Unrestricted 也禁止";
+                return "不能往块设备写(dd of=/dev/...), 任何档位都禁止";
         }
     }
     return nullptr;
@@ -460,8 +537,10 @@ JZShellPolicy::Verdict JZShellPolicy::checkCriticalFloor(const jzsh::AuditComman
     if (isDeleteCommand(lc))
     {
         string cwd = effectiveBase(base);
-        for (const string &a : cmd.argv)
+        // ⚠ argv[0] 是程序名("rm"), 不是路径 —— 从 1 开始
+        for (size_t i = 1; i < cmd.argv.size(); i++)
         {
+            const string &a = cmd.argv[i];
             if (a.empty() || a[0] == '-')
                 continue;   // 选项(-r / -rf ...), 不是路径
             bool isAbs = (a[0] == '/') || (a.size() > 1 && a[1] == ':');
@@ -472,14 +551,14 @@ JZShellPolicy::Verdict JZShellPolicy::checkCriticalFloor(const jzsh::AuditComman
             {
                 v.decision = Decision::Deny;
                 v.reason = DenyReason::CommandDenied;
-                v.detail = "Unrestricted 下仍禁止删除根目录: " + a;
+                v.detail = "禁止删除根目录(任何档位): " + a;
                 return v;
             }
             if (!isWithinWorkspace(abs))
             {
                 v.decision = Decision::Deny;
                 v.reason = DenyReason::CommandDenied;
-                v.detail = "Unrestricted 下仍禁止删除工作区外的文件: " + a;
+                v.detail = "禁止删除工作区外的文件(任何档位): " + a;
                 return v;
             }
         }
@@ -494,8 +573,8 @@ bool JZShellPolicy::resolvePath(const string &path, bool writeAccess,
     string cwd = effectiveBase(base);
 
     Zone zone = Zone::Outside;
-    // 最后那个参数 = strict: "全部不检查"那档连"工作区未配置"/".. 越界"也不算失败
-    if (!zoneResolvePath(m_config.zone, cwd, path, absPath, zone, error, !m_config.unrestricted()))
+    // 最后那个参数 = strict: 路径必须解析得出来(工作区未配置 / ".. 越界" 都算错)
+    if (!zoneResolvePath(m_config.zone, cwd, path, absPath, zone, error, true))
     {
         verdict.decision = Decision::Deny;
         verdict.reason = DenyReason::PathOutside;
@@ -523,7 +602,12 @@ bool JZShellPolicy::resolvePath(const string &path, bool writeAccess,
 }
 
 // ==========================================================================
-// 默认程序白名单
+// 默认程序登记表(黑名单口径)
+//
+// 没登记的程序按 allowUnknownPrograms 放行, 所以这张表只用来登记两类:
+//   ① 需要**禁止**的: Dangerous(危险指令) / SystemAdmin(改系统设置) / 安装器
+//   ② 需要**限制用法**的: 包管理器的安装子命令(denyVerbs)、git 的 -C 之类(denyFlags)
+// 允许类的登记只是"顺手给个类别", 不登记也一样能跑。
 // ==========================================================================
 
 void JZShellPolicy::buildDefaultPrograms()
@@ -560,20 +644,49 @@ void JZShellPolicy::buildDefaultPrograms()
     addProgram("python", { "python.exe", "python", "python3" }, CmdCategory::Tool,
                { "-c" }, { "pip" });
 
-    addProgram("pip", { "pip.exe", "pip", "pip3.exe", "pip3" }, CmdCategory::PackageManager);
-    addProgram("npm", { "npm.exe", "npm" }, CmdCategory::PackageManager);
-    addProgram("npx", { "npx.exe", "npx" }, CmdCategory::PackageManager);
-    addProgram("conda", { "conda.exe", "conda" }, CmdCategory::PackageManager);
-    addProgram("yarn", { "yarn.exe", "yarn" }, CmdCategory::PackageManager);
+    // ---- 包管理: 程序本身可用, 只拦"装/卸/升级/发布"这些改环境的子命令 ----
+    // 统一子命令表: 命中即拒。`npm run build` / `pip list` / `cargo test` 照常放行。
+    static const char *kInstallVerbs[] = {
+        "install", "i", "ci", "add", "update", "upgrade", "uninstall", "remove", "rm", "purge",
+        "publish", "link", "unlink", "dedupe", "prune", "bootstrap", "restore", "sync",
+        "download", "wheel", "fetch", "vendor", "yank", "push", "import", "create",
+        "dlx", "set", "plugin", "policies", "get", "mod",
+    };
+    vector<string> installVerbs;
+    for (const char *v : kInstallVerbs)
+        installVerbs.push_back(v);
+
+    addProgram("pip", { "pip.exe", "pip", "pip3.exe", "pip3" }, CmdCategory::PackageManager,
+               {}, {}, installVerbs);
+    addProgram("npm", { "npm.exe", "npm" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("conda", { "conda.exe", "conda" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("yarn", { "yarn.exe", "yarn" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("pnpm", { "pnpm.exe", "pnpm" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("bun", { "bun.exe", "bun" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("cargo", { "cargo.exe", "cargo" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("go", { "go.exe", "go" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("poetry", { "poetry.exe", "poetry" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+    addProgram("uv", { "uv.exe", "uv" }, CmdCategory::PackageManager, {}, {}, installVerbs);
+
+    // 几乎只做安装的程序: 整条拒绝(npx/uvx 会临时下载并执行包, 等于安装)
+    static const char *kInstallers[] = {
+        "npx", "uvx", "pipx", "gem", "bundle", "composer", "nuget", "msiexec", "vcpkg", "conan",
+        "apt", "apt-get", "aptitude", "dpkg", "rpm", "yum", "dnf", "zypper", "pacman", "apk",
+        "brew", "choco", "winget", "scoop", "snap", "flatpak", "port", "pkg", "luarocks", "cpan",
+    };
+    for (const char *cmd : kInstallers)
+        addProgram(cmd, { cmd, string(cmd) + ".exe" }, CmdCategory::PackageManager);
 
     addProgram("curl", { "curl.exe", "curl" }, CmdCategory::Network);
     addProgram("wget", { "wget.exe", "wget" }, CmdCategory::Network);
 
-    addProgram("reg", { "reg.exe", "reg" }, CmdCategory::SystemAdmin);
-    addProgram("sc", { "sc.exe", "sc" }, CmdCategory::SystemAdmin);
-    addProgram("net", { "net.exe", "net" }, CmdCategory::SystemAdmin);
-    addProgram("setx", { "setx.exe", "setx" }, CmdCategory::SystemAdmin);
-    addProgram("schtasks", { "schtasks.exe", "schtasks" }, CmdCategory::SystemAdmin);
+    // ---- 改系统设置/环境: 一律拒绝 ----
+    static const char *kSystemAdmin[] = {
+        "reg", "sc", "net", "setx", "schtasks", "netsh", "wmic", "bcdedit", "powercfg",
+        "dism", "sfc", "icacls", "takeown", "cacls", "fsutil",
+    };
+    for (const char *cmd : kSystemAdmin)
+        addProgram(cmd, { cmd, string(cmd) + ".exe" }, CmdCategory::SystemAdmin);
 
     // 危险/破坏性命令: 一律拒绝, 不提供开关。
     // 它们本来也不在白名单里(会报"不在白名单"), 单列一档是为了给一句人看得懂的话 ——

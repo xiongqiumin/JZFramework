@@ -208,6 +208,7 @@ void JZHubLink::sendHello()
     hello.name = m_config.name;
     hello.version = m_config.version;
     hello.rootDir = m_config.rootDir;
+    hello.project = m_config.project;
     hello.modelName = m_config.modelName;
     hello.nodes = nodesJson();
     m_client->sendPacket(&hello);

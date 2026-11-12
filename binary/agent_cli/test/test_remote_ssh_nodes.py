@@ -258,7 +258,7 @@ def start_mock_llm(secret: str) -> tuple[ThreadingHTTPServer, str]:
     # 每轮发出去之前, 检查"上一轮的工具调用真的做成了"(见 MockLlm.expects)
     MockLlm.expects = [
         None, None, None,
-        ["后台运行"],      # 上一轮 `&`: 启动即返回
+        ["exit=0"],        # 上一轮 `&`: 启动即返回(已无 background 参数, 回包就是 exit=0)
         ["two"],          # 上一轮 cat bg.txt: 必须看到后台写的第二行
     ]
     MockLlm.failures = []

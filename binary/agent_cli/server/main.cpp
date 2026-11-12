@@ -20,6 +20,7 @@
 #include "JZDir.h"
 #include "JZFileInfo.h"
 #include "JZJson.h"
+#include "JZLog.h"
 #include "JZPlatform.h"
 #include "JZString.h"
 #include "JZDebug.h"
@@ -223,6 +224,11 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
         config.http.caFile = "certs/ca.crt";
 
     const string cfgDir = dirName(path);
+
+    // logFile: 空 = <exeDir>/data/logs; 相对路径按"配置文件所在目录"解析
+    if (root.isMember("logFile") && root["logFile"].isString() && !root["logFile"].asString().empty())
+        config.logFile = resolvePath(cfgDir, root["logFile"].asString());
+
     config.http.certFile = resolvePath(cfgDir, config.http.certFile);
     config.http.keyFile = resolvePath(cfgDir, config.http.keyFile);
     config.http.caFile = resolvePath(cfgDir, config.http.caFile);
@@ -385,6 +391,27 @@ int main(int argc, char *argv[])
     }
 
     JZApplication app;
+
+    // 日志: General 模块落盘到 <logFile目录或 exeDir/data/logs>/Server.log。
+    // 之前 server 根本没初始化 JZLogManager, 所有 jzInfo/jzWarning 全是空转 ——
+    // 排查"任务下发/续会话/agent 上下线"时什么都看不到。
+    {
+        const string logDir = config.logFile.empty()
+                                  ? (JZPlatform::applicationDirPath() + "/data/logs")
+                                  : dirName(config.logFile);
+        JZDir().mkpath(logDir);
+
+        JZLogConfig lc;
+        lc.shouldPrintTime = true;
+        lc.logPath = logDir;
+        JZLogManager::instance()->setConfig(lc);
+
+        JZLogModuleConfig general;
+        general.name = "Server";                       // 落到 Server.log
+        general.type = JZLogModuleConfig::File;
+        JZLogManager::instance()->setModuleConfig(LogModule_General, general);
+    }
+
     JZAgentCliServer server;
     if (!server.init(config, err))
     {

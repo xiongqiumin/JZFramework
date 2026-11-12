@@ -12,6 +12,8 @@ add_executable(agent_cli
     main.cpp
     JZAgentCli.h
     JZAgentCli.cpp
+	JZAgentCliTask.h
+	JZAgentCliTask.cpp
     JZNodeLink.h
     JZNodeLink.cpp
     JZHubLink.h
@@ -39,20 +41,21 @@ target_include_directories(agent_cli_packet PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(agent_cli PRIVATE agent_cli_packet agent_tool)
 
-# 拷贝网页静态资源(http/)到 exe 同目录, 使默认 httpDir(=exeDir/http) 能找到 index.html 等。
+# 拷贝网页静态资源(webui/)到 exe 同目录, 使默认 httpDir(=exeDir/webui) 能找到 index.html 等。
+# 目录就叫 webui: 它是"网页界面", 不是 http 服务本身(别和 http 配置段混在一起)。
 add_custom_command(TARGET agent_cli POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_CURRENT_SOURCE_DIR}/http
-        $<TARGET_FILE_DIR:agent_cli>/http
-    COMMENT "copy agent_cli web ui (http/)")
+        ${CMAKE_CURRENT_SOURCE_DIR}/webui
+        $<TARGET_FILE_DIR:agent_cli>/webui
+    COMMENT "copy agent_cli web ui (webui/)")
 
 # 统一视觉层(web/ui: tokens/base/components + demo) —— 一份源, 每个 web 宿主各拷一份。
-# 页面里用 /ui/*.css 引用(静态目录根就是 http/)。
+# 页面里用 /ui/*.css 引用(静态目录根就是 webui/)。
 add_custom_command(TARGET agent_cli POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${JZFRAMEWORK_ROOT_DIR}/web/ui
-        $<TARGET_FILE_DIR:agent_cli>/http/ui
-    COMMENT "copy shared web ui (web/ui -> http/ui)")
+        $<TARGET_FILE_DIR:agent_cli>/webui/ui
+    COMMENT "copy shared web ui (web/ui -> webui/ui)")
 
 # 测试用的大模型接入配置: 测试脚本**不写死**任何端点, 一律读 exe 同目录的 test_llm.json。
 # 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake); 已存在的不覆盖 ——

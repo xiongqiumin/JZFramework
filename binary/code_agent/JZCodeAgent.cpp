@@ -1465,7 +1465,8 @@ void JZCodeAgent::buildAgent()
 
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
-    m_agent->setThinkEnabled(false);
+    // code_agent 不需要思考: 显式发 enable_thinking=false(省 token)
+    m_agent->setThinkMode(ThinkMode::Off);
 
     m_llmConfig.reuseConnection = false;
     m_agent->init(m_llmConfig);
@@ -1538,14 +1539,15 @@ void JZCodeAgent::buildAgent()
 
     applyZoneConfig();
 
-    // 网络搜索工具：可配置搜索接口，共享 m_netMan（代理已统一设置）
+    // 网络搜索工具：默认源是必应 RSS → HTML（直连可用，无需配置）；
+    // 需要换源（付费搜索 API / 自建服务）时才配 webSearchUrl（见 docs/web-search-design.md）
     auto *searchTool = new JZWebSearchTool();
     if (!m_codeConfig.webSearchUrl.empty())
         searchTool->setSearchUrlTemplate(m_codeConfig.webSearchUrl);
     searchTool->setNetworkAccessManager(m_netMan);
     addTool(searchTool);
 
-    // 网页抓取工具：与 web_search 共享同一个访问管理器与代理
+    // 网页抓取工具：抓已知 URL(不依赖搜索源, 实测可用)
     auto *fetchTool = new JZWebFetchTool();
     fetchTool->setNetworkAccessManager(m_netMan);
     addTool(fetchTool);
@@ -1640,9 +1642,10 @@ std::string JZCodeAgent::buildSystemPrompt() const
     text << "代码风格class优先, 使用面向对象的风格进行编码\n";
     // 运行时边界(不是 Node: 没有 require / 裸名只能默认导入 / 句柄与退出语义见 jzTsRuntimeNotes)
     text << "\n" << jzTsRuntimeNotes();
-    // 起服务/长任务怎么跑(terminal_run 的 background / query / cancel): 与 agent_cli 同一份,
-    // 否则这里注册了 background 能力却没告诉模型怎么用(它会拿很久的 timeout 前台干等)。
+    // 终端语义(语法/前台/后台/超时/会话)与 agent_cli、remote_ssh 共用同一份,
+    // 否则这里注册了 terminal_open/close 却没告诉模型怎么用(它会拿很久的 timeout 前台干等)。
     text << "\n" << jzTerminalRunNotes();
+    text << "\n" << jzTerminalSessionNotes(false);
 
     return text.str();
 }

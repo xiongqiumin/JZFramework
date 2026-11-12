@@ -55,18 +55,17 @@ const char kPathSep = ':';
 
 // ---- Git Bash 的"参数路径转换" ----
 // MSYS 运行时在启动**原生程序**(tsc / code_runtime / node / cmd …)时, 会把参数里"像 POSIX 绝对路径"
-// 的那部分翻成 Windows 路径: `/c/tmp` -> `C:/tmp`、`/cygdrive/d/x` -> `D:/x`。
+// 的那部分翻成 Windows 路径: `/c/tmp` -> `C:/tmp`。
 // 模型在终端里就是这么写的(`tsc -p /c/tmp/x`), 所以 shell 层必须跟着翻 —— 否则原样传给原生程序,
 // 它根本不认识 `/c/...`(实测真 Node: argv 收到 "/c/tmp" 时 path.resolve 给 `C:\c\tmp`)。
-// ⚠ 只翻**盘符挂载**形式: `/usr`、`/etc`、正则里的 `/foo/`、URL 里的 `/api/x` 一律不动 ——
+// ⚠ 只翻**盘符挂载**形式(`/c/...`): `/usr`、`/etc`、正则里的 `/foo/`、URL 里的 `/api/x` 一律不动 ——
 //   MSYS 那种"全量转换"连 `cmd /c` 都会误伤(所以 Git Bash 里得写 `cmd //c`), 不学。
+// ⚠ 不认 `/cygdrive/...`: Git Bash(MSYS2) 没有这个挂载点, 那边原样透传(Cygwin 才有)。
 // 关掉: `MSYS_NO_PATHCONV=1`(与 MSYS 同名, 便于对照)。
 bool driveMountToWin(const string &s, string &out)
 {
     size_t i = 0;
-    if (s.compare(0, 10, "/cygdrive/") == 0)
-        i = 10;
-    else if (!s.empty() && s[0] == '/')
+    if (!s.empty() && s[0] == '/')
         i = 1;
     else
         return false;
@@ -3087,6 +3086,15 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
             a = convertBashPathArg(a);
     }
 
+    // 整条命令行的预算已经用光: 别起进程了(否则等于白跑一条)
+    if (remainingTimeoutMs() < 0)
+    {
+        r.failed = true;
+        r.status = 124;
+        r.failReason = "命令超时, 已被终止: " + program;
+        return r;
+    }
+
     JZProcess proc;
     proc.setWorkingDirectory(m_cwd);
     proc.setProcessChannelMode(merged ? JZProcess::MergedChannels : JZProcess::SeparateChannels);
@@ -3116,8 +3124,10 @@ JZShell::StageResult JZShell::runExternal(const string &program, const vector<st
         proc.write(JZByteArray(stdinText.data(), (int)stdinText.size()));
     proc.closeWriteChannel();
 
-    // 分片等待: 既要能到点强杀, 也要能让另一个线程 requestCancel() 打断
-    int timeout = m_timeoutMs > 0 ? m_timeoutMs : 0x7fffffff;
+    // 分片等待: 既要能到点强杀, 也要能让另一个线程 requestCancel() 打断。
+    // 这里等的是**整条命令行剩下的预算**(不是重新给这一条命令一整份 timeout)。
+    const int leftMs = remainingTimeoutMs();
+    int timeout = (leftMs == 0) ? 0x7fffffff : leftMs;
     const int kSliceMs = 100;
     int waited = 0;
 
@@ -5199,6 +5209,15 @@ bool isReservedWord(const string &n)
 
 bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult &r)
 {
+    // 整条命令行已经超时: 直接按超时收尾(不能退化成字符串管道, 那等于又跑一遍)
+    if (remainingTimeoutMs() < 0)
+    {
+        r.failed = true;
+        r.status = 124;
+        r.failReason = "命令超时, 已被终止";
+        return true;
+    }
+
     struct Stage
     {
         string program;
@@ -5310,7 +5329,9 @@ bool JZShell::tryRunExternalPipe(const std::vector<NodePtr> &stages, StageResult
     procs[0]->closeWriteChannel();
 
     // ---- 等全部结束: 每段都分片等(顺带把各自的管道读空), 支持超时/取消 ----
-    const int timeout = m_timeoutMs > 0 ? m_timeoutMs : 0x7fffffff;
+    // 同样等"整条命令行剩下的预算"
+    const int leftMs = remainingTimeoutMs();
+    const int timeout = (leftMs == 0) ? 0x7fffffff : leftMs;
     const int kSlice = 50;
     int waited = 0;
     while (true)
@@ -5861,6 +5882,17 @@ void JZShell::flushNodeOutputs(const NodePtr &n, StageResult &r)
     }
 }
 
+// 整条命令行还剩多少毫秒(>0 剩余 / 0 不限 / <0 已超时)。判据是 exec() 记下的绝对截止时间。
+int JZShell::remainingTimeoutMs() const
+{
+    if (m_deadlineMsec <= 0)
+        return 0;
+    const long long left = m_deadlineMsec - steadyMsec();
+    if (left <= 0)
+        return -1;
+    return left > 0x7fffffff ? 0x7fffffff : (int)left;
+}
+
 JZShell::StageResult JZShell::runNode(const NodePtr &n)
 {
     StageResult r;
@@ -5890,6 +5922,17 @@ JZShell::StageResult JZShell::runNode(const NodePtr &n)
         r.failed = true;
         r.status = 130;
         r.failReason = "命令已被取消";
+        return r;
+    }
+
+    // 超时同样停**整条命令行**: 外部命令等待处只是"等到点", 这里兜住"还在往后跑"的情况
+    // (`a; b; c` 里 b 超时被杀之后, c 不该再起)。
+    if (remainingTimeoutMs() < 0)
+    {
+        m_depth--;
+        r.failed = true;
+        r.status = 124;
+        r.failReason = "命令超时, 已被终止";
         return r;
     }
 
@@ -6639,11 +6682,37 @@ static string textLineAt(const string &text, int n)
 JZShell::Result JZShell::exec(const string &line)
 {
     Result out;
+    // `source` 会在 runBuiltin 里再进一次 exec: 嵌套调用不能把外层的截止时间/取消信号冲掉
+    // (退出时恢复外层状态)。
+    struct ExecScopeGuard
+    {
+        JZShell *s;
+        bool nested;
+        long long prevDeadline;
+        ~ExecScopeGuard()
+        {
+            s->m_inExec = nested;
+            s->m_deadlineMsec = prevDeadline;
+        }
+    } guard{this, m_inExec, m_deadlineMsec};
+    const bool nested = m_inExec;
+
     m_exiting = false;
     m_exitCode = 0;
     m_depth = 0;
     m_inBuf.clear();      // 上一行命令剩下的管道输入不能串到这一条
-    m_cancelRequested = false;
+    if (!nested)
+        m_cancelRequested = false;   // 只清"上一条命令"留下的取消; 嵌套时外层还在取消中
+    // 超时是**整条命令行**的预算: 进来记一次截止时间, 后面每个外部命令等待都按剩余时间算。
+    // 以前是"每个外部命令各算一遍 timeout", `for d in a b c; do du -s "$d"; done` 就能
+    // 跑到 3×timeout, 把调用方的任务超时(server 侧 15min)撞掉 —— 20:20 那条任务就是这么挂的。
+    {
+        long long d = (m_timeoutMs > 0) ? (steadyMsec() + m_timeoutMs) : 0;
+        if (nested && m_deadlineMsec > 0 && (d == 0 || m_deadlineMsec < d))
+            d = m_deadlineMsec;      // 嵌套: 取更早的那个截止时间, 不允许"续命"
+        m_deadlineMsec = d;
+    }
+    m_inExec = true;
     // ⚠ 不要在这里把 m_cwd 写回 policy: exec 跑在执行线程上, 而宿主(终端/文件工具)会在
     //   主线程用 policy() 做审核 —— 两边同时动 m_baseCwd 就是 std::string 数据竞争
     //   (实测: Debug 堆被踩坏, ucrtbased 里随机 0x80000003)。审核基准请由**调用方**

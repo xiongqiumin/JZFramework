@@ -44,7 +44,8 @@ public:
     std::string mode = "mcp";
     // link 模式的握手口令(JZNetServer::setToken)。空 = 拒绝启动 link 模式(裸奔的执行口子)。
     std::string token;
-    // link 模式同时允许几条命令在跑。设备上建议保持 1: 并跑几条编译只会互相拖死。
+    // link 模式: 每条 cli 连接同时允许几条命令在跑(每条终端本身仍是串行的)。
+    // 设备上建议保持 1: 并跑几条编译只会互相拖死。<=0 表示不限。
     int maxConcurrent = 1;
 
     // 文件工具的根目录(相对路径按它拼接), 同时也是区域模型里的"工作区"(可读写)。
@@ -62,18 +63,20 @@ public:
     // 读写就得走 shell(大文件分段读、改代码校验唯一匹配这些能力会一起没掉)。
     bool allowFileTools = true;
 
-    // ---- 命令策略(见 JZVirtualTerminalConfig) ----
-    // 包管理(pip/npm/apt...)与联网(curl/wget...)默认关: 装依赖、下载东西是
-    // 副作用最大的一类, 要开是人(管理员)的决定, 不该由模型临时起意。
-    // ⚠ 危险命令(dd/sudo/shutdown...)与改系统设置的命令没有开关, 一律拒绝。
+    // ---- 权限档位(三选一, 见 JZVirtualTerminalConfig.h) ----
+    //   strict   : 只跑登记过的命令 + 区外只读 + 禁联网 + 禁装依赖
+    //   standard : 未登记命令放行 + 区外只读 + 允许联网 + 禁装依赖   ← 默认
+    //   loose    : standard + 允许装/卸依赖 + 授信目录可写
+    // ⚠ 安全底线(提权/改系统设置/关机/格式化/删工作区外)三档都拦, 没有开关。
+    // ⚠ 节点是 HTTP 零鉴权的: 对外暴露时用 strict, 别用 loose。
+    PermissionProfile profile = PermissionProfile::Standard;
+    // 档位之上的单项覆盖(配置里写了才算, has* = 是否显式配置)
     bool allowPackageManager = false;
-    bool allowNetwork = false;
-
-    // 权限等级: true = 全部不检查(JZVirtualTerminalConfig::AccessLevel::Unrestricted) ——
-    // 目录边界、读写执行、程序白名单、危险命令、上面两个开关 统统失效, 命令原样交给 shell。
-    // ⚠ 只在本机自用 / 明确的沙箱里开; 节点是 HTTP 零鉴权的, 开着它就等于把这台机器
-    //   的 shell 交给了任何能连上端口的人。
-    bool unrestricted = false;
+    bool allowNetwork = true;
+    bool allowUnknownPrograms = true;
+    bool hasAllowPackageManager = false;
+    bool hasAllowNetwork = false;
+    bool hasAllowUnknownPrograms = false;
 
     // 跑命令用哪个 shell。空 = 自动探测: **优先 bash**(POSIX 先看 /bin、/usr/bin 再扫 PATH;
     // Windows 找 Git for Windows 的 Git/bin/bash.exe), 找不到回退 /bin/sh;
@@ -81,8 +84,10 @@ public:
     std::string shellProgram;
 
     // ---- 会话(终端) ----
-    // 同时最多开几个会话: 每个会话是一个独立终端(各自 cwd / 在跑的进程 / 运行记录),
-    // 不设上限的话, 模型忘了 terminal_close 就会一路堆上去。<=0 表示不限。
+    // 同时最多开几个会话/终端: 每个会话是一个独立终端(各自 cwd / 在跑的进程 / 运行记录)。
+    //   mcp  模式: 模型忘了 terminal_close 就会一路堆上去, 靠这个上限 + 空闲回收兜住;
+    //   link 模式: 每条 cli 连接最多几台终端(session), 连接断开时全部销毁。
+    // <=0 表示不限。
     int maxSessions = 8;
     // 会话空闲多久回收(秒), <=0 表示不回收。默认 15 分钟。
     int recycleSec = 15 * 60;
@@ -130,8 +135,12 @@ private:
 // 两组各有开关(allowTerminal / allowFileTools), 关掉哪个, instructions 里就只写
 // 剩下的那部分(见 buildInstructions)。
 //
-// 本类还管会话的生命周期: open() 建(受 maxSessions 限制)、close() 销毁、
-// 后台定时器按 recycleSec 回收空闲的 —— JZVirtualTerminal 自己不管这些。
+// 本类还管会话的生命周期, 但两种模式不同:
+//   mcp  模式: open() 建(受 maxSessions 限制)、close() 销毁、后台定时器按 recycleSec 回收空闲的
+//              (MCP over HTTP 是无状态的, 拿不到"客户端断开"这个信号, 只能靠空闲兜底);
+//   link 模式: 终端按「连接 + session」懒创建, 连接断(或被保活判死)就全部销毁 ——
+//              生命周期跟着连接走, 没有空闲回收。
+//  JZVirtualTerminal 自己不管这些。
 // ---------------------------------------------------------------------------
 class JZAgentNode : public JZObject, public JZTerminalRegistry
 {
@@ -174,25 +183,42 @@ protected:
     void normalizeConfig(JZNodeConfig &config);
     // 一条 exec 请求: 审核由终端做, 这里只负责换 cwd 与回包
     // background=true: 立刻回一条 started, 结束再补一条"结束"通知(不带 output)
-    void runLinkExec(uint64_t conn, const std::string &runId, const std::string &command,
-                     const std::string &cwd, int timeoutMs, bool background);
+    void runLinkExec(uint64_t conn, const std::string &session, const std::string &runId,
+                     const std::string &command, const std::string &cwd, int timeoutMs,
+                     bool background);
     void onLinkPacket(uint64_t conn, JZNetPackPtr pack);
     void sendLinkResult(uint64_t conn, const JZNodePackExecResult &result);
 
-    // cancel 归属判定: 单终端同一时刻只有一条命令, 记下"它是哪条连接、哪个 runId 起的"即可。
-    // 不记这个的话, 一条已结束的 runId 发来的 cancel 会误杀后来者。
-    struct LinkRunKey
+    // 一条连接名下的终端: session 名("" = 默认) -> 终端。每条终端同一时刻只跑一条命令,
+    // 所以在跑的 runId 也记在这里(cancel 归属判定: 只停 runId 对得上的那条)。
+    struct LinkSession
     {
-        uint64_t conn = 0;
-        std::string runId;
+        JZVirtualTerminal *term = nullptr;
+        std::string runId;        // 这台终端当前在跑的 runId(空闲为空)
     };
-    static LinkRunKey linkKey(uint64_t conn, const std::string &runId);
-    // 连接断开: 若正在跑的是这条连接起的命令, 停掉; 然后清空归属
-    void dropLinkRuns(uint64_t conn);
+    struct LinkClient
+    {
+        std::map<std::string, LinkSession> sessions;
+        int64_t lastPingMs = 0;   // 0 = 这条连接还没发过 ping(老 cli, 不做超时判定)
+    };
+    // 终端生命周期 = 连接生命周期: 连接断开(或被判死)就全部销毁, 不做空闲回收。
+    std::map<uint64_t, LinkClient> m_linkClients;
+
+    // 取(必要时懒建)某条连接的某台终端。超过 maxSessions 时返回 nullptr + error。
+    JZVirtualTerminal *linkTerm(uint64_t conn, const std::string &session, std::string &error);
+    // 连接断开: 销毁它名下全部终端(析构会 kill 在跑的进程)
+    void dropLinkClient(uint64_t conn);
+    // 该连接当前有几条命令在跑(用于 maxConcurrent)
+    int linkRunningCount(const LinkClient &client) const;
+
+    // 保活: cli 每 5s 发一次 ping。socket 半开(拔网线/断电)时不会报断开,
+    // 只有靠"多久没收到包"来发现 —— 超时按掉线处理(kill 在跑的命令 + 关连接)。
+    void startLinkWatchdog();
+    void checkLinkAlive();
 
     JZNetServer *m_linkServer = nullptr;         // link 模式的 server 角色
-    JZVirtualTerminal *m_linkTerminal = nullptr; // link 模式唯一的执行终端(会话由节点自己管)
-    LinkRunKey m_activeLinkRun;                  // 当前在跑的那条属于谁(空闲时 runId 为空)
+    JZTimer *m_linkWatchdog = nullptr;
+    int m_linkSessionGen = 0;                    // open 没给名字时自动编号(s1/s2...)
 
     // 空闲回收: 起一个周期定时器扫会话(recycleSec <= 0 时不开)。
     // ⚠ JZVirtualTerminal 自己不管生命周期(它只把 recycleMs 存着给上层看),

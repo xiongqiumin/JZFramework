@@ -46,9 +46,7 @@ static const char *kDefaultConfigJson =
     "    \"trustedDirs\":        [],\n"
     "    \"allowTerminal\":      true,\n"
     "    \"allowFileTools\":     true,\n"
-    "    \"allowPackageManager\": false,\n"
-    "    \"allowNetwork\":       false,\n"
-    "    \"unrestricted\":       false,\n"
+    "    \"profile\":            \"standard\",\n"
     "    \"shellProgram\":       \"\",\n"
     "    \"maxSessions\":        8,\n"
     "    \"maxConcurrent\":      1,\n"
@@ -146,9 +144,40 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     js.readMemberDefault("shellProgram", config.shellProgram, config.shellProgram);
     js.readMemberDefault("allowTerminal", config.allowTerminal, config.allowTerminal);
     js.readMemberDefault("allowFileTools", config.allowFileTools, config.allowFileTools);
-    js.readMemberDefault("allowPackageManager", config.allowPackageManager, config.allowPackageManager);
-    js.readMemberDefault("allowNetwork", config.allowNetwork, config.allowNetwork);
-    js.readMemberDefault("unrestricted", config.unrestricted, config.unrestricted);
+    // 权限档位: strict / standard / loose(默认 standard)
+    {
+        string profileText;
+        js.readMemberDefault("profile", profileText, string());
+        if (!profileText.empty() && !permissionProfileFromText(profileText, config.profile))
+        {
+            error = "profile 只能是 strict / standard / loose: " + profileText;
+            return false;
+        }
+        // 兼容旧配置(已废弃): 单项开关显式写了才覆盖档位预设
+        if (root.isMember("allowPackageManager"))
+        {
+            js.readMemberDefault("allowPackageManager", config.allowPackageManager, config.allowPackageManager);
+            config.hasAllowPackageManager = true;
+        }
+        if (root.isMember("allowNetwork"))
+        {
+            js.readMemberDefault("allowNetwork", config.allowNetwork, config.allowNetwork);
+            config.hasAllowNetwork = true;
+        }
+        if (root.isMember("allowUnknownPrograms"))
+        {
+            js.readMemberDefault("allowUnknownPrograms", config.allowUnknownPrograms, config.allowUnknownPrograms);
+            config.hasAllowUnknownPrograms = true;
+        }
+        // 兼容旧配置(已废弃): unrestricted: true 等价于宽松档
+        if (profileText.empty() && root.isMember("unrestricted"))
+        {
+            bool legacyUnrestricted = false;
+            js.readMemberDefault("unrestricted", legacyUnrestricted, legacyUnrestricted);
+            if (legacyUnrestricted)
+                config.profile = PermissionProfile::Loose;
+        }
+    }
     js.readMemberDefault("maxSessions", config.maxSessions, config.maxSessions);
     js.readMemberDefault("maxConcurrent", config.maxConcurrent, config.maxConcurrent);
     js.readMemberDefault("recycleSec", config.recycleSec, config.recycleSec);
@@ -229,9 +258,21 @@ static void printConfig(const string &configPath, const JZNodeConfig &config)
     jzInfo().noquote().nospace() << "  授信目录  " << (trusted.empty() ? string("(无)") : trusted);
     jzInfo().noquote().nospace() << "  工具      终端=" << (config.allowTerminal ? "开" : "关")
                                  << "  文件=" << (config.allowFileTools ? "开" : "关");
-    jzInfo().noquote().nospace() << "  命令策略  包管理=" << (config.allowPackageManager ? "开" : "关")
-                                 << "  联网=" << (config.allowNetwork ? "开" : "关")
-                                 << "  权限等级=" << (config.unrestricted ? "全部不检查" : "按区域分档");
+    // 档位展开后的实际策略(单项覆盖也反映在这里)
+    {
+        JZVirtualTerminalConfig policy = JZVirtualTerminalConfig();
+        policy.applyProfile(config.profile);
+        if (config.hasAllowPackageManager)
+            policy.allowPackageManager = config.allowPackageManager;
+        if (config.hasAllowNetwork)
+            policy.allowNetwork = config.allowNetwork;
+        if (config.hasAllowUnknownPrograms)
+            policy.allowUnknownPrograms = config.allowUnknownPrograms;
+        jzInfo().noquote().nospace() << "  权限档位  " << permissionProfileText(config.profile)
+                                     << "(包管理=" << (policy.allowPackageManager ? "开" : "关")
+                                     << " 联网=" << (policy.allowNetwork ? "开" : "关")
+                                     << " 未知命令=" << (policy.allowUnknownPrograms ? "放行" : "拒绝") << ")";
+    }
     jzInfo().noquote().nospace() << "  会话      上限=" << config.maxSessions
                                  << "  空闲回收=" << (config.recycleSec > 0 ? to_string(config.recycleSec) + "s" : string("关"));
     jzInfo().noquote().nospace() << "  shell     " << (config.shellProgram.empty() ? string("自动探测(优先 bash, 找不到回退 /bin/sh)") : config.shellProgram);

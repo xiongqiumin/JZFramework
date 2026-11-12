@@ -34,6 +34,7 @@ public:
         std::string name;         // 展示名
         std::string version;
         std::string rootDir;
+        std::string project;      // 项目名(一个 cli 一个 project)
         std::string modelName;
         std::string host;         // server 地址
         int port = 8090;

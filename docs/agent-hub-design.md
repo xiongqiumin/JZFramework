@@ -428,18 +428,32 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 | 方向 | 包 | 字段 |
 | --- | --- | --- |
 | cli→node | `NodePack_hello` | `clientId, cliVersion`（node 侧做日志/审计；不做路由） |
-| cli→node | `NodePack_exec` | `runId, command, cwd, timeoutMs, background` |
+| cli→node | `NodePack_exec` | `runId, command, cwd, timeoutMs, background, session`（`session` 指定落到哪台终端，空 = 默认终端；追加字段，老版本读成空串，等价于全用默认终端） |
 | node→cli | `NodePack_execResult` | `runId, ok, exitCode, timedOut, durationMs, cwd, output, error, started`（`output` 为 stdout/stderr 合流；`started=true` 表示后台已启动、不是最终结果） |
-| cli→node | `NodePack_execCancel` | `runId`（任务取消、reset、超时、或 `action=cancel`） |
+| cli→node | `NodePack_execCancel` | `runId, session`（任务取消、reset、超时、或 `action=cancel`；只停"该会话当前那条 runId"） |
 | cli→node | `NodePack_termQuery` | `runId, tail, grep, incremental`（等价 `terminal_query`；过滤在节点侧做） |
 | node→cli | `NodePack_termQueryResult` | `runId, found, running, ok, background, timedOut, exitCode, durationMs, totalLines, firstLine, readPos, text, error` |
 | node→cli | `NodePack_helloAck` | `ok, error, nodeName, version, rootDir, shell`（完整自述设计见 §6.6，未实现） |
+| cli→node | `NodePack_ping` | `clientId`（保活，5s 一次，握手成功后立刻发第一发） |
+| node→cli | `NodePack_pong` | `atMs`（ping 的回应；cli 目前不据此判定） |
+| cli→node | `NodePack_sess` | `reqId, op(open/close/list), session, cwd`（会话管理；open 幂等，同名复用） |
+| node→cli | `NodePack_sessResult` | `reqId, ok, error, session, text`（text 直接给模型看） |
 
 实现要点：
 
-- **并发**：每个 node **同时只跑 1 条 exec**（单终端串行），cli 侧忙时直接拒绝、不排队；
-  `maxConcurrent` 目前只是预留字段，配几都不改变（后台命令也占这唯一的前台终端）；
+- **模型侧的会话**：`remote_ssh` 有 `action=run/open/close/list` + `session`；`run` 省略 session 时用
+  该任务队列自己的终端（cli 侧 `sessionFor(owner)` → `q0/q1…`），`open` 可命名复用，`close` 会 kill 在跑的命令；
+- **多终端 / 并发**：一台 node 上按「连接 + session」持有多台终端（`map<conn, map<session, terminal>>`），
+  每条终端同一时刻只跑 1 条命令，**同 session 再发就直接回「忙」，不排队**；
+  `maxSessions` = 每条连接最多几台终端，`maxConcurrent` = 每条连接最多几条命令同时跑；
+  cli 侧目前仍是"每个 node 一条在飞"(m_pending 单条)，所以真正的并发要等 cli 也放开；
+- **终端生命周期 = 连接生命周期**：连接断（或被保活判死）就把这条连接名下所有终端销毁
+  （析构会 kill 在跑的命令），不做空闲回收 —— 与 shell 的语义一致（终端没了，前台任务跟着死）；
 - **超时双保险**：cli 侧 timer 到点发 `execCancel` 并本地收口；node 侧也用 `timeoutMs` 兜底杀进程树；
+- **保活**：`NodePack_ping` 每 5s 一次，node 侧 5s 扫一次、**20s 没收到就按掉线处理** ——
+  停掉该连接在跑的命令 + 关连接（对面走退避重连）。这是"按 shell 的语义"：终端没了，前台任务跟着死，
+  不做断线续跑/补发。socket 半开（拔网线/断电/休眠）只有靠它才发现，TCP 自己不会报断开。
+  ⚠ 只对**发过 ping 的连接**做判定，老版本 cli 不会因为不发 ping 被误杀；
 - **任务取消**：`endLoop()` 按发起队列的 owner 取消对应 `remote_ssh`，不误停其他队列共享连接上的命令；
   node 侧只停 `activeRunId` 与 runId 映射一致的那条（旧 runId 一律忽略），避免误杀后来者；
 - **多 cli**：`(连接, runId)` 才是节点的映射键 —— cli 的 runId 是它自己按"节点别名+序号"生成的，
@@ -532,9 +546,9 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 
 ```
 可用节点:
-  - line1 (10.0.0.7:7500) [默认] linux-x64 bash /home/line1 并发1 禁装包/禁联网
-  - line2 (10.0.0.8:7500)         win-x64  pwsh D:/line2   并发1
-  - line3 (10.0.0.9:7500)         [离线]
+  - line1 (10.0.0.7:7500)  linux-x64 bash /home/line1 并发1 禁装包/禁联网
+  - line2 (10.0.0.8:7500)  win-x64  pwsh D:/line2   并发1
+  - line3 (10.0.0.9:7500)  [离线]
 ```
 
 三条硬规则：
@@ -624,7 +638,7 @@ openssl pkcs12 -export -in certs/client.crt -inkey certs/client.key -out certs/c
 {
   "server": { "host": "10.0.0.5", "port": 8090, "token": "t-a1", "agentId": "a1" },
   "nodes": [
-    { "name": "line1", "host": "127.0.0.1", "port": 7500, "token": "t-line1", "default": true }
+    { "name": "line1", "host": "127.0.0.1", "port": 7500, "token": "t-line1" }
   ],
   "llm": { "...": "不变" },
   "terminal": { "...": "不变（本地工作区/权限）" }
@@ -695,60 +709,63 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 
 ## 9. 任务队列（`task.queues`）
 
-### 9.1 配置与语义
+### 9.1 配置与语义（任务池：按需创建 + 空闲回收）
 
 ```json
-"task": { "queues": 2, "maxPending": 32 }
+"task": { "queues": 2, "maxPending": 32, "keepAlive": 1, "idleRecycleSec": 60 }
 ```
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `task.queues` | `1` | 队列数，**每个队列一个独立 `JZAgent`（独立会话/上下文）**；1 = 旧行为 |
-| `task.maxPending` | `32` | 全部队列都在跑时，最多排多少条；`<=0` = 不排队（忙就拒） |
+| `task.queues` | `1` | **同时活动的任务上限**，不是启动时预建的队列数 |
+| `task.maxPending` | `32` | 全忙时最多排多少条；`<=0` = 不排队（忙就拒） |
+| `task.keepAlive` | `1` | 空闲任务对象保留几个不回收 |
+| `task.idleRecycleSec` | `60` | 超出 `keepAlive` 的空闲对象，空闲超过这个秒数就回收；`0` = 立即可回收 |
 
-- **队列内串行**：一个 `JZAgent` 只有一条会话，同一队列同一时刻只跑一个任务；
-- **队列间并发**：不同队列互不影响，各跑各的；
-- **派发**：提交时挑第一个空闲队列；全忙则进 master 的 FIFO 队列，任一队列空出来就派一条；
+- **启动时一个任务对象都不建**；HTTP `POST /task` / hub `taskSubmit` 时才 `acquireTask()`：
+  先复用空闲对象，没有且活动数 < `queues` 才 `new JZAgentCliTask`（自带一个 `JZAgent` + 工具/终端 + 一份状态）。
+- **对象内串行**：一条会话同一时刻只跑一个任务；对象之间并发。
+- **全忙**：进宿主 FIFO；任务 `endLoop()` 收尾后经 `onTaskFinished()` 触发 `pumpQueue()`，FIFO 不插队。
+- **回收**：`onTaskFinished()` 记空闲起点，5s 周期定时器扫 `recycleIdleTasks()`，超出 `keepAlive`
+  且空闲超过 `idleRecycleSec` 的对象 `deleteLater()` —— 之后没有新任务来也能收掉。
 - **排满**：`maxPending` 到顶直接拒绝（`queue_full`，HTTP 侧回 429），不让队列变成任务黑洞。
 
-### 9.2 实现方式（为什么不是"一个 JZAgentCli 里塞 N 个会话"）
+### 9.2 分层（网络归宿主，引擎归任务对象）
 
-每个队列是**一整个 `JZAgentCli` 实例**（`m_workers[i]`，`[0]` 就是 master 自己）：
+| 层 | 文件 | 职责 |
+| --- | --- | --- |
+| `JZAgentCli`（宿主） | `JZAgentCli.h/.cpp` | HTTP server、控制面 `JZHubLink`、node 连接、MCP 连接、SSE 广播、`/info`、任务池调度与回收 |
+| `JZAgentCliTask`（任务对象） | `JZAgentCliTask.h/.cpp` | 一个 `JZAgent` + 一套工具/终端 + 全部本轮状态；提交→验证→重试→收尾；**不持有任何网络对象** |
 
-| 每个队列独占 | 说明 |
+任务对象与宿主通过 `m_cli` 回调/信号出口通信（为将来单独线程留接口）：事件统一走
+`JZAgentCliTask::pushEvent`，同时推本地 SSE 与 `sendTaskEvent(taskId, ...)`；结果由 `dispatchTo`
+的回调回 HTTP/hub；`m_cli->onTaskFinished()` 通知空闲并触发下一轮派发与回收。
+
+| 每个任务对象独占 | 说明 |
 | --- | --- |
 | `JZAgent`（会话/上下文/工具表） | 工具对象把 `sigResult` 连到自己的 agent，**不能共用** |
-| 一整套工具对象 + `JZVirtualTerminal` | 终端本来就按会话隔离；`endLoop()` 的 `cancelAll()` 只会清自己队列的后台命令 |
-| 验证状态（`m_verifyProc/m_verifyCb/m_verifyGen/m_verifyOut`） | 两个任务同时验证会互相覆盖，必须每队列一份 |
-| 重试/累积/回包状态 | 同上 |
-
-这样**引擎代码（提交→验证→重试）一行没改**，只是被实例化 N 份；`submitTask` 变成调度器：
-
-```cpp
-submitTask(req, respond)          // 调度: 找空闲队列 -> dispatchTo(q) ; 全忙 -> m_pending
-  └─ runTask(req, respond)        // 引擎本体(原 submitTask 的内容, 逐字未改)
-```
-
-master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、node 连接、MCP 连接、SSE 广播、历史。
+| 一整套工具对象 + `JZVirtualTerminal` | 终端本来就按会话隔离；收尾只清自己启动的后台命令 |
+| 验证状态（`m_verifyProc/m_verifyCb/m_verifyGen/m_verifyOut`） | 两个任务同时验证会互相覆盖，必须每个对象一份 |
+| 重试/累积/日志/回包状态 | 同上；`Agent.log` 的 input/tool/reply 都由任务对象写 |
 
 ### 9.3 与其它模块的衔接
 
 | 面 | 多队列下的行为 |
 | --- | --- |
-| 事件 | worker 通过 `m_eventSink` 交给 master；所有 SSE 帧（含 q0）都有 `queue` 下标，控制面按该队列的 `taskId` 上 `taskEvent` |
-| `/info` | `queues: [{queue, busy, round, taskId, prompt}]` 与 `pendingTasks`；hub 的 `busy` 也按所有队列聚合，SSE 快照逐队列发送 |
-| `/reset`（scope=task） | 排队任务逐条回一次 `cancelled`，再让每个队列各自收尾；取消期间禁止回包回调重入派发 |
-| `taskCancel(taskId)` | 先查排队（命中就摘掉并回一次 `cancelled`），再按 `taskId` 只取消对应队列，不能误停其他队列 |
-| node（`remote_ssh`） | worker **不自己连** node（借用 master 连接）；工具记录发起队列 owner，收尾只取消该 owner 的远端 exec |
-| MCP（`mcp.servers[]`） | **只挂在队列 0**（见 §13） |
-| 长期记忆 | 各队列写同一个 `memory` 文件（追加语义，交错但不丢内容） |
+| 事件 | 任务对象 `pushEvent` 同时推 SSE 与 `sendTaskEvent(taskId, ...)`；宿主 `onTaskXxx` 槽只做转发 |
+| `/info` | `queues: [{queue, busy, taskId, idleMs}]` 与 `pendingTasks`；hub 的 `busy` 按所有对象聚合 |
+| `/reset`（scope=task） | 排队任务逐条回一次 `cancelled`，再让每个任务对象各自收尾；取消期间禁止重入派发 |
+| `taskCancel(taskId)` | 先查排队（命中就摘掉并回一次 `cancelled`），再按 `taskId` 只取消对应对象 |
+| node（`remote_ssh`） | 任务对象**不自己连** node（借用宿主 `nodeLink()`）；收尾只取消该对象发起的远端 exec |
+| MCP（`mcp.servers[]`） | 连上的 client 由宿主保存，任务对象创建时挂进它的 `JZAgent`（此时 agent 为 Inactive） |
+| 长期记忆 | 各任务对象写同一个 `memory` 文件（追加语义，交错但不丢内容） |
 
 ### 9.4 代价与风险（要认）
 
-1. **并发写同一工作区**：两个队列可能同时改同一批文件，模型互相踩且不会报错 —— 队列数 >1 时应配独立工作区/子目录，或只让一个队列写本地；
-2. **资源**：每个队列一套 agent + 工具 + 终端；`queues=4` 就是 4 倍内存与 4 条并发 LLM 连接（服务端限流要跟上）；
-3. **工具面不齐**：MCP 只在 q0，q1+ 的模型没有那批工具（§13）；
-4. **历史列表**：各队列记录自己的执行历史，master 在 `/info.recent` 按开始时间聚合最近 20 条并附 `queue`，不会在接口里重复出现同一任务。
+1. **并发写同一工作区**：`queues>1` 时两个任务可能同时改同一批文件，模型互相踩且不会报错 —— 应配独立工作区/子目录，或只让一个任务写本地；
+2. **资源**：每个活动任务一套 agent + 工具 + 终端；空闲回收就是为了不常驻 N 倍内存与 N 条 LLM 连接；
+3. **会话不跨任务**：task 被回收后新建的对象是干净会话（长期记忆靠 `memory` 文件延续）；
+4. **历史列表**：每个对象记自己的执行历史，宿主在 `/info.recent` 聚合。
 
 ---
 
@@ -824,6 +841,9 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 一个 Task 一个稳定 URL（`tasks?id=`）；派活只有一份 `sendMessage()` 实现。会话按 `contextId`
 分组，追问按规范 3.4.3 生成同上下文的新 Task，而不是往运行中的 Task 里塞消息（不用改 hub 协议）。
 
+> 页面交互细节（筛选 / 列表 / 详情 / SSE 跟随 / 有界展示 / 已知问题与改进清单）单独见
+> `docs/agent-server-ui-design.md`；本节只保留架构与协议口径，避免双写。
+
 `GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, builtin, process, offline}`。
 
 ### 11.2 为什么 server 自己也要有一个 agent
@@ -886,8 +906,51 @@ master 负责且**只有 master** 负责：HTTP、控制面（`JZHubLink`）、n
 表现就是"HTML 是新的、脚本是旧的" → 会话区一直停在「加载中…」，从界面上完全看不出原因。现在：
 
 - 管理台对静态文件设 `setCacheMaxAge(0)`（`max-age=0` + ETag/Last-Modified，没变就 304）；
-- 页面里引用资源带版本号 `/app.css?v=5`、`/app.js?v=5` —— **改前端资源时要顺手 +1**；
+- 页面里引用资源带版本号 `/app.css?v=7`、`/app.js?v=7` —— **改前端资源时要顺手 +1**；
 - `app.js` 里加了 4s 兜底提示：仍停在「加载中」就直说"可能是缓存，Ctrl+F5"。
+
+### 11.7 前端只有一份：server 与 agent_cli 共用
+
+`binary/agent_cli/webui/` 是**唯一**前端源（`index.html` / `agent.html` / `tasks.html` / `app.js` / `app.css`）：
+server 构建时拷进 `<exeDir>/server_web/`，agent_cli 构建时拷进 `<exeDir>/webui/`。两边不再各维护一套页面。
+
+后端也只暴露一种形状：**A2A `/api/*`**。
+
+| 路由 | 说明 |
+| --- | --- |
+| `GET/POST /api/tasks` | ListTasks / SendMessage（`returnImmediately` 立即回 202 + Task） |
+| `GET /api/tasks/detail?id=` | GetTask |
+| `GET /api/tasks/subscribe?id=` | SSE：`task` / `status_update` / `artifact_update` |
+| `POST /api/tasks/cancel?id=` | CancelTask（202 = 已请求，终态走 SSE） |
+| `GET /api/agent` | 信息 + AgentCard（cli 不传 id = 自己） |
+| `GET /api/status` | 列表页用；cli 只报自己一台 |
+| `GET /api/terminal`、`POST /api/terminal/cancel` | 只有 cli 有；server 返回 404 时页面自动隐藏该块 |
+
+页面分工：`/` = Agent 列表（server 内置 agent 固定第一行）；`/agent?id=` = **左栏任务队列**
++ 右栏对话 / 任务日志 / AgentCard（两端同款）；`/tasks` = 任务记录（带「含 agent 内部任务」开关）。
+cli 的 `/` 直接把 `agent.html` 当首页（`JZAgentCli::onDashboard`），旧的 `new.html` / `/new` 已删除；
+cli 页隐藏「返回列表 / 全部任务」。
+
+⚠ **一条任务 = 一个任务队列（一次提交）**，不是一轮对话：
+- 左栏按「今天 / 昨天 / 一周内 / 更早」分组（组内按**最后一次活动时间**倒序，在跑的自然在最上），
+  列出这个 agent 的队列；点一条右栏**切成那个队列自己的对话**（不是在同一条时间线里滚过去）；
+  地址栏同步 `&task=<id>`，可深链/刷新回到同一条。
+- 一条队列内部会有很多轮：`thinking`（思考，折叠）→ `tool_call`/`tool_result`（工具卡片，结果按
+  调用配对）→ `reply`（流式增量拼成一个气泡）→ `verify`（第 N 轮通过/未通过）→ `retry`/`error`。
+  事件里没有逐轮记录的历史任务（cli 的 `recent`）退化成"指令 + 最终回复 + 验证输出"。
+- 事件环只留最近 200 条，长任务早期过程会被截掉（`task_end` 与最终 artifacts 仍在）。
+- ⚠ `thinking` / `reply` 是**流式增量**（一个分片一条事件）：前端拼接时不能 trim / 截断任何一条，
+  否则分片末尾的空格与换行会被吃掉（曾经表现为 "4个 node"、"| 文件位置" 这种粘连）。
+
+cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任务（带本次运行的事件）+ 最近历史」
+翻译成 A2A Task，内部仍然走原来的 `submitTask` 队列/验证循环。历史任务没有逐轮事件（cli 不存），
+详情里只有结论与验证输出；正在跑的那条有完整事件，经 `emitLocalEvent` 顺手推给 A2A 订阅者。
+
+**任务来源**：`Task.metadata.origin` = `user`（人通过 HTTP/管理台下发）或 `agent`（内置 agent 用
+`server_task_submit` 派出去的活，另带 `parentTaskId` 指向发起它的那条任务）。`GET /api/tasks`
+支持 `?origin=user|agent`，**默认不过滤**（脚本/调试的既有行为不变），管理台一律显式传 `origin=user`
+—— 所以「任务日志」里不会出现 agent 之间的内部调用；内部任务只作为父任务执行过程里的一次
+`server_task_submit` 工具调用出现。`server_task_query` 走的是不过滤的 `snapshotTasks`，仍能查到自己派出去的任务。
 
 ---
 

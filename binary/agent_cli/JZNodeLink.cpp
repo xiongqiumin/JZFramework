@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "JZAgentNodePacket.h"
+#include "JZCodeTools.h"   // jzTerminalRunNotes: 终端口径与本地 terminal_run 共用一份
 #include "JZDateTime.h"
 #include "JZDebug.h"
 #include "JZNet/JZNetClient.h"
@@ -83,6 +84,11 @@ void JZNodeLink::onDisconnected()
     const bool wasOnline = m_online;
     m_online = false;
     m_helloAcked = false;
+    if (m_pingTimer)
+        m_pingTimer->stop();
+
+    if (m_sess)
+        finishSession(false, std::string(), "与节点的连接已断开");
 
     if (m_pending)
     {
@@ -118,6 +124,18 @@ void JZNodeLink::onPacket(JZNetPackPtr pack)
         return;
 
     const int type = pack->packetType();
+    if (type == NodePack_pong)
+        return;   // 保活回应: 说明 node 还活着(断开仍由 socket 报, 这里不做额外判定)
+
+    if (type == NodePack_sessResult)
+    {
+        JZNodePackSessResult *in = (JZNodePackSessResult *)pack.get();
+        if (!m_sess || m_sess->reqId != in->reqId)
+            return;   // 迟到的回包(已被超时收口)
+        finishSession(in->ok, in->text, in->error);
+        return;
+    }
+
     if (type == NodePack_helloAck)
     {
         JZNodePackHelloAck *ack = (JZNodePackHelloAck *)pack.get();
@@ -129,8 +147,19 @@ void JZNodeLink::onPacket(JZNetPackPtr pack)
         m_lastError = ack->ok ? string() : ack->error;
         m_retryMs = 1000;
         if (m_online)
+        {
             jzInfo().noquote().nospace() << "节点就绪: " << m_config.name << " (name=" << m_nodeName
                                          << " root=" << m_rootDir << ")";
+            // 保活只在握手成功之后跑: socket 半开时只有定期的 ping 能让 node 发现本端已死,
+            // 从而按 shell 的语义 kill 掉在跑的命令(不做断线续跑)。
+            if (!m_pingTimer)
+            {
+                m_pingTimer = new JZTimer(this);
+                connect(&m_pingTimer->sigTimeout, this, [this]() { sendPing(); });
+            }
+            m_pingTimer->start(5000);
+            sendPing();   // 立刻发一发: node 从"握手完成"这一刻起就把这条连接纳入保活判定
+        }
         else
             jzWarning().noquote().nospace() << "节点拒绝服务: " << m_config.name << "  " << ack->error;
         sigStateChanged.emit();
@@ -205,6 +234,15 @@ void JZNodeLink::onPacket(JZNetPackPtr pack)
     }
 }
 
+void JZNodeLink::sendPing()
+{
+    if (!m_client || !m_online)
+        return;
+    JZNodePackPing ping;
+    ping.clientId = m_clientId;
+    m_client->sendPacket(&ping);
+}
+
 void JZNodeLink::scheduleReconnect()
 {
     if (!m_config.name.empty() && m_config.host.empty())
@@ -225,8 +263,73 @@ void JZNodeLink::scheduleReconnect()
     });
 }
 
+std::string JZNodeLink::sessionFor(const void *owner)
+{
+    auto it = m_ownerSession.find(owner);
+    if (it != m_ownerSession.end())
+        return it->second;
+    const std::string sid = "q" + std::to_string(m_sessionGen++);
+    m_ownerSession[owner] = sid;
+    return sid;
+}
+
+bool JZNodeLink::sessionOp(const std::string &op, const std::string &session, const std::string &cwd,
+                           const SessionCallback &cb, std::string &error)
+{
+    if (!m_online || !m_client)
+    {
+        error = "节点 " + m_config.name + " 离线" + (m_lastError.empty() ? string("(还没连上)") : "(" + m_lastError + ")");
+        return false;
+    }
+    if (m_sess)
+    {
+        error = "上一次会话操作还没回, 等一下再来";
+        return false;
+    }
+
+    m_sess.reset(new SessPending());
+    m_sess->reqId = m_config.name + ":s" + std::to_string(++m_sessReqGen);
+    m_sess->cb = cb;
+
+    const string reqId = m_sess->reqId;
+    JZTimer *timer = new JZTimer(this);
+    timer->setSingleShot(true);
+    connect(&timer->sigTimeout, this, [this, reqId]()
+    {
+        if (!m_sess || m_sess->reqId != reqId)
+            return;
+        finishSession(false, std::string(), "节点 10s 没回会话操作(网络/版本不一致?)");
+    });
+    m_sess->timer = timer;
+    timer->start(10000);
+
+    JZNodePackSess req;
+    req.reqId = reqId;
+    req.op = op;
+    req.session = session;
+    req.cwd = cwd;
+    m_client->sendPacket(&req);
+    return true;
+}
+
+void JZNodeLink::finishSession(bool ok, const std::string &text, const std::string &error)
+{
+    if (!m_sess)
+        return;
+    SessPending done = *m_sess;   // 回调里可能又发一条, 先搬出来
+    m_sess.reset();
+    if (done.timer)
+    {
+        done.timer->stop();
+        done.timer->deleteLater();
+    }
+    if (done.cb)
+        done.cb(ok, text, error);
+}
+
 bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int timeoutMs, bool background,
-                      const void *owner, const ExecCallback &cb, std::string &error)
+                      const void *owner, const ExecCallback &cb, std::string &error,
+                      const std::string &session)
 {
     if (command.empty())
     {
@@ -262,14 +365,17 @@ bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int ti
     pending->cb = cb;
     pending->timeoutMs = timeoutMs;
     pending->owner = owner;
+    // 模型显式指定了就按它, 否则用这个任务队列自己的终端
+    pending->session = session.empty() ? sessionFor(owner) : session;
 
     const string runId = pending->runId;
+    const string execSession = pending->session;
     // 后台命令本身没有超时(与 terminal_run background 一致), 但"节点确认已启动"要有超时
     const int waitMs = background ? 15000 : timeoutMs;
 
     JZTimer *timer = new JZTimer(this);
     timer->setSingleShot(true);
-    connect(&timer->sigTimeout, this, [this, runId, background]()
+    connect(&timer->sigTimeout, this, [this, runId, execSession, background]()
     {
         if (!m_pending || m_pending->runId != runId)
             return;
@@ -286,6 +392,7 @@ bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int ti
         {
             JZNodePackExecCancel cancel;
             cancel.runId = runId;
+            cancel.session = execSession;
             m_client->sendPacket(&cancel);
         }
         ExecResult r;
@@ -304,6 +411,7 @@ bool JZNodeLink::exec(const std::string &command, const std::string &cwd, int ti
     exec.cwd = cwd;
     exec.timeoutMs = timeoutMs;
     exec.background = background;
+    exec.session = execSession;
     m_client->sendPacket(&exec);
     return true;
 }
@@ -365,6 +473,14 @@ bool JZNodeLink::cancelRun(const std::string &runId, std::string &error)
 
     JZNodePackExecCancel cancel;
     cancel.runId = runId;
+    if (m_pending && m_pending->runId == runId)
+        cancel.session = m_pending->session;
+    else
+    {
+        auto bi = m_bgRuns.find(runId);
+        if (bi != m_bgRuns.end())
+            cancel.session = sessionFor(bi->second);
+    }
     m_client->sendPacket(&cancel);
 
     if (m_pending && m_pending->runId == runId)
@@ -385,6 +501,7 @@ void JZNodeLink::cancelRunning(const void *owner)
         {
             JZNodePackExecCancel cancel;
             cancel.runId = m_pending->runId;
+            cancel.session = m_pending->session;
             m_client->sendPacket(&cancel);
         }
         ExecResult r;
@@ -404,6 +521,7 @@ void JZNodeLink::cancelRunning(const void *owner)
             }
             JZNodePackExecCancel cancel;
             cancel.runId = it->first;
+            cancel.session = sessionFor(it->second);
             m_client->sendPacket(&cancel);
             it = m_bgRuns.erase(it);
         }
@@ -467,29 +585,32 @@ static ParamSchema makeSshParam(const string &name, ParamType type, const string
 }
 
 JZRemoteSshTool::JZRemoteSshTool(std::function<JZNodeLink *(const std::string &)> resolver,
-                                 std::function<std::string()> defaultHost,
                                  const std::string &nodeList, const void *owner)
     : m_resolver(resolver)
-    , m_defaultHost(defaultHost)
     , m_nodeList(nodeList)
     , m_owner(owner)
 {
     ToolDefine def;
     def.name = "remote_ssh";
+    // ⚠ 语法/前台/后台/不支持清单**不要在引用一份**: 与本地 terminal_run 共用 jzTerminalRunNotes(),
+    //   否则两边迟早各说一套(以前这里写的"没有 background 参数"就和实际不符)。
     def.description =
-        "在一台远端节点上执行一条 shell 命令(语义与本地 terminal_run 一致, 只是走网络)。\n"
-        "命令**整条交给远端 shell**: 管道(|)、重定向(> >>)、串联(&& || ;)、通配符(*)、变量($VAR) 都按 shell 语义工作。\n"
-        "⚠ 远端是**有状态的 shell**: cd / export 会保留到下一条命令(文件当然也持久)。\n"
-        "⚠ 节点是**单前台串行**: 上一条没结束, 下一条直接报「节点忙」。\n"
-        "⚠ 没有后台/查询: 要跑常驻服务就在命令里写 `&` 并自己重定向"
-        "(`./server > server.log 2>&1 &`), 之后用 `cat server.log` / `tail -50 server.log` 看。\n"
-        "可用节点:\n" + m_nodeList +
-        "\nhost 省略 = 用默认节点。超时默认 120s(上限 15min), 超时会请求节点停止该命令。";
+        "在远端节点上执行命令 / 管理远端终端会话(语义与本地 terminal **完全一致**, 只是走网络)。\n"
+        + jzTerminalRunNotes() +
+        "  - session 省略 = 用当前任务自己的终端; open 时可自己起名(便于之后按名字复用);"
+        " 每台节点的会话各自独立, 要并行就在同一节点上开多个 session。\n"
+        "  - 这里的超时默认 120s(上限 15min), 超时会请求节点停止该命令。\n"
+        "可用节点(host 必填, 就是节点名):\n" + m_nodeList +
+        "\naction: run(默认) / open / close / list。";
 
-    def.parameters.push_back(makeSshParam("host", ParamType::String, "节点名(见上方列表); 省略 = 默认节点"));
-    def.parameters.push_back(makeSshParam("command", ParamType::String, "要执行的完整 shell 命令"));
+    def.parameters.push_back(makeSshParam("host", ParamType::String, "节点名(必填, 见上方列表)"));
+    def.parameters.push_back(makeSshParam("action", ParamType::String,
+                                          "run(默认)=跑命令; open=开/复用会话; close=关会话(在跑的命令会被终止); list=列会话"));
+    def.parameters.push_back(makeSshParam("command", ParamType::String, "action=run 时要执行的完整 shell 命令"));
+    def.parameters.push_back(makeSshParam("session", ParamType::String,
+                                          "会话名: run 时指定用哪台终端(省略 = 当前任务自己的); open 时可省略(节点自动起名); close 时必填"));
     def.parameters.push_back(makeSshParam("cwd", ParamType::String,
-                                          "工作目录(相对路径按该节点工作区解析); 省略 = 节点工作区根"));
+                                          "工作目录(相对路径按该节点工作区解析); 省略 = 节点工作区根 / 会话当前目录"));
     def.parameters.push_back(makeSshParam("timeout_ms", ParamType::Number, "超时毫秒数, 默认 120000, 上限 900000"));
     setToolDefine(def);
 }
@@ -516,11 +637,13 @@ static string formatRun(const string &node, const JZNodeLink::ExecResult &r)
 
 void JZRemoteSshTool::call(const ToolCall &call)
 {
-    const string action = call.params.get("action", "run").asString();
-    (void)action;   // 只剩 run 一种动作(参数保留给旧调用方, 值不再影响行为)
+    string action = call.params.get("action", "run").asString();
+    if (action.empty())
+        action = "run";
     const string host = call.params.get("host", "").asString();
     const string command = call.params.get("command", "").asString();
     const string cwd = call.params.get("cwd", "").asString();
+    const string session = call.params.get("session", "").asString();
     int timeoutMs = call.params.get("timeout_ms", 120000).asInt();
 
     // ⚠ 回调是异步的(要等远端回包), 所以 call.id 必须按值拷走,
@@ -543,18 +666,55 @@ void JZRemoteSshTool::call(const ToolCall &call)
         sigResult.emit(res);
     };
 
+    if (host.empty())
+    {
+        fail("host 必填(就是节点名)。\n" + m_nodeList);
+        return;
+    }
+    JZNodeLink *link = m_resolver(host);
+    if (!link)
+    {
+        fail("没有这个节点: \"" + host + "\"。\n" + m_nodeList);
+        return;
+    }
+
+    // ---- 会话管理(open / close / list) ----
+    if (action == "open" || action == "close" || action == "list")
+    {
+        if (action == "close" && session.empty())
+        {
+            fail("action=close 需要 session(先 list 看看有哪些)");
+            return;
+        }
+        const string nodeName = link->config().name;
+        string opError;
+        const bool started = link->sessionOp(action, session, cwd,
+            [done, nodeName, action](bool ok, const string &text, const string &err)
+            {
+                string head = "[node " + nodeName + "] " + action;
+                if (!ok)
+                {
+                    done(head + " 失败: " + err, false);
+                    return;
+                }
+                done(head + "\n" + text, true);
+            },
+            opError);
+        if (!started)
+            fail(opError);
+        return;
+    }
+
+    if (action != "run")
+    {
+        fail("未知的 action: " + action + "(支持 run / open / close / list)");
+        return;
+    }
+
     // ---- run ----
     if (command.empty())
     {
         fail("action=run 需要 command");
-        return;
-    }
-
-    const string want = host.empty() ? m_defaultHost() : host;
-    JZNodeLink *link = m_resolver(want);
-    if (!link)
-    {
-        fail("没有这个节点: \"" + want + "\"。\n" + m_nodeList);
         return;
     }
 
@@ -567,7 +727,7 @@ void JZRemoteSshTool::call(const ToolCall &call)
         {
             done(formatRun(nodeName, r), r.ok);
         },
-        error);
+        error, session);
     if (!started)
         fail(error);
 }

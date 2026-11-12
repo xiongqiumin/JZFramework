@@ -12,8 +12,8 @@
 
 | 界面 | 实现 | 可维护性 |
 | --- | --- | --- |
-| `agent_cli` 控制台 | `binary/agent_cli/http/{index.html,app.js,style.css}`，18KB CSS | 独立、可改，但和别处不共享 |
-| `agent_cli_server` 管理台 | `binary/agent_cli/server/web/{index.html,app.css,app.js}`，构建时拷到 `<exeDir>/server_web/`，运行时读文件 | 改样式不用重编译（原先是内嵌 C++ 字符串，2026-11-06 已拆出） |
+| `agent_cli` 控制台 | `binary/agent_cli/webui/{index.html,agent.html,tasks.html,app.js,app.css}`，构建时拷到 `<exeDir>/webui/` | 与 server 管理台**共用同一份**前端（2026-11-11 合并） |
+| `agent_cli_server` 管理台 | 同一份源 `binary/agent_cli/webui/`，构建时拷到 `<exeDir>/server_web/`，运行时读文件 | 改样式不用重编译 |
 | `JZSimulator` | `JZSimulator/http/index.html` | 同上，第三套 |
 
 四条硬约束（决定选型，不能妥协）：
@@ -149,11 +149,11 @@ web/ui/
 
 | 宿主 | 怎么拿到 |
 | --- | --- |
-| `agent_cli` | CMake POST_BUILD：`copy_directory <root>/web/ui → <exeDir>/http/ui`；页面里 `<link href="/ui/components.css">` |
-| `agent_cli_server` | 页面**不在 C++ 里**：源码 `binary/agent_cli/server/web/` → POST_BUILD 拷到 `<exeDir>/server_web/`，`web/ui` 再拷进 `server_web/ui`；`/` 读文件返回，`/app.css` `/app.js` `/ui/*` 走静态路由。**目录缺失 = 500 + 明确提示**（不做内嵌兜底） |
+| `agent_cli` | CMake POST_BUILD：`copy_directory <root>/web/ui → <exeDir>/webui/ui`；页面里 `<link href="/ui/components.css">` |
+| `agent_cli_server` | 页面**不在 C++ 里**：与 cli 同一份源 `binary/agent_cli/webui/` → POST_BUILD 拷到 `<exeDir>/server_web/`，`web/ui` 再拷进 `server_web/ui`；`/` 读文件返回，`/app.css` `/app.js` `/ui/*` 走静态路由。**目录缺失 = 500 + 明确提示**（不做内嵌兜底） |
 | `JZSimulator` | qrc 用 `alias` 直接指到 `web/ui/tokens.css`，`css/style.css` 里 `@import`，不复制副本 |
 
-⚠ server 用**独立目录 `server_web/`**，不复用 `http/`：`agent_cli` 自己也往 `<exeDir>/http` 拷 `index.html`，两个 exe 同目录时会互相覆盖。
+⚠ 前端源码只有一份（`binary/agent_cli/webui/`），但**运行目录分开**：server 用 `<exeDir>/server_web/`，cli 用 `<exeDir>/webui/` —— 两个 exe 同目录时才不会互相覆盖。
 
 缓存：页面引用统一带版本 `?v=N`（沿用现在的做法），升级后改 N；`JZHttpStaticFiles`
 已有 1 小时 `max-age`，所以**必须**靠 `?v=` 失效，否则改了样式现场看不到。
@@ -239,6 +239,6 @@ web/ui/
 5. **移动端"表格转卡片"要不要 P0 就做**：建议做，否则 P1 之后还要回头改表格的 DOM（要加 `data-label`）。
 6. **图标**：现在页面用 emoji（`⚙`）和文字；统一 sprite 之后要检查是否仍有 emoji 残留（不同系统渲染差异大）。
 7. **`agent_cli` 控制台的 class 迁移（唯一剩余）**：`.composer/.composer-field/.bubble/.msg/.proc*/.task-card/.badge/.term-*`
-   都在 `binary/agent_cli/http/app.js` 里以模板字符串拼装，且 `.proc` 是**两层结构**（`proc-head` 包 dot/tag/name）
+   都在 `binary/agent_cli/webui/app.js` 里以模板字符串拼装，且 `.proc` 是**两层结构**（`proc-head` 包 dot/tag/name）
    而 `.jz-step` 是平铺（dot/tag/body）—— 迁移必须同时改 HTML 结构与更新逻辑（流式追加 `proc-body`），
    不是纯改名。建议单独一轮做，并用控制台实跑一个任务回归（thinking/tool_call/verify 三类行都要看）。

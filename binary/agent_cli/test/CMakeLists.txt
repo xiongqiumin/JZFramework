@@ -105,6 +105,9 @@ add_executable(agent_cli_test
     agent_cli_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCli.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCli.h
+    # 任务对象(一次性): JZAgentCli 的 submitTask/队列/回包都落在它身上
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCliTask.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZAgentCliTask.h
     # JZAgentCli 依赖的传输层: node(执行面)与 server(控制面)
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZNodeLink.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZHubLink.cpp

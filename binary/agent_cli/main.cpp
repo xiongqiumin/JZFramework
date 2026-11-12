@@ -67,6 +67,7 @@ static const char *kDefaultConfigJson = R"json({
         "maxRetries":       10,
         "maxFixRetries":    2,
         "retryDelayMs":     1000,
+        "thinking":         "auto",
         "body":             {}
     },
 
@@ -110,9 +111,7 @@ static const char *kDefaultConfigJson = R"json({
         "recycleSec":       900,
         "allowTerminal":    true,
         "allowFileTools":   true,
-        "allowPackageManager": false,
-        "allowNetwork":     false,
-        "unrestricted":     false
+        "profile":          "standard"
     },
 
     "network": {
@@ -201,61 +200,120 @@ static bool writeDefaultConfig(const string &path, string &error)
 }
 
 // ---------------------------------------------------------------------------
-// 分层配置的取值: 优先 "<group>.<name>"(现格式), 回落顶层 "<legacy>"(旧平铺格式)
-//   例: http.bind / httpBind,  llm.url / modelUrl。legacy 为空表示没有旧写法。
-//   命中才写回 out, 所以缺省值沿用 JZCliConfig 里的默认。
+// 配置读取(严格): 点号路径自动下钻(llm.url / http.bind)。
+//   - 缺项 / 缺分组: 保持结构体里的默认值(没配就不动)
+//   - 类型不对: **立刻记错并停止**, 由 loadConfig 报出去
+//     (一个写错类型的端口号就是配置错误, 不能吞掉继续用默认值启动 —— 那种"看起来
+//      正常"的启动最难查)
+// ⚠ 只认分组格式; 不回落旧的平铺写法(modelUrl / httpBind)。
 // ---------------------------------------------------------------------------
 static const Json::Value *findConfigMember(const Json::Value &root, const string &group,
-                                          const string &name, const string &legacy)
+                                          const string &name);
+
+static const char *jsonTypeName(Json::ValueType t)
 {
-    // 优先走分组: name 支持 "a.b.c" 多级嵌套(如 verify.maxRounds ->
-    //   root["verify"]["maxRounds"]); 单段名(如 http.bind)同样适用。
-    if (!group.empty() && root.isMember(group) && root[group].isObject())
+    switch (t)
     {
-        const Json::Value *cur = &root[group];
-        size_t start = 0;
-        while (true)
+    case Json::nullValue:   return "null";
+    case Json::intValue:    return "整数";
+    case Json::uintValue:   return "整数";
+    case Json::realValue:   return "小数";
+    case Json::stringValue: return "字符串";
+    case Json::booleanValue:return "true/false";
+    case Json::arrayValue:  return "数组";
+    case Json::objectValue: return "对象";
+    default:                return "未知";
+    }
+}
+
+struct CfgReader
+{
+    explicit CfgReader(const Json::Value &r) : root(r) {}
+
+    bool ok() const { return error.empty(); }
+
+    void str(const std::string &path, std::string &out)
+    {
+        const Json::Value *v = get(path);
+        if (!v)
+            return;
+        if (!v->isString())
         {
-            size_t dot = name.find('.', start);
-            std::string seg = (dot == std::string::npos)
-                ? name.substr(start) : name.substr(start, dot - start);
-            if (!cur->isObject() || !cur->isMember(seg))
-                break;
-            cur = &(*cur)[seg];
-            if (dot == std::string::npos)
-                return cur;
-            start = dot + 1;
+            fail(path, v, "字符串");
+            return;
         }
+        out = v->asString();
     }
 
-    if (!legacy.empty() && root.isMember(legacy))
-        return &root[legacy];
-
-    return nullptr;
-}
-
-static void readConfigString(const Json::Value &root, const string &group, const string &name,
-                             const string &legacy, string &out)
-{
-    const Json::Value *v = findConfigMember(root, group, name, legacy);
-    if (v && v->isString())
-        out = v->asString();
-}
-
-static void readConfigInt(const Json::Value &root, const string &group, const string &name,
-                          const string &legacy, int &out)
-{
-    const Json::Value *v = findConfigMember(root, group, name, legacy);
-    if (v && v->isNumeric())
+    void i32(const std::string &path, int &out)
+    {
+        const Json::Value *v = get(path);
+        if (!v)
+            return;
+        if (!v->isInt())
+        {
+            fail(path, v, "整数");
+            return;
+        }
         out = v->asInt();
-}
+    }
 
-static void readConfigBool(const Json::Value &root, const string &group, const string &name,
-                           const string &legacy, bool &out)
-{
-    const Json::Value *v = findConfigMember(root, group, name, legacy);
-    if (v && v->isBool())
+    void flag(const std::string &path, bool &out)
+    {
+        const Json::Value *v = get(path);
+        if (!v)
+            return;
+        if (!v->isBool())
+        {
+            fail(path, v, "true/false");
+            return;
+        }
         out = v->asBool();
+    }
+
+    // 配置里到底写没写这一项 —— 档位覆盖要用(写了才覆盖档位预设)
+    bool has(const std::string &path) { return get(path) != nullptr; }
+
+    std::string error;   // 第一个错误(空 = 全部通过)
+
+private:
+    const Json::Value *get(const std::string &path)
+    {
+        if (!ok())
+            return nullptr;   // 已经错了: 后面的项不再读(报第一个就够)
+        return findConfigMember(root, "", path);
+    }
+
+    void fail(const std::string &path, const Json::Value *v, const char *want)
+    {
+        if (!error.empty())
+            return;
+        error = path + " 应该是" + want + ", 实际是 " + jsonTypeName(v->type());
+    }
+
+    const Json::Value &root;
+};
+
+// 取一个分组的 Json 值(数组/对象/标量都行), 找不到返回 nullptr。
+// 标量一律走 CfgReader(cfg.str/i32/flag); 这里只给"要自己遍历数组/对象"的项用
+// (nodes / servers / trustedDirs / programs / body ...)。
+static const Json::Value *findConfigMember(const Json::Value &root, const string &group,
+                                          const string &name)
+{
+    const string full = group.empty() ? name : (group + "." + name);
+    const Json::Value *cur = &root;
+    size_t start = 0;
+    while (true)
+    {
+        const size_t dot = full.find('.', start);
+        const std::string seg = (dot == string::npos) ? full.substr(start) : full.substr(start, dot - start);
+        if (!cur->isObject() || !cur->isMember(seg))
+            return nullptr;
+        cur = &(*cur)[seg];
+        if (dot == string::npos)
+            return cur;
+        start = dot + 1;
+    }
 }
 
 static bool loadConfig(const string &path, JZCliConfig &config, string &error)
@@ -284,29 +342,60 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     }
 
     // 标识(顶层)
-    JZJsonStream js(&root);
-    js.readMemberDefault("agentName", config.agentName, config.agentName);
-    js.readMemberDefault("version", config.version, config.version);
+    CfgReader cfg(root);
+    cfg.str("agentName", config.agentName);
+    cfg.str("version", config.version);
 
     // llm
-    readConfigString(root, "llm", "url", "modelUrl", config.modelUrl);
-    readConfigString(root, "llm", "name", "modelName", config.modelName);
-    readConfigString(root, "llm", "token", "modelToken", config.modelToken);
-    readConfigInt(root, "llm", "netTimeoutMs", "netTimeout", config.netTimeout);
-    readConfigInt(root, "llm", "maxRounds", "maxRounds", config.maxRounds);
-    readConfigInt(root, "llm", "maxToken", "maxToken", config.maxToken);
-    readConfigInt(root, "llm", "maxRetries", "maxRetries", config.maxRetries);
-    readConfigInt(root, "llm", "maxFixRetries", "maxFixRetries", config.maxFixRetries);
-    readConfigInt(root, "llm", "retryDelayMs", "retryDelayMs", config.retryDelayMs);
+    cfg.str("llm.url", config.modelUrl);
+    cfg.str("llm.name", config.modelName);
+    cfg.str("llm.token", config.modelToken);
+    cfg.i32("llm.netTimeoutMs", config.netTimeout);
+    cfg.i32("llm.maxRounds", config.maxRounds);
+    cfg.i32("llm.maxToken", config.maxToken);
+    cfg.i32("llm.maxRetries", config.maxRetries);
+    cfg.i32("llm.maxFixRetries", config.maxFixRetries);
+    cfg.i32("llm.retryDelayMs", config.retryDelayMs);
+
+    // 思考开关(llm.thinking): "auto"(默认, 不发字段) / "on" / "off"; 也接受 true/false。
+    // ⚠ Auto 才是默认, 因为 OpenAI / Azure 这类端点不认 chat_template_kwargs, 发了会 400。
+    {
+        const Json::Value *think = findConfigMember(root, "llm", "thinking");
+        if (think)
+        {
+            if (think->isBool())
+                config.thinkMode = think->asBool() ? ThinkMode::On : ThinkMode::Off;
+            else if (think->isString())
+            {
+                const string t = str_toLower(think->asString());
+                if (t == "on" || t == "true" || t == "1")
+                    config.thinkMode = ThinkMode::On;
+                else if (t == "off" || t == "false" || t == "0")
+                    config.thinkMode = ThinkMode::Off;
+                else if (t == "auto" || t == "default")
+                    config.thinkMode = ThinkMode::Auto;
+                else
+                {
+                    error = "llm.thinking 只能是 auto / on / off(或 true/false): " + think->asString();
+                    return false;
+                }
+            }
+            else
+            {
+                error = "llm.thinking 必须是字符串(auto/on/off)或布尔值";
+                return false;
+            }
+        }
+    }
 
     // 请求体附加字段(llm.body): 原样并进请求体, 用于私有参数 / 采样参数
     // (如 repeat_penalty / dry_multiplier / dry_base / dry_allowed_length、chat_template_kwargs)。
-    const Json::Value *body = findConfigMember(root, "llm", "body", "extraBody");
+    const Json::Value *body = findConfigMember(root, "llm", "body");
     if (body && body->isObject())
         config.extraBody = *body;
     // 模板里的 llm.maxTokens = OpenAI 输出 token 上限; 经既有 extraBody 通道发送, 不与
     // llm.maxToken(整个上下文预算)混为一谈。llm.body.max_tokens 显式配置优先。
-    const Json::Value *maxTokens = findConfigMember(root, "llm", "maxTokens", "maxTokens");
+    const Json::Value *maxTokens = findConfigMember(root, "llm", "maxTokens");
     if (maxTokens && maxTokens->isInt() && !config.extraBody.isMember("max_tokens"))
         config.extraBody["max_tokens"] = *maxTokens;
 
@@ -315,45 +404,82 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     //   轮询类工具(terminal_list)用 pollRepeat/pollSameResult 单独放宽 ——
     //   反复看"终端在不在跑"是正常用法, 用主阈值会误杀。
     //   输出侧: 同一行刷屏 / 同一段反复 / 周期串复读。
-    readConfigBool(root, "loop", "enabled", "loopDetect", config.loopDetect);
-    readConfigInt(root, "loop", "window", "loopWindow", config.loopWindow);
-    readConfigInt(root, "loop", "repeat", "loopRepeat", config.loopRepeat);
-    readConfigInt(root, "loop", "sameResult", "loopSameResult", config.loopSameResult);
-    readConfigInt(root, "loop", "pollRepeat", "loopPollRepeat", config.loopPollRepeat);
-    readConfigInt(root, "loop", "pollSameResult", "loopPollSameResult", config.loopPollSameResult);
-    readConfigInt(root, "loop", "lineRepeat", "loopLineRepeat", config.loopLineRepeat);
-    readConfigInt(root, "loop", "blockRepeat", "loopBlockRepeat", config.loopBlockRepeat);
-    readConfigInt(root, "loop", "periodMax", "loopPeriodMax", config.loopPeriodMax);
-    readConfigInt(root, "loop", "periodRepeat", "loopPeriodRepeat", config.loopPeriodRepeat);
+    cfg.flag("loop.enabled", config.loopDetect);
+    cfg.i32("loop.window", config.loopWindow);
+    cfg.i32("loop.repeat", config.loopRepeat);
+    cfg.i32("loop.sameResult", config.loopSameResult);
+    cfg.i32("loop.pollRepeat", config.loopPollRepeat);
+    cfg.i32("loop.pollSameResult", config.loopPollSameResult);
+    cfg.i32("loop.lineRepeat", config.loopLineRepeat);
+    cfg.i32("loop.blockRepeat", config.loopBlockRepeat);
+    cfg.i32("loop.periodMax", config.loopPeriodMax);
+    cfg.i32("loop.periodRepeat", config.loopPeriodRepeat);
 
     // verify(验证脚本门控循环的默认值: /task 里同名参数可覆盖)
-    readConfigInt(root, "verify", "maxRounds", "verifyMaxRounds", config.verifyMaxRounds);
-    readConfigInt(root, "verify", "timeoutMs", "verifyTimeoutMs", config.verifyTimeoutMs);
+    cfg.i32("verify.maxRounds", config.verifyMaxRounds);
+    cfg.i32("verify.timeoutMs", config.verifyTimeoutMs);
 
     // memory(跨任务长期记忆: 开工注入 + memory 工具读写)
-    readConfigBool(root, "memory", "enabled", "memoryEnabled", config.memoryEnabled);
-    readConfigString(root, "memory", "file", "memoryFile", config.memoryFile);
-    readConfigInt(root, "memory", "maxBytes", "memoryMaxBytes", config.memoryMaxBytes);
+    cfg.flag("memory.enabled", config.memoryEnabled);
+    cfg.str("memory.file", config.memoryFile);
+    cfg.i32("memory.maxBytes", config.memoryMaxBytes);
 
     // system(宿主常驻说明: 拼进 system prompt **一次** —— 之后每轮 /task 只叠加新消息, 不再重复贴。
     //   典型是"玩法任务书"这类整个会话都在场的约束; extraFile 相对路径按 rootDir 解析)
-    readConfigString(root, "system", "extra", "systemExtra", config.systemExtra);
-    readConfigString(root, "system", "extraFile", "systemExtraFile", config.systemExtraFile);
+    cfg.str("system.extra", config.systemExtra);
+    cfg.str("system.extraFile", config.systemExtraFile);
+
+    // project 就是工作区根目录: `project.dir` 只是 `terminal.rootDir` 的别名,
+    // 两个都没配 = 进程当前目录(见 JZAgentCli::init)。没有单独的"项目名"。
+    cfg.str("project.dir", config.rootDir);
+    // 全局 .jzagent 目录(settings 那份): 里面的 skills 总是加载, 空 = %USERPROFILE%/.jzagent
+    cfg.str("skillsDir", config.skillsDir);
 
     // terminal(工作区 / shell / 会话回收 / 工具与命令策略: 都是本地终端这一摊)
-    readConfigString(root, "terminal", "rootDir", "rootDir", config.rootDir);
-    readConfigString(root, "terminal", "shellProgram", "shellProgram", config.shellProgram);
-    readConfigInt(root, "terminal", "recycleSec", "recycleSec", config.recycleSec);
-    readConfigBool(root, "terminal", "allowTerminal", "allowTerminal", config.allowTerminal);
-    readConfigBool(root, "terminal", "allowFileTools", "allowFileTools", config.allowFileTools);
-    readConfigBool(root, "terminal", "allowPackageManager", "allowPackageManager", config.allowPackageManager);
-    readConfigBool(root, "terminal", "allowNetwork", "allowNetwork", config.allowNetwork);
-    readConfigBool(root, "terminal", "unrestricted", "unrestricted", config.unrestricted);
+    cfg.str("terminal.rootDir", config.rootDir);
+    cfg.str("terminal.shellProgram", config.shellProgram);
+    cfg.i32("terminal.recycleSec", config.recycleSec);
+    cfg.flag("terminal.allowTerminal", config.allowTerminal);
+    cfg.flag("terminal.allowFileTools", config.allowFileTools);
+
+    // 权限档位: strict / standard / loose(默认 standard)。见 JZVirtualTerminalConfig.h
+    string profileText;
+    cfg.str("terminal.profile", profileText);
+    if (!profileText.empty() && !permissionProfileFromText(profileText, config.profile))
+    {
+        error = "terminal.profile 只能是 strict / standard / loose: " + profileText;
+        return false;
+    }
+
+    // 兼容旧配置(已废弃): 三个单项开关显式写了就覆盖档位预设, 只写档位就别碰
+    if (cfg.has("terminal.allowPackageManager"))
+    {
+        cfg.flag("terminal.allowPackageManager", config.allowPackageManager);
+        config.hasAllowPackageManager = true;
+    }
+    if (cfg.has("terminal.allowNetwork"))
+    {
+        cfg.flag("terminal.allowNetwork", config.allowNetwork);
+        config.hasAllowNetwork = true;
+    }
+    if (cfg.has("terminal.allowUnknownPrograms"))
+    {
+        cfg.flag("terminal.allowUnknownPrograms", config.allowUnknownPrograms);
+        config.hasAllowUnknownPrograms = true;
+    }
+    // 兼容旧配置(已废弃): unrestricted: true 等价于宽松档
+    if (profileText.empty() && cfg.has("terminal.unrestricted"))
+    {
+        bool legacyUnrestricted = false;
+        cfg.flag("terminal.unrestricted", legacyUnrestricted);
+        if (legacyUnrestricted)
+            config.profile = PermissionProfile::Loose;
+    }
 
     // 程序映射: 程序名 -> 可执行文件全路径, 如 {"tsc": "D:/app/ts_compiler/tsc/tsc.exe"}
     //   登记后: 短名字进白名单(能过审) + 执行时把短名换成这条全路径(能找到程序)。
     //   只认短名字(写全路径走路径审核); 没登记的程序 agent 就用不了(不做自动探测)。
-    const Json::Value *progs = findConfigMember(root, "terminal", "programs", "programs");
+    const Json::Value *progs = findConfigMember(root, "terminal", "programs");
     if (progs && progs->isObject())
     {
         for (Json::Value::const_iterator it = progs->begin(); it != progs->end(); ++it)
@@ -365,19 +491,25 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
         }
     }
 
-    // network(联网工具: web_search / web_fetch —— 与 terminal.allowNetwork(命令能否联网)独立)
-    readConfigBool(root, "network", "enabled", "allowNetworkTools", config.allowNetworkTools);
-    readConfigString(root, "network", "searchUrl", "webSearchUrl", config.webSearchUrl);
-    readConfigString(root, "network", "proxyHost", "proxyHost", config.proxyHost);
-    readConfigInt(root, "network", "proxyPort", "proxyPort", config.proxyPort);
-    readConfigString(root, "network", "proxyUser", "proxyUser", config.proxyUser);
-    readConfigString(root, "network", "proxyPassword", "proxyPassword", config.proxyPassword);
+    // network(联网工具: web_search / web_fetch)
+    //   与 terminal 档位的 allowNetwork(命令能否用 curl/wget)是**两层**: 这里管 agent 自己的
+    //   搜索/抓取工具。默认跟随档位(见下面末尾的推导), 显式写 network.enabled 就以它为准。
+    if (cfg.has("network.enabled"))
+    {
+        cfg.flag("network.enabled", config.allowNetworkTools);
+        config.hasNetworkTools = true;
+    }
+    cfg.str("network.searchUrl", config.webSearchUrl);
+    cfg.str("network.proxyHost", config.proxyHost);
+    cfg.i32("network.proxyPort", config.proxyPort);
+    cfg.str("network.proxyUser", config.proxyUser);
+    cfg.str("network.proxyPassword", config.proxyPassword);
 
     // mcp(连外部 MCP 服务器: 远端工具挂进本 agent; 字段说明见 JZAgentCli.h 的 JZCliMcpServer)
     //   格式: {"enabled":true, "servers":[{"name":"fs","transport":"stdio",
     //          "command":"npx","args":[...]}, {"name":"n1","transport":"http","url":"..."}]}
-    readConfigBool(root, "mcp", "enabled", "mcpEnabled", config.mcpEnabled);
-    const Json::Value *mcpServers = findConfigMember(root, "mcp", "servers", "mcpServers");
+    cfg.flag("mcp.enabled", config.mcpEnabled);
+    const Json::Value *mcpServers = findConfigMember(root, "mcp", "servers");
     if (mcpServers && !mcpServers->isNull())
     {
         if (!mcpServers->isArray())
@@ -438,8 +570,8 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
 
     // nodes(远端执行节点: link 模式的 agent_node)
     //   ⚠ 静态列表: 启动时按它连好, 运行期不增删(连不上就标离线)。
-    //   多台 node 在模型侧只体现为**一个** remote_ssh 工具(按 host 路由), 见 JZAgentCli::startNodes。
-    const Json::Value *nodes = findConfigMember(root, "", "nodes", "nodes");
+    //   多台 node 在模型侧只体现为**一个** remote_ssh 工具(按 host = 节点名 路由), 见 JZAgentCli::startNodes。
+    const Json::Value *nodes = findConfigMember(root, "", "nodes");
     if (nodes && !nodes->isNull())
     {
         if (!nodes->isArray())
@@ -461,7 +593,6 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
             ns.readMemberDefault("host", nc.host, std::string());
             ns.readMemberDefault("port", nc.port, nc.port);
             ns.readMemberDefault("token", nc.token, std::string());
-            ns.readMemberDefault("default", nc.isDefault, false);
             if (nc.host.empty())
             {
                 error = "nodes[" + to_string(i) + "].host 不能为空";
@@ -476,30 +607,29 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
             }
             config.nodes.push_back(nc);
         }
-        // 只有一台时它就是默认; 多台都没标则按"第一台"处理(见 defaultNodeName)
-        if (config.nodes.size() == 1)
-            config.nodes[0].isDefault = true;
     }
 
     // 日志(全局项, 不归终端)
-    readConfigString(root, "", "logFile", "logFile", config.logFile);
+    cfg.str("logFile", config.logFile);
 
     // http
-    readConfigString(root, "http", "bind", "httpBind", config.httpBind);
-    readConfigInt(root, "http", "port", "httpPort", config.httpPort);
-    readConfigString(root, "http", "token", "httpToken", config.httpToken);
-    readConfigString(root, "http", "dir", "httpDir", config.httpDir);
+    cfg.str("http.bind", config.httpBind);
+    cfg.i32("http.port", config.httpPort);
+    cfg.str("http.token", config.httpToken);
+    cfg.str("http.dir", config.httpDir);
 
     // 控制面(managed 模式): server.host 非空即受 server 调度
     //   ⚠ 这是**模式开关**, 不是可选项: managed 时不起 HTTP(见 startServerLink)。
-    readConfigString(root, "server", "host", "serverHost", config.server.host);
-    readConfigInt(root, "server", "port", "serverPort", config.server.port);
-    readConfigString(root, "server", "token", "serverToken", config.server.token);
-    readConfigString(root, "server", "agentId", "agentId", config.server.agentId);
+    cfg.str("server.host", config.server.host);
+    cfg.i32("server.port", config.server.port);
+    cfg.str("server.token", config.server.token);
+    cfg.str("server.agentId", config.server.agentId);
 
     // 任务队列: 每个队列一个独立 JZAgent(独立会话), 队列内串行/队列间并发
-    readConfigInt(root, "task", "queues", "taskQueues", config.task.queues);
-    readConfigInt(root, "task", "maxPending", "taskMaxPending", config.task.maxPending);
+    cfg.i32("task.queues", config.task.queues);
+    cfg.i32("task.maxPending", config.task.maxPending);
+    cfg.i32("task.keepAlive", config.task.keepAlive);
+    cfg.i32("task.idleRecycleSec", config.task.idleRecycleSec);
     if (config.task.queues < 1)
         config.task.queues = 1;
     if (config.task.queues > 32)
@@ -518,7 +648,7 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
             config.server.agentId = config.agentName;
     }
 
-    const Json::Value *dirs = findConfigMember(root, "terminal", "trustedDirs", "trustedDirs");
+    const Json::Value *dirs = findConfigMember(root, "terminal", "trustedDirs");
     const Json::Value &arr = dirs ? *dirs : Json::Value::nullRef;
     if (!arr.isNull())
     {
@@ -558,6 +688,19 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
             }
         }
     }
+
+    // 标量项的类型错误在这里统一报出去(读的时候只记第一个, 后面不再读)
+    if (!cfg.ok())
+    {
+        error = "配置项有误: " + cfg.error;
+        return false;
+    }
+
+    // 联网工具跟随权限档位: 严格档禁联网 → 不注册 web_search/web_fetch;
+    // 默认/宽松档允许联网 → 注册。配置里显式写了 network.enabled 就不动。
+    if (!config.hasNetworkTools)
+        config.allowNetworkTools = (config.profile != PermissionProfile::Strict);
+
     return true;
 }
 
@@ -576,6 +719,10 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     fprintf(stderr, "  模型      %s @ %s\n",
             config.modelName.empty() ? "(未配置)" : config.modelName.c_str(),
             config.modelUrl.empty() ? "(未配置)" : config.modelUrl.c_str());
+    fprintf(stderr, "  思考      %s\n",
+            config.thinkMode == ThinkMode::On ? "on(显式发 enable_thinking=true)" :
+            config.thinkMode == ThinkMode::Off ? "off(显式发 false)" :
+                                                 "auto(不发字段, 端点默认值说了算)");
 
     // 运行模式: server.host 非空 = managed。两种模式**互斥**, 不是叠加
     if (config.managed())
@@ -670,10 +817,24 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
                     target.c_str(), prefix.c_str());
         }
     }
-    fprintf(stderr, "  命令策略  包管理=%s  联网命令=%s  权限=%s\n",
-            config.allowPackageManager ? "开" : "关",
-            config.allowNetwork ? "开" : "关",
-            config.unrestricted ? "全部不检查" : "按区域分档");
+    // 档位展开后的实际策略(单项覆盖也反映在这里)
+    {
+        JZVirtualTerminalConfig policy = JZVirtualTerminalConfig();
+        policy.applyProfile(config.profile);
+        if (config.hasAllowPackageManager)
+            policy.allowPackageManager = config.allowPackageManager;
+        if (config.hasAllowNetwork)
+            policy.allowNetwork = config.allowNetwork;
+        if (config.hasAllowUnknownPrograms)
+            policy.allowUnknownPrograms = config.allowUnknownPrograms;
+        fprintf(stderr, "  权限档位  %s(%s)  包管理=%s  联网命令=%s  未知命令=%s\n",
+                permissionProfileText(config.profile),
+                config.profile == PermissionProfile::Strict ? "严格" :
+                config.profile == PermissionProfile::Loose ? "宽松" : "默认",
+                policy.allowPackageManager ? "开" : "关",
+                policy.allowNetwork ? "开" : "关",
+                policy.allowUnknownPrograms ? "放行" : "拒绝");
+    }
     // 远端节点(link 模式的 agent_node): 只有配了才会出现 remote_ssh 工具
     if (config.nodes.empty())
         fprintf(stderr, "  远端节点  (无; 纯本地执行)\n");
@@ -681,8 +842,7 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     {
         for (const JZCliNodeConfig &nc : config.nodes)
         {
-            fprintf(stderr, "  远端节点  %s -> %s:%d%s%s\n", nc.name.c_str(), nc.host.c_str(), nc.port,
-                    nc.isDefault ? "  [默认]" : "",
+            fprintf(stderr, "  远端节点  %s -> %s:%d%s\n", nc.name.c_str(), nc.host.c_str(), nc.port,
                     nc.token.empty() ? "  (无 token)" : "");
         }
     }

@@ -204,9 +204,9 @@ public:
     explicit JZServerAgentToolHost(const JZServerAgentConfig &cfg)
     {
         m_config.zone.workspace = codeNormalizePath(cfg.rootDir);
-        m_config.level = AccessLevel::Standard;
-        m_config.allowPackageManager = false;
-        m_config.allowNetwork = false;
+        // 内置 agent 也是默认档: 未登记命令放行、允许联网、禁止装/卸依赖;
+        // 安全底线(提权/关机/格式化/删工作区外)照常生效。
+        m_config.applyProfile(PermissionProfile::Standard);
     }
 
     const JZVirtualTerminalConfig &toolTerminalConfig() const override { return m_config; }
@@ -277,6 +277,45 @@ string JZServerAgent::buildSystemPrompt() const
     return ss.str();
 }
 
+bool JZServerAgent::setRootDir(const string &dir, string &error)
+{
+    const string want = codeNormalizePath(dir);
+    if (want.empty())
+    {
+        error = "工作目录为空";
+        return false;
+    }
+    JZFileInfo info(want);
+    if (!info.exists() || !info.isDir())
+    {
+        error = "工作目录不存在: " + want;
+        return false;
+    }
+    if (want == m_cfg.rootDir)
+        return true;               // 没变
+    if (m_busy)
+    {
+        error = "内置 agent 正忙, 等任务结束再切换目录";
+        return false;
+    }
+
+    // 终端/工具宿主/系统提示都绑在旧目录上, 拆掉重建
+    if (m_terminal)
+    {
+        m_terminal->deleteLater();
+        m_terminal = nullptr;
+    }
+    if (m_agent)
+    {
+        m_agent->deleteLater();
+        m_agent = nullptr;
+    }
+    m_toolHost.reset();
+    m_everRan = false;             // 新 agent, 之前的历史不算"跑过一轮"
+    m_cfg.rootDir = want;
+    return build(error);
+}
+
 bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, string &error)
 {
     m_cfg = cfg;
@@ -285,6 +324,11 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
     if (m_cfg.rootDir.empty())
         m_cfg.rootDir = JZPlatform::applicationDirPath();
     m_cfg.rootDir = codeNormalizePath(m_cfg.rootDir);
+    return build(error);
+}
+
+bool JZServerAgent::build(string &error)
+{
     m_toolHost.reset(new JZServerAgentToolHost(m_cfg));
     if (m_cfg.modelUrl.empty())
     {
@@ -294,10 +338,22 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
 
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
-    m_agent->setThinkEnabled(true);
+    // 思考开关: 默认 Auto(不发送字段, 端点默认值说了算); 需要显式开再配 llm.thinking
 
     JZAgentConfig ac;
     ac.rootPath = m_cfg.rootDir;
+    // 全局 .jzagent(settings 那份) 的 skills: **总是加载**, 排在项目 skills 之后
+    {
+        string globalDir = m_cfg.skillsDir;
+        if (globalDir.empty())
+        {
+            const char *home = getenv("USERPROFILE");
+            if (home && *home)
+                globalDir = string(home) + "/.jzagent";
+        }
+        if (!globalDir.empty())
+            ac.globalSkillsDirs.push_back(codeNormalizePath(globalDir) + "/skills");
+    }
     ac.modelUrl = m_cfg.modelUrl;
     ac.modelName = m_cfg.modelName;
     ac.modelToken = m_cfg.modelToken;
@@ -327,16 +383,17 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
     m_agent->addTool(new JZGetDateTimeTool());
 
     // server 独有: 集群视图 / 派活 / 查记录 / 子进程监管
-    m_agent->addTool(new JZServerAgentsTool(srv));
-    m_agent->addTool(new JZServerTaskSubmitTool(srv));
-    m_agent->addTool(new JZServerTaskQueryTool(srv));
-    m_agent->addTool(new JZServerAgentControlTool(srv));
+    m_agent->addTool(new JZServerAgentsTool(m_srv));
+    m_agent->addTool(new JZServerTaskSubmitTool(m_srv));
+    m_agent->addTool(new JZServerTaskQueryTool(m_srv));
+    m_agent->addTool(new JZServerAgentControlTool(m_srv));
 
     m_agent->setSystemPrompt(buildSystemPrompt());
     return true;
 }
 
-void JZServerAgent::submit(const string &taskId, const string &prompt, const string &verifyCmd)
+void JZServerAgent::submit(const string &taskId, const string &prompt, const string &verifyCmd,
+                           const Json::Value &ctxJson)
 {
     if (!m_agent)
         return;
@@ -360,10 +417,20 @@ void JZServerAgent::submit(const string &taskId, const string &prompt, const str
     m_error.clear();
     m_lastEvent.clear();
 
-    // 上一轮结束后 agent 处于 Idle: 开新任务前 reset(保留 tools/system prompt)
+    // 上一轮结束后 agent 处于 Idle: 开新任务前 reset(保留 tools/system prompt)。
+    // reset 就是"彻底清空", 不掺别的语义。
     if (m_everRan)
         m_agent->reset();
     m_everRan = true;
+
+    // 要接着同一个会话聊, 由任务自己带着上下文进来: 调用方从任务记录里取上一条任务的
+    // 对话快照, 这里灌进刚清空的 agent(等价于"新任务带着原有历史")。
+    if (ctxJson.isObject() && ctxJson.isMember("history"))
+    {
+        LLMContext ctx;
+        if (ctx.fromJson(ctxJson))
+            m_agent->loadContext(ctx);
+    }
 
     string text = prompt;
     if (!verifyCmd.empty())
@@ -372,6 +439,11 @@ void JZServerAgent::submit(const string &taskId, const string &prompt, const str
 
     emitEvent("start", Json::Value(prompt).toStyledString());
     m_agent->request(text);
+}
+
+std::vector<std::string> JZServerAgent::skillNames() const
+{
+    return m_agent ? m_agent->skillNames() : std::vector<std::string>();
 }
 
 void JZServerAgent::cancel()
@@ -448,6 +520,10 @@ void JZServerAgent::onFinished()
     r["error"] = m_cancelled && m_error.empty() ? string("任务已取消") : m_error;
     r["verify_rounds"] = 0;      // server agent 不跑 verify 门控
     r["rounds"] = m_round;
+
+    // 这一轮的对话快照交给 server 存进任务记录(和历史记录放一起), 本类不缓存、不淘汰。
+    if (m_agent)
+        m_lastCtxJson = m_agent->saveContext().toJson();
 
     m_busy = false;
     emitEvent("done", r.toStyledString());

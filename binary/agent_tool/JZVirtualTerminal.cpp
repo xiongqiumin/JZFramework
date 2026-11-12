@@ -69,6 +69,51 @@ const char *detachReason(const string &head)
     return nullptr;
 }
 
+// 再套一层 shell / 脚本宿主: 里面那一整串命令我们只看到一个字符串参数, 审核相当于失效
+// (和 for/while 是同一类盲区, 但更彻底: `powershell -Command "Remove-Item C:\ -Recurse"`
+//  里什么都能写)。而 bash 里本来就有等价做法, 所以直接拒绝:
+//   cmd /c dir             → `ls`
+//   cmd /c mklink ...      → 本来就该人来做
+//   powershell -Command …  → bash 里 curl / stat / tar / zip 都有
+//   bash -c "…"            → 直接写要跑的那条命令
+// ⚠ 直接执行脚本文件(`./x.bat`、`./build.sh`)不受影响 —— 那是"跑一个文件", 不是套 shell。
+const char *nestedShellReason(const vector<string> &argv)
+{
+    if (argv.empty())
+        return nullptr;
+
+    string head = str_toLower(argv[0]);
+    if (str_endsWith(head, ".exe"))
+        head = head.substr(0, head.size() - 4);
+
+    static const char *kNested[] = {
+        "cmd", "powershell", "pwsh", "cscript", "wscript", "mshta",
+        "rundll32", "regsvr32", "wsl",
+    };
+    for (const char *x : kNested)
+    {
+        if (head == x)
+            return "bash 里不要再套一层 shell/脚本宿主(cmd / powershell / wsl): 里面那串命令"
+                   "审核看不到。请直接写要跑的命令(bash 有等价写法), 或直接执行脚本文件(./x.bat)";
+    }
+
+    // `bash -c "…"` / `sh -lc "…"`: 同理 —— 脚本串里的命令审不到
+    static const char *kShells[] = { "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh" };
+    for (const char *x : kShells)
+    {
+        if (head != x)
+            continue;
+        for (size_t i = 1; i < argv.size(); i++)
+        {
+            const string &a = argv[i];
+            // -c / -lc / -ic: 短选项里带 c = 把后面的字符串当脚本跑
+            if (a.size() >= 2 && a[0] == '-' && a[1] != '-' && a.find('c') != string::npos)
+                return "不要用 `bash -c \"...\"` 包一层: 里面那串命令审核看不到, 直接写要跑的命令";
+        }
+    }
+    return nullptr;
+}
+
 // shell 复合语句(for / while / if ...): 我们只按 && || ; | 拆段逐段审,
 // 循环体/分支体内部的命令审不到(比如 `for f in *; do rm -rf $f; done`), 所以明确拒绝,
 // 而不是让它们落到"程序不在白名单里"这种看不懂的报错上。
@@ -366,8 +411,8 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
     // heredoc body / $( ) / 反引号 / 进程替换 / 子 shell 的**内容**整段跳过(已知盲区),
     // 审核层只会看到能解析出来的命令 —— 下面这些检查(白名单 / 区域 / 危险参数 / 底线)
     // 因此都只管"看得见的那部分"。
-    // 两个等级的区别只在**检查项多少**(Unrestricted 跳过全部检查), 不在解析口径 ——
-    // 所以这里只有一次 parse(以前按等级分两套调用, 现在统一)。
+    // 三种档位(严格/默认/宽松)的区别只在**检查项多少**(见 applyProfile 展开的字段),
+    // 不在解析口径 —— 所以这里只有一次 parse(以前按等级分两套调用, 现在统一)。
     jzsh::AuditLine parsed;
     string perr;
     if (!jzsh::auditParse(command, parsed, perr))
@@ -443,8 +488,8 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
             if (head.empty())
                 continue;   // 只有 VAR=val 前缀的一段(如 `FOO=bar && cmd`), 没有程序可调
 
-            // 不限制档(Unrestricted): 跑完"安全底线"就放行, 其余检查全跳过。
-            if (cfg.unrestricted())
+            // 安全底线: 与档位无关, 每条命令都先过一遍 ——
+            // 关机/分区格式化/提权/改系统设置/删工作区外的文件, 三档共用且没有开关。
             {
                 Verdict fv = policy().checkCriticalFloor(cmd, base);
                 audit("floor", fv, head);
@@ -454,7 +499,6 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
                             (fv.detail.empty() ? string() : " (" + fv.detail + ")");
                     return false;
                 }
-                continue;   // 跳过白名单 / 区域 / 危险参数 / 重定向的全部检查
             }
 
             if (cmd.programExpanded)
@@ -481,6 +525,18 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
             }
 
             if (const char *why = compoundReason(head))
+            {
+                Verdict v;
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::CommandDenied;
+                v.detail = string("命令被拒绝: ") + head + " —— " + why;
+                audit("exec", v, head);
+                error = v.detail;
+                return false;
+            }
+
+            // 再套一层 shell(cmd / powershell / bash -c): 里面那串命令审核看不到
+            if (const char *why = nestedShellReason(cmd.argv))
             {
                 Verdict v;
                 v.decision = Decision::Deny;

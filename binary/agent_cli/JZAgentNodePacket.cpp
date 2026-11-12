@@ -57,12 +57,12 @@ int JZNodePackExec::packetType() const
 
 void JZNodePackExec::saveToStream(JZDataStream &s) const
 {
-    s << runId << command << cwd << timeoutMs << background;
+    s << runId << command << cwd << timeoutMs << background << session;
 }
 
 void JZNodePackExec::loadFromStream(JZDataStream &s)
 {
-    s >> runId >> command >> cwd >> timeoutMs >> background;
+    s >> runId >> command >> cwd >> timeoutMs >> background >> session;
 }
 
 // ---- execResult ----
@@ -101,12 +101,12 @@ int JZNodePackExecCancel::packetType() const
 
 void JZNodePackExecCancel::saveToStream(JZDataStream &s) const
 {
-    s << runId;
+    s << runId << session;
 }
 
 void JZNodePackExecCancel::loadFromStream(JZDataStream &s)
 {
-    s >> runId;
+    s >> runId >> session;
 }
 
 // ---- termQuery ----
@@ -151,6 +151,80 @@ void JZNodePackTermQueryResult::loadFromStream(JZDataStream &s)
       >> durationMs >> totalLines >> firstLine >> readPos >> text >> error;
 }
 
+// ---- ping / pong (保活) ----
+int JZNodePackPing::packetType() const
+{
+    return NodePack_ping;
+}
+
+void JZNodePackPing::saveToStream(JZDataStream &s) const
+{
+    s << clientId;
+}
+
+void JZNodePackPing::loadFromStream(JZDataStream &s)
+{
+    s >> clientId;
+}
+
+JZNodePackPong::JZNodePackPong()
+{
+}
+
+int JZNodePackPong::packetType() const
+{
+    return NodePack_pong;
+}
+
+void JZNodePackPong::saveToStream(JZDataStream &s) const
+{
+    s << atMs;
+}
+
+void JZNodePackPong::loadFromStream(JZDataStream &s)
+{
+    s >> atMs;
+}
+
+// ---- sess (会话管理) ----
+JZNodePackSess::JZNodePackSess()
+{
+}
+
+int JZNodePackSess::packetType() const
+{
+    return NodePack_sess;
+}
+
+void JZNodePackSess::saveToStream(JZDataStream &s) const
+{
+    s << reqId << op << session << cwd;
+}
+
+void JZNodePackSess::loadFromStream(JZDataStream &s)
+{
+    s >> reqId >> op >> session >> cwd;
+}
+
+JZNodePackSessResult::JZNodePackSessResult()
+{
+}
+
+int JZNodePackSessResult::packetType() const
+{
+    return NodePack_sessResult;
+}
+
+void JZNodePackSessResult::saveToStream(JZDataStream &s) const
+{
+    s << reqId << ok << error << session << text;
+}
+
+void JZNodePackSessResult::loadFromStream(JZDataStream &s)
+{
+    s >> reqId >> ok >> error >> session >> text;
+}
+
 void JZAgentNodePacketInit()
 {
     // 幂等 + 线程安全: 与 JZFrpPacketInit 同一个理由 —— 调用方可能重复初始化,
@@ -165,5 +239,9 @@ void JZAgentNodePacketInit()
         m->registPack<JZNodePackExecCancel>(NodePack_execCancel);
         m->registPack<JZNodePackTermQuery>(NodePack_termQuery);
         m->registPack<JZNodePackTermQueryResult>(NodePack_termQueryResult);
+        m->registPack<JZNodePackPing>(NodePack_ping);
+        m->registPack<JZNodePackPong>(NodePack_pong);
+        m->registPack<JZNodePackSess>(NodePack_sess);
+        m->registPack<JZNodePackSessResult>(NodePack_sessResult);
     });
 }

@@ -378,7 +378,10 @@ private:
 #ifdef _WIN32
         check(codeBashPathToWindows("/c/tmp/x/main.js") == "C:/tmp/x/main.js", "/c/... -> C:/...");
         check(codeBashPathToWindows("/d/work") == "D:/work", "/d/work -> D:/work");
-        check(codeBashPathToWindows("/cygdrive/e/a/b") == "E:/a/b", "/cygdrive/e/... -> E:/...");
+        // 与 Git Bash(MSYS2) 对齐: 没有 /cygdrive 挂载点, 不翻(原样返回 → 后续判存在会失败)
+        check(codeBashPathToWindows("/cygdrive/e/a/b") == "/cygdrive/e/a/b",
+              "/cygdrive/... 不翻(与 Git Bash 一致)");
+        check(codeBashPathToWindows("/c") == "C:/", "裸 /c -> C:/(Git Bash 里就是 C:\\ 根)");
         check(codeBashPathToWindows("/tmp/foo.log", temps) == "C:/TempForTest/foo.log",
               "/tmp/... -> 系统临时目录(与 bash 里 cygpath -w /tmp 一致)");
         check(codeBashPathToWindows("/tmp", temps) == "C:/TempForTest", "/tmp 本身也翻");

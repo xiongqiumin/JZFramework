@@ -368,7 +368,10 @@ public:
     JZShellPolicy &policy() { return m_policy; }
     const JZShellPolicy &policy() const { return m_policy; }
 
-    // 单条外部命令的超时(毫秒, <=0 = 不限)。默认 15 分钟。
+    // 超时(毫秒, <=0 = 不限)。默认 15 分钟。
+    // ⚠ 语义是**整条命令行**的总预算(`exec()` 进来记 deadline), 不是"每个外部命令各算一遍":
+    //   以前 `for d in a b c; do du -s "$d"; done` 能跑到 3×timeout, 直接把调用方的
+    //   任务超时(server 侧 15min)撞掉 —— 见 2026-11-11 的复盘。
     void setCommandTimeoutMs(int ms) { m_timeoutMs = ms; }
     int commandTimeoutMs() const { return m_timeoutMs; }
 
@@ -501,6 +504,9 @@ private:
     std::string absolutePath(const std::string &p) const;
 
     // ---- 执行 ----
+    // 整条命令行还剩多少毫秒: >0 = 剩余, 0 = 不限(没设超时), <0 = 已超时。
+    // 判据是 m_deadlineMsec(exec() 进来到点), 不是"这一条命令跑了多久"。
+    int remainingTimeoutMs() const;
     StageResult runNode(const NodePtr &n);
     // 管道: 每一段可以是简单命令, 也可以是复合命令(if/for/while/{ }/( ))
     StageResult runPipeline(const std::vector<NodePtr> &stages);
@@ -568,6 +574,10 @@ private:
     // 的退路 —— 用同步字符串传递。
     std::string m_stageIn;
     std::atomic<bool> m_cancelRequested{ false };    // 见 requestCancel()
+    // 整条命令行的截止时间(steady clock 毫秒; 0 = 不限)。exec() 进来按 m_timeoutMs 记一次,
+    // 之后所有外部命令等待 / 每进入一个节点都按**剩余时间**算, 到点整条以 124 收尾。
+    long long m_deadlineMsec = 0;
+    bool m_inExec = false;          // 嵌套 exec(`source`)判据: 不重置截止时间/取消信号
 
     // ---- 函数 ----
     struct LocalSave

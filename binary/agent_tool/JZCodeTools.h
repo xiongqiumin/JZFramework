@@ -50,8 +50,11 @@ bool codeListDir(const std::string &workspace, const std::string &rel,
 // ------------------------------------------------------------------
 std::string jzTsRuntimeNotes();
 
-// 同上，另一段：终端怎么跑"起服务 + 测"这类长任务（terminal_run 的 background / query / cancel）。
+// 同上，另一段：终端执行面的统一口径(语法/前台/后台/超时)。
+// terminal_run、remote_ssh、code_agent、评测共用这一份 —— 别在各执行体里再写一套(那是之前漂移的根源)。
 std::string jzTerminalRunNotes();
+// 会话管理说明(terminal_open / list / close)。needOpen = 该执行面不自动开默认会话(agent_node)。
+std::string jzTerminalSessionNotes(bool needOpen);
 
 enum class ToolOperator
 {
@@ -330,12 +333,32 @@ public:
 };
 
 // ------------------------------------------------------------------
+// 解析必应网页搜索的 HTML 结果页（<li class="b_algo"> 块），产出与 JSON/RSS 源一致的条目文本：
+//     "标题\n  url\n  摘要\n"
+// 抽成独立函数（而不是 JZWebSearchTool 的私有实现）是为了能在 test/net 里离线单测：
+// 给一段 HTML 就能断言解析结果，不需要联网、不依赖服务器。
+//   - 标题：块内 <h2><a href="...">..</a></h2>
+//   - 链接：可能是 www.bing.com/ck/a?...&u=a1<base64url> 的跳转包裹，这里就地还原真实 URL
+//     （与搜狗的 /link?url= 不同：那个要再发一次请求，这个是纯本地解码）
+//   - 摘要：块内第一个 <p>..</p>，去标签 + 实体反转义
+// 返回 false 表示一个结果块都没解析到（验证页 / 降级页 / 页面结构变了）。
+// ------------------------------------------------------------------
+bool jzParseBingHtmlResults(const std::string &html, std::vector<std::string> &out);
+
+// 搜索结果相关性粗判（抓取型源的降级检测）：
+//   把查询词按空白切成 token（>=2 字节），若所有条目里**一个 token 都没出现** → 判为降级。
+// 为什么需要它：搜索引擎限流/污染时返回的是 200 + 一堆与查询无关的条目，不校验就会当答案喂给模型。
+// 只对内置抓取源使用；自定义 JSON 源可能是语义搜索（结果不含关键词属正常），不能套用。
+bool jzSearchResultsRelevant(const std::string &query, const std::vector<std::string> &results);
+
+// ------------------------------------------------------------------
 // web_search: 联网搜索
 //   用 JZNetworkAccessManager 发起 HTTP GET 到搜索接口，解析结果（标题/链接/摘要）返回模型。
 //   支持多源自动回退: 候选源按序尝试，单个源出现网络错误 / 非 2xx / 返回内容无法识别时，
 //   自动切换下一个候选源，全部失败才报错。
-//   未配置模板时内置默认源（无需 API Key）: Bing RSS（format=rss，常规网页结果）。
-//   响应 JSON / RSS 均可解析；如需多源自动回退，在 call() 里追加候选 URL 即可。
+//   未配置模板时内置默认源（无需 API Key）: 必应网页搜索 HTML 结果页
+//   （带 setlang/cc 参数，且必须跟随 www.bing.com -> cn.bing.com 的 302；否则会掉进"词典/无关结果"降级态）。
+//   响应 JSON / RSS / 必应 HTML 均可解析；如需多源自动回退，在 call() 里追加候选 URL 即可。
 //   自定义模板: setSearchUrlTemplate 配置，模板含 {q} 占位符（URL 编码后的查询词），
 //   配置后只使用该自定义源（也应返回 JSON 或 RSS）。
 //   网络访问管理器由调用方通过 setNetworkAccessManager 注入（所有网络工具共享同一个，
@@ -370,6 +393,9 @@ private:
         std::vector<std::string> queue;    // 待尝试的候选源 URL（{q} 尚未展开）
         std::string currentUrl;            // 当前在请求的源（错误定位用）
         std::string errors;                // 各候选源失败原因累积
+        // 抓取型内置源：结果与查询词零交集就判"源降级"并切下一个源。
+        // 只对内置必应源开：自定义 JSON 源可能是语义搜索，结果不含关键词属正常，不能误杀。
+        bool checkRelevance = false;
         JZNetworkReply *reply = nullptr;   // 本调用在途的请求（由本 ctx 独占）
     };
 

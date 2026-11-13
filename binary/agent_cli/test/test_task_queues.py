@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""多任务队列(task.queues)端到端测试。
+"""任务池并发上限(task.queues)端到端测试。
 
-被测行为:
-  · cli 配 `task.queues: 2` ⇒ 两个队列, **每个队列一个独立 JZAgent/一套工具**;
-  · 队列内串行(一个队列同一时刻只跑一个任务), 队列之间并发;
-  · 全忙时新任务排队(有 maxPending 上限), 有队列空出来就派发。
+被测行为(2026-11-11 重构后的口径):
+  · 启动时**不建**任务对象; 每次提交按需 new 一个 JZAgentCliTask(独立 JZAgent/工具/终端),
+    回包即销毁, 所以没有常驻的 q0/q1 编号;
+  · `task.queues` 是**同时活动任务数上限**(不是预建队列数), 到顶后进 FIFO 排队(maxPending);
+  · /info.queues 是"当前活着的任务对象"数组: 空闲时为空, 并发时最多 queues 项;
+  · 本地 SSE 事件统一 queue=0, 判定并发要看 /info.queues 的 busy 数, 不是事件里的 queue。
 
 断言(硬):
-  1. /info 的 queues 数组长度 == 2;
-  2. 两条任务同时在跑时, 两条队列的 busy 都为 true(证明是两个 agent 并发, 不是假并发);
-  3. 三条任务全部 status=success;
-  4. 总耗时明显小于"串行三次"的时间 ⇒ 证明第一条与第二条真的并行。
+  1. 启动时没有 busy 任务、没有排队;
+  2. 两条任务同时在跑时, 活动任务数在上限内且 busy>=2(真并发, 不是假并发);
+  3. 全忙时第三条进 pendingTasks, 之后自动派发;
+  4. 三条任务全部 status=success;
+  5. 总耗时明显小于"串行三次"的时间 ⇒ 证明前两条真的并行。
 
 用法:
     python test_task_queues.py --agent-cli <agent_cli.exe> [--delay 1.5]
@@ -148,22 +151,23 @@ def main(argv=None) -> int:
 
         info = http_json("http://127.0.0.1:%d/info" % port, None, 5.0)
         queues = info.get("queues") or []
-        if len(queues) != args.queues:
-            log("FAIL: /info 的 queues 数量 %d != %d" % (len(queues), args.queues))
+        if info.get("pendingTasks") or any(q.get("busy") for q in queues):
+            log("FAIL: 启动时就有在跑/排队的任务: " + json.dumps(info, ensure_ascii=False)[:300])
             return 1
-        log("队列数正确: %d" % len(queues))
+        log("启动时不建任务对象(活动 %d, 排队 %d) —— 按需创建" %
+            (len(queues), info.get("pendingTasks", 0)))
 
         url = "http://127.0.0.1:%d/task" % port
         out: dict = {}
         t0 = time.time()
 
-        # A、B 同时提交: 应该各占一个队列
+        # A、B 同时提交: 应该各占一个动态新建的任务对象
         th_a = threading.Thread(target=submit, args=(url, "TASK-A 请直接答复", out, "a"))
         th_b = threading.Thread(target=submit, args=(url, "TASK-B 请直接答复", out, "b"))
         th_a.start()
         th_b.start()
 
-        # 等它们都真的开跑, 再看 /info: 两条队列都应 busy
+        # 等它们都真的开跑, 再看 /info: 至少两条活动任务 busy
         busy = 0
         last = {}
         for _ in range(30):
@@ -175,13 +179,15 @@ def main(argv=None) -> int:
         if busy < 2:
             th_a.join()
             th_b.join()
-            log("FAIL: 只看到 %d 条队列在跑(应为 2) —— 队列没有真正并发" % busy)
+            log("FAIL: 只看到 %d 条任务在跑(应为 2) —— 没有真正并发" % busy)
             log("  /info queues: " + json.dumps(last.get("queues"), ensure_ascii=False))
             log("  /info pending: %s busy=%s" % (last.get("pendingTasks"), last.get("busy")))
             for k in ("a", "b"):
                 log("  %s: %s" % (k, json.dumps(out.get(k), ensure_ascii=False)[:300]))
             return 1
-        log("两条队列同时在跑(busy=%d) —— 并发成立" % busy)
+        active = len(last.get("queues") or [])
+        assert 2 <= active <= args.queues, last
+        log("活动任务 %d(上限 %d), busy=%d —— 并发成立" % (active, args.queues, busy))
 
         # 队列都满时再提交 C: 应进排队, 有队列空出来后自动跑
         th_c = threading.Thread(target=submit, args=(url, "TASK-C 请直接答复", out, "c"))

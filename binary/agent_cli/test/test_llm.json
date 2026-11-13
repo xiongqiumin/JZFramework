@@ -7,7 +7,7 @@
     "取值规则: llm.<key> 优先, 没有就回落顶层 <key> (与 agent_cli 的 config.json 同一套规则)。",
     "只有 url / name 是必需的; 其余缺省沿用 JZCliConfig 里的默认。",
     "⚠ 模板里 url/name/token 一律留空(端点/模型名/令牌都不入库, 2026-11-09): 本机要跑测试就在",
-    "exe 目录那份里填(agent_cli / agent_cli_test / code_agent_benchmark 都读各自 exe 目录的这份)。"
+    "exe 目录那份里填(agent_cli / agent_cli_test 都读各自 exe 目录的这份)。"
   ],
   "llm": {
     "url": "",

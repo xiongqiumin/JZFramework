@@ -104,6 +104,9 @@ const taskPrompt = (t) => meta(t).prompt || '';
    1000 条够绝大多数任务一次到底 —— 200 条时三四十个块就冒"加载更多", 看着像没显示全。
    翻过的部分缓存在本机, 轮询/刷新重新拉列表不会把它冲掉。 */
 const AG_OLDER = {};        // taskId -> { events: [...], offset: n }
+/* 工具块的输出文本: key(任务:序号) -> result。只给"复制"按钮用,
+   每次都随内容重画, 所以直接当临时表使唤 —— 不要把长文本塞进 data-* 属性。 */
+let TOOL_OUT = {};
 const taskEvents = (t) => {
   const id = t && taskId(t);
   const base = (meta(t) || {}).events || [];
@@ -228,6 +231,33 @@ async function getJson(url) {
   setConn(true);
   if (!r.ok) throw new Error('HTTP ' + r.status);   // 能拿到响应 = 连接是通的
   return r.json();
+}
+/* 复制到剪贴板: 优先 Clipboard API(仅安全上下文有), 否则退回隐藏 textarea + execCommand。
+   返回 Promise<bool> —— 调用方据此决定提示"已复制"还是失败, 不要吞掉。 */
+async function copyText(s) {
+  if (!s) return false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(s);
+      return true;
+    }
+  } catch (e) { /* 权限被拒/非安全上下文: 走降级 */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = s;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, s.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch (e) {
+    return false;
+  }
 }
 async function postJson(url, body, timeoutMs) {
   let r;
@@ -456,9 +486,14 @@ function blockHtml(b, key, open) {
   if (b.kind === 'tool') {
     const dot = b.result === null ? 'run' : (b.ok ? 'ok' : 'fail');
     const head = (b.name ? '<code>' + esc(b.name) + '</code>' : '<span class="muted">工具</span>')
-      + (b.args ? ' <span class="muted">' + esc(String(b.args).slice(0, 140)) + '</span>' : '');
+      + (b.args ? ' <span class="muted cs-tool__args">' + esc(String(b.args).slice(0, 140)) + '</span>' : '');
+    // 复制按钮: 贴着 summary 右侧, 悬停才出现(见 app.css .cs-tool__copy)。
+    // 复制的是**输出**(result), 不带命令 —— 常见用途是把报错贴出去。
+    if (b.result != null) TOOL_OUT[key] = b.result;
+    const copy = b.result == null ? ''
+      : `<button class="cs-tool__copy" type="button" data-copy="${esc(key)}" title="复制输出">复制</button>`;
     return `<details class="cs-tool" data-open="${esc(key)}"${attr}>
-      <summary><span class="cs-tool__dot ${dot}"></span>${head}</summary>
+      <summary><span class="cs-tool__dot ${dot}"></span>${head}${copy}</summary>
       <pre class="jz-log">${esc(b.result == null ? '（等待结果…）' : (b.result || '（空）'))}</pre>
     </details>`;
   }
@@ -479,6 +514,7 @@ function blockHtml(b, key, open) {
 function convHtml(t) {
   const id = taskId(t);
   const running = isRunning(t);
+  TOOL_OUT = {};                 // 整块重画, 输出表跟着重建
   const blocks = groupEvents(t);
   const hasReply = blocks.some(b => b.kind === 'reply');
   const hasVerify = blocks.some(b => b.kind === 'verify');
@@ -656,6 +692,21 @@ function renderTask(force, scrollMode) {
   }
   box.querySelectorAll('details[data-open]').forEach(d => {
     d.addEventListener('toggle', () => { AG.openMap[d.dataset.open] = d.open; });
+  });
+  // 工具块上的「复制」: 按钮在 <summary> 里, 不 stopPropagation 会顺带把折叠块开/关
+  box.querySelectorAll('.cs-tool__copy').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const txt = TOOL_OUT[btn.dataset.copy] || '';
+      if (!txt) return;
+      const ok = await copyText(txt);
+      if (!ok) { if (window.JzUI) JzUI.toast('复制失败，浏览器不给写剪贴板', 'fail'); return; }
+      const old = btn.textContent;
+      btn.textContent = '已复制';
+      btn.classList.add('is-done');
+      setTimeout(() => { btn.textContent = old; btn.classList.remove('is-done'); }, 1200);
+    };
   });
   if (scrollMode === 'top') box.scrollTop = 0;
   else if (scrollMode === 'bottom') box.scrollTop = box.scrollHeight;

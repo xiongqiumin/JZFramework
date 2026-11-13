@@ -1,0 +1,38 @@
+{
+  // bteserver —— BTE 上位机(原 Qt/C++)的 JS 移植, 现在按 TypeScript 工程编译。
+  // 编译: <tsc> -p tsconfig.json
+  // 运行: code_runtime --entry <本目录>/build/main.js
+  "compilerOptions": {
+    // 与 code_agent 工程骨架(initProject 生成的 tsconfig)一致:
+    // target ES2022 + lib ES2025 = quickjs 实际支持的范围; 不写 DOM, 否则
+    // js_wrapper 里的全局 fetch/WebSocket/URL 会与 lib.dom.d.ts 撞成 duplicate identifier。
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2025"],
+    // ⚠ 迁移现状: 这批代码是从 Qt/C++ 逐行翻译过来的(13.5k 行), 先做到"类型检查能过 + 能跑",
+    //   暂时不开 strict(隐式 any / 可能为空 遍地都是, 一开就是上千条)。收紧的次序见 README.md。
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    // ⚠ 内置裸名一律用**默认导入**取成员, 例如 `import fs from 'fs'` /
+    //   `import net from 'net'`。
+    //   不要写具名导入(如 `import { createServer } from 'net'`):
+    //   随工程分发的 TS 7.0.2(tsgo) 在 `declare module 'x' { export * from './index' }` 里
+    //   **不解析相对路径的通配再导出**, 会静默地不导出任何成员 ⇒ 具名导入报 TS2614;
+    //   默认导入则没事(bundler 隐含 allowSyntheticDefaultImports, 且部署副本由 package.py
+    //   补了显式具名再导出, 两种写法都行)。已试过两条绕法都不成立: `paths` 在 tsgo 下不生效、
+    //   `baseUrl` 已被 TS7 移除(写了报 TS5102) —— 所以就在本工程内统一默认导入约定。
+    // 迭代期先允许"有错也产出"(便于跑 C++ 端到端测试); 收口时改成 true。
+    "noEmitOnError": false,
+    "sourceMap": true,
+    "outDir": "build",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/**/*.ts",
+    // 类型来源: 仓库里的 js_wrapper 声明(引擎全局 + widget 全局类 + core/net 模块)。
+    // 用户工程不用写这些相对路径 —— initProject 会把部署的 js_wrapper 整棵拷进工程, include "js_wrapper/**/*.d.ts" 即可。
+    "../../../JZJSEngine/js_wrapper/**/*.d.ts"
+  ]
+}

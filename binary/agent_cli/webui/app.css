@@ -652,10 +652,25 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
   padding: var(--jz-sp-2) var(--jz-sp-3);
 }
 .cs-tool > summary { display: flex; align-items: center; gap: var(--jz-sp-2); min-width: 0; }
-.cs-tool > summary > span:last-child {
+/* 参数串: 占满剩余宽度, 长了就省略(不能撑破 summary —— 右边还挂着复制按钮) */
+.cs-tool > summary > .cs-tool__args {
+  flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cs-tool pre { margin: var(--jz-sp-2) 0 0; }
+/* 复制按钮: 平时透明, 悬停整块或键盘聚焦时才露出来。
+   opacity 而不是 display —— 一直占位, 出现时不会把参数串挤一下。 */
+.cs-tool__copy {
+  flex: none; margin-left: auto;
+  font-size: var(--jz-fs-1); line-height: 1; font-family: inherit;
+  padding: 3px 7px; border-radius: var(--jz-r-2);
+  border: 1px solid var(--jz-border); background: transparent;
+  color: var(--jz-muted); cursor: pointer;
+  opacity: 0; transition: opacity .12s, color .12s, border-color .12s;
+}
+.cs-tool:hover .cs-tool__copy, .cs-tool__copy:focus-visible { opacity: 1; }
+.cs-tool__copy:hover { color: var(--jz-fg); border-color: var(--jz-border-strong); }
+.cs-tool__copy.is-done { opacity: 1; color: var(--jz-ok); border-color: var(--jz-ok); }
 .cs-think__body {
   margin-top: var(--jz-sp-1);
   padding: var(--jz-sp-1) 0 var(--jz-sp-1) var(--jz-sp-3);

@@ -206,7 +206,9 @@ public:
 
         m_agent = new JZAgent(this);
         m_agent->setStreamEnabled(false);       // 走非流式整包(与压缩请求同一条解析路径)
-        m_agent->setThinkEnabled(kThinkEnable);
+        // 旧的 setThinkEnabled(bool) 已换成三态 ThinkMode: On/Off 都会显式发
+        // enable_thinking, Auto 才是不发字段(最兼容)。这里保持旧语义 = 显式发。
+        m_agent->setThinkMode(kThinkEnable ? ThinkMode::On : ThinkMode::Off);
         m_agent->init(cfg);
         m_agent->setSystemPrompt("You are a code reviewer. Answer in plain text (no code blocks).");
         m_agent->addTool(makeReadFileTool(m_code));   // 真实 agent 都带工具: 复现压缩请求的真实形状

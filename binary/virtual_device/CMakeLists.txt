@@ -40,10 +40,10 @@ target_include_directories(jz_virtual_device PUBLIC
 set(JZVirtualProcess_SOURCES
     JZVirtualProcess.h
     JZVirtualProcess.cpp
-    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZEngineRuntime.cpp
-    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZSourceMap.cpp
-    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZExeResource.cpp
-    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZScreenShot.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/binary/js_runtime/JZEngineRuntime.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop/JZSourceMap.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop/JZExeResource.cpp
+    ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop/JZScreenShot.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
     # OpenCV 图像处理桥（__jz.cv）：和 JZComputerUse 一样"谁需要谁编"。编入 OpenCV 与否由
@@ -61,7 +61,8 @@ target_link_libraries(jz_virtual_process PUBLIC jz_virtual_device)
 target_include_directories(jz_virtual_process PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${JZFRAMEWORK_ROOT_DIR}"
-    "${JZFRAMEWORK_ROOT_DIR}/binary/code_agent")   # JZScreenShot.h 等按裸名被引用
+    "${JZFRAMEWORK_ROOT_DIR}/binary/js_runtime"                 # JZEngineRuntime.h
+    "${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop")        # JZScreenShot.h 等按裸名被引用
 
 # 容器里跑的 JS 程序也可能 new JZEmulatorView（JZEngineRuntime 就在本库里），所以这里接线。
 # 静态库只接头/宏/链接，DLL 由最终 exe（virtual_device / code_runtime）去拷。

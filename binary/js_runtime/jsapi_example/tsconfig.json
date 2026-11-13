@@ -1,0 +1,47 @@
+{
+  // jsapi_example —— JS API 例子, 按 TypeScript 工程编译(src/*.ts -> build/*.js)。
+  // 编译: <tsc> -p tsconfig.json                      (tsgo: <bin>/ts_compiler/tsc/tsc.exe)
+  // 运行: code_runtime --entry <本目录>/build/01_hello.js   (--entry 所在目录 = 运行根/工作目录)
+  // 引擎只认 JS(quickjs 不做转译), 所以跑的是 build 下的产物; ctest 的用例也指向产物。
+  "compilerOptions": {
+    // 与 code_agent 的工程骨架(initProject 生成的 tsconfig)保持一致:
+    // target ES2022 + lib ES2025 = quickjs 实际支持的范围; 不写 DOM, 否则
+    // js_wrapper 里的全局 fetch/WebSocket/URL 会与 lib.dom.d.ts 撞成 duplicate identifier。
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2025"],
+    // 例子是"照着抄"的样板, 所以开 strict —— 上面看到的写法都是类型干净的那种。
+    "strict": true,
+    "skipLibCheck": true,
+    "noImplicitAny": true,
+    "noEmitOnError": true,
+    // 运行期报错的栈能经 source map 翻译回本文件的行号(code_runtime/JZEngineRuntime)。
+    "sourceMap": true,
+    "outDir": "build",
+    "rootDir": "src"
+  },
+  "include": [
+    "src/**/*.ts",
+    // 类型的单一来源: 仓库里的 js_wrapper 声明(引擎全局 + 例子用到的每个内置包)。
+    // 用户工程里不需要这些相对路径 —— initProject 会把部署的 js_wrapper 整棵拷进工程,
+    // include 写 "js_wrapper/**/*.d.ts" 即可。
+    "../../../JZJSEngine/js_wrapper/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/buffer/types/**/*.d.ts",
+    // OpenCV.js 形状的图像处理包（13_opencv 用）: 类型 + 值 + 常量都在 cv/types/index.d.ts
+    "../../../JZJSEngine/js_wrapper/cv/types/**/*.d.ts",
+    // 音频录放包（14_audio 用）
+    "../../../JZJSEngine/js_wrapper/audio/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/stream/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/worker_threads/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/crypto/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/events/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/fs/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/http/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/net/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/os/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/path/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/process/types/**/*.d.ts",
+    "../../../JZJSEngine/js_wrapper/sqlite/types/**/*.d.ts"
+  ]
+}

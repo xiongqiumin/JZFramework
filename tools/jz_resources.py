@@ -6,6 +6,7 @@
 
 import argparse
 import os
+import struct
 import sys
 import xml.etree.ElementTree as ET
 
@@ -37,6 +38,60 @@ def parse_qrc(qrc_path):
                 continue
             resources.append((alias, abs_path, prefix))
     return resources
+
+
+def fnv1a32(data):
+    """32 位 FNV-1a, 与 JZResources.cpp 的 jzResFnv1a32 一致"""
+    h = 2166136261
+    for b in data:
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def parse_xor_key(text):
+    """把 --xor-key 的取值转成 uint32 种子。
+
+    支持 "0x1234abcd" / "123456789" / 任意口令(按 UTF-8 做 FNV-1a 派生)。
+    """
+    s = text.strip()
+    if s.lower().startswith("0x"):
+        try:
+            return int(s, 16) & 0xFFFFFFFF
+        except ValueError:
+            pass
+    elif s.isdigit():
+        return int(s, 10) & 0xFFFFFFFF
+    return fnv1a32(s.encode("utf-8"))
+
+
+def xor_stream(data, state):
+    """xorshift32 密钥流异或, 与 JZXorShift::stream / JZResources.cpp 一致"""
+    out = bytearray(data)
+    for i in range(len(out)):
+        out[i] ^= state & 0xFF
+        x = state
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= x >> 17
+        x ^= (x << 5) & 0xFFFFFFFF
+        state = x & 0xFFFFFFFF
+    return bytes(out)
+
+
+# 打包格式(20 字节头 + 等长密文), 与 JZCore/JZResources.cpp 的解析代码对应
+PACK_MAGIC = b"JZRE"
+PACK_VERSION = 1
+PACK_ALGO_XOR = 1
+
+
+def pack_resource(alias, data, key):
+    """把一个资源文件打成 (header + 密文)。每个文件用独立 seed。"""
+    seed = (key ^ fnv1a32(alias.encode("utf-8"))) & 0xFFFFFFFF
+    if seed == 0:                       # xorshift 状态 0 会退化成全 0 密钥流
+        seed = 0x9E3779B9
+    header = struct.pack("<4sBBHII", PACK_MAGIC, PACK_VERSION, PACK_ALGO_XOR, 0,
+                         len(data), seed)
+    header += struct.pack("<I", fnv1a32(data))
+    return header + xor_stream(data, seed)
 
 
 def is_valid_path(name):
@@ -96,7 +151,7 @@ def validate_prefix(prefix):
     return True, safe_identifier(prefix)
 
 
-def generate_cpp(resources, qrc_path, output_path, depfile=None):
+def generate_cpp(resources, qrc_path, output_path, depfile=None, xor_key=None):
     """生成 C++ 源文件和头文件。一个 .qrc 只允许一个资源组(prefix), 生成单个 jzres_<prefix>_init()"""
     qrc_dir = os.path.dirname(os.path.abspath(output_path))
     os.makedirs(qrc_dir, exist_ok=True)
@@ -136,14 +191,17 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     safe = next(iter(distinct))
     group_prefix = distinct[safe]
 
-    # === 读取文件内容并生成 C 数组 ===
+    # === 读取文件内容并生成 C 数组 (可选: 异或打包, 运行期由 JZResources 透明解包) ===
+    key_seed = parse_xor_key(xor_key) if xor_key is not None else None
     entries = []
     for i, (alias, abs_path, _) in enumerate(resources):
         with open(abs_path, "rb") as f:
             data = f.read()
-        size = len(data)
         # 源文件修改时间(ms, 与 JZFileInfo::m_time 单位一致), 构建时冻结
         mtime = int(os.path.getmtime(abs_path) * 1000)
+        if key_seed is not None:
+            data = pack_resource(alias, data, key_seed)
+        size = len(data)
         arr_name = c_array_name(alias, i)
         entries.append((alias, arr_name, size, mtime, data))
 
@@ -203,8 +261,9 @@ def generate_cpp(resources, qrc_path, output_path, depfile=None):
     if depfile:
         write_depfile(depfile, output_path, qrc_path, resources)
 
+    packed_note = " xor-packed" if key_seed is not None else ""
     print(f"Generated: {header_path}")
-    print(f"Generated: {output_path} ({len(entries)} resources, group '{group_prefix}')")
+    print(f"Generated: {output_path} ({len(entries)} resources, group '{group_prefix}'{packed_note})")
 
 
 def main():
@@ -212,6 +271,8 @@ def main():
     parser.add_argument("qrc", help="Input .qrc file")
     parser.add_argument("-o", "--output", required=True, help="Output C++ file")
     parser.add_argument("-d", "--depfile", default=None, help="Output dependency file (.d)")
+    parser.add_argument("--xor-key", default=None,
+                        help="异或打包密钥: 0x十六进制 / 十进制 / 任意口令; 省略则输出明文数组")
     args = parser.parse_args()
 
     resources = parse_qrc(args.qrc)
@@ -219,7 +280,8 @@ def main():
         print("No resources found.", file=sys.stderr)
         sys.exit(1)
 
-    generate_cpp(resources, args.qrc, args.output, depfile=args.depfile)
+    generate_cpp(resources, args.qrc, args.output, depfile=args.depfile,
+                 xor_key=args.xor_key)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ target_link_libraries(test_agenttoolbridge JZFramework agent_tool)
 #   一旦某步的 run 卡住, 回调被反复触发 ⇒ 步骤按 2^n 递归, 一次运行能刷出 20 万条失败。
 #   终端行为的回归改由 ctest 里的 agent.test_code_tools / test_terminal_tools 覆盖。
 
-# terminal_run / terminal_query / terminal_cancel 三个工具类(终端 API 见上一条)
+# terminal_run / terminal_cancel 两个工具类 + 终端池(终端 API 见上一条)
 add_executable(test_terminal_tools test_terminal_tools.cpp)
 target_link_libraries(test_terminal_tools JZFramework agent_tool)
 

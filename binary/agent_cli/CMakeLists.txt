@@ -68,7 +68,7 @@ add_custom_command(TARGET agent_cli POST_BUILD
     COMMENT "Place test_llm.json next to agent_cli (sample if absent)")
 
 # test: --loop 端到端等测试(见 test/CMakeLists.txt; 测试脚本与它的验证程序都放在那里)
-#   评测程序 agent_cli_test(复用 code_agent/benchmark 用例评测 JZAgentCli)也在 test/ 下面,
+#   评测程序 agent_cli_test(复用 benchmark/ 用例评测 JZAgentCli)也在 test/ 下面,
 #   由 test/CMakeLists.txt 自己 add_subdirectory —— 与其它测试脚本同一处管理。
 add_subdirectory(test)
 

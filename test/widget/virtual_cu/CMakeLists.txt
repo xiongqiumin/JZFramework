@@ -6,9 +6,9 @@
 add_executable(test_cu_virtual
     main.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
-    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZScreenShot.cpp)
+    ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop/JZScreenShot.cpp)
 
-target_include_directories(test_cu_virtual PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent)
+target_include_directories(test_cu_virtual PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop)
 target_link_libraries(test_cu_virtual JZFramework)
 # 虚拟桌面 (JZComputerUse::setVirtualDesktop 用的就是它)
 target_link_libraries(test_cu_virtual jz_virtual_device)

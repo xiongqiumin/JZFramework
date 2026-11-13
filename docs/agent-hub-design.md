@@ -1011,7 +1011,7 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
 | `binary/agent_cli/server/main.cpp` | 解析 `http.*` / `hub.*` / `agents[]` / `selfAgent`，默认配置模板，`--check` |
 | `binary/agent_cli/server/web/*` | 管理台（A2A 形状：`index/agent/tasks/new` + `app.js` + `app.css`），样式走 `web/ui` 的 jz-ui |
 | `binary/agent_cli/test/fake_llm.py` | 固定返回「任务已成功」的假 LLM（OpenAI 兼容 SSE），离线跑全链路用 |
-| `binary/agent_cli/test/test_a2a_flow.py` | 一键自检：假 LLM → server → cli(managed) → 网页/API/SSE（`ctest -R agent_cli.a2a_flow`；`--serve` 可手动开网页） |
+| `binary/agent_cli/test/test_a2a_flow.py` | 手动自检：假 LLM → server → cli(managed) → 网页/API/SSE（`--serve` 可手动开网页）。**不进 ctest**（2026-11-13 移除：断言停在旧 webui 文案/页面） |
 
 ### 14.2 行为要点（node / remote_ssh）
 
@@ -1053,7 +1053,7 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
 ### 14.4 测试
 
 ```powershell
-ctest --test-dir build -C Debug -R "agent_cli\.(remote_ssh_nodes|hub_nodes|task_queues|task_cancel|server_tasks)$" --output-on-failure
+ctest --test-dir build -C Debug -R "agent_cli\.(remote_ssh_nodes|hub_nodes|task_queues|task_cancel)$" --output-on-failure
 ```
 
 - `agent_cli.remote_ssh_nodes`：起 2 台 link node + 1 个 standalone cli，把 nodeA 的 secret 搬到 nodeB；
@@ -1064,9 +1064,13 @@ ctest --test-dir build -C Debug -R "agent_cli\.(remote_ssh_nodes|hub_nodes|task_
   mock 模型会检查每轮"上一条 tool 结果"是否含预期标记，落空即判失败（不依赖被缓冲的节点日志）。
 - `agent_cli.hub_nodes`：2 台 link node + 1 个 managed cli + 1 个 server；任务从 server 的 `POST /api/tasks` 提交；
   断言 `online[]` 有该 cli 且两台 node 在线 → `success` → 有 `lastEventType` → cli 的 `http.port` **未被监听**（模式互斥）。
-- `agent_cli.task_queues`：mock 每个请求睡 1.5s，`queues=2`；A/B 同时提交 → `/info.queues` 两条 busy；
-  全忙提交 C → `pendingTasks=1` 且最终 success；总耗时 3.1s（串行应 4.5s）。
-- `agent_cli.task_cancel`：queues=1/2 的"在跑 + 排队"reset、worker SSE、recent 聚合、真实 node 进程取消。
-- `agent_cli.server_tasks`：managed 排队/在跑任务的 `returnImmediately:true` 取消、多队列 busy、异步超时、迟到 `taskEnd`、chunked SSE reply 上行。
+- `agent_cli.task_queues`：mock 每个请求睡 1.5s，`queues=2`；启动不建任务对象，A/B 同时提交 →
+  `/info.queues` 两条 busy（活动数不超过上限）；全忙提交 C → `pendingTasks=1` 且最终 success；
+  总耗时 3.1s（串行应 4.5s）。
+- `agent_cli.task_cancel`：queues=1/2 的"在跑 + 排队"reset 都回 cancelled、两个并发任务的 reply 都到
+  master SSE（本地事件统一 `queue=0`）、`/info.recent` 运行期间汇总两条、真实 node 进程取消。
 
 以上全部用内置 mock 模型，不联网，秒级。
+
+⛔ 2026-11-13 起 `agent_cli.a2a_flow` / `agent_cli.server_tasks` **不再注册 ctest**：断言停在旧 webui
+文案（"Agent 台账"、已删的 `/new` 页）与旧 server 任务超时模型；脚本保留供手动跑/后续按现状重写。

@@ -5,6 +5,7 @@
 #include "JZDebug.h"
 #include "JZResources.h"
 #include "JZFileInfo.h"
+#include "JZFile.h"
 #include "JZDir.h"
 
 // 资源: jz_add_resources 生成 (res.qrc -> jz_res_resources.h, prefix=/data -> jzres_data_init)
@@ -46,6 +47,51 @@ static void testResourceLoopback()
     JZTEST_CHECK(rd->size > 0, "资源 size > 0");
     JZTEST_CHECK(content.find("\"triangle\"") != std::string::npos,
                  "资源内容回环: 读出编译前的 JSON 原文");
+}
+
+// ============ 明文资源仍走零拷贝分支 (未启用 XOR_KEY 的工程) ============
+static void testPlainResourceFallback()
+{
+    static const unsigned char kPlain[] = { 'P', 'L', 'A', 'I', 'N', 0 };
+    const int kSize = (int)sizeof(kPlain);
+
+    JZResources::instance()->add(":/test/plain.bin", kPlain, kSize, 123);
+
+    const JZResourceData *rd = JZResources::instance()->find(":/test/plain.bin");
+    JZTEST_CHECK(rd != nullptr, "明文资源可登记");
+    if (!rd)
+        return;
+    JZTEST_CHECK(rd->size == kSize, "明文资源 size 原样保留");
+    JZTEST_CHECK(rd->data == kPlain, "明文资源保持零拷贝(data 指针原样)");
+    JZTEST_CHECK(rd->mtime == 123, "明文资源 mtime 原样保留");
+}
+
+// ============ 打包资源按「文件」读: open/size/seek/readAll 全是明文语义 ============
+static void testPackedResourceFileIO()
+{
+    JZFile f;
+    JZTEST_CHECK(f.open(":/data/shape.json", "rb"), "JZFile 可打开打包资源");
+    if (!f.isOpen())
+        return;
+
+    JZByteArray all = f.readAll();
+    std::string content(all.data(), all.size());
+    JZTEST_CHECK(content.find("\"triangle\"") != std::string::npos,
+                 "打包资源 readAll() 读出明文");
+
+    // 明文长度 == JZFileInfo::size(), 且不是「密文长度」
+    JZFileInfo fi(":/data/shape.json");
+    JZTEST_CHECK(fi.size() == all.size(), "打包资源 size() == 明文长度");
+
+    // 随机访问: 从明文里的 "triangle" 处 seek 再读, 证明解包不是顺序流糊出来的
+    size_t pos = content.find("\"triangle\"");
+    if (pos != std::string::npos)
+    {
+        f.seek((int)pos + 1);
+        JZByteArray word = f.read(8);
+        JZTEST_CHECK(word.size() == 8 && std::string(word.data(), word.size()) == "triangle",
+                     "打包资源 seek + read 读到正确明文");
+    }
 }
 
 // ============ Proto 回环: 对象 -> JSON -> 对象 ============
@@ -218,6 +264,8 @@ int main()
 {
     jzDebug() << "########## test_tools: 资源 + Proto 回环测试 ##########";
     testResourceLoopback();
+    testPlainResourceFallback();
+    testPackedResourceFileIO();
     testProtoLoopback();
     testResourceProtoLoopback();
     testResourceDirAndWeakPath();

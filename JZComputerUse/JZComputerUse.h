@@ -14,7 +14,7 @@
 #include <vector>
 #include <functional>
 #include "JZWidget/JZScreen.h"             // JZRect / JZImage
-#include "binary/code_agent/JZScreenShot.h"  // captureVirtualDesktop / toDataUrl / save
+#include "binary/agent_cli/desktop/JZScreenShot.h"  // captureVirtualDesktop / toDataUrl / save
 #include "json/json.h"                     // layoutTree 的返回(Json::Value 由 jsbind 自动转 JS 对象)
 
 class JZVirtualDevice;                     // 虚拟桌面后端 (见 setVirtualDesktop)

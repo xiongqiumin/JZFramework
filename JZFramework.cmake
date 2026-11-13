@@ -361,6 +361,9 @@ function(jzframework_use_config TEMPLATE_FILE)
 endfunction()
 
 # ==================== 资源编译: .qrc → .cpp 静态库 ====================
+# 用法: jz_add_resources(<target> <a.qrc> [<b.qrc> ...] [XOR_KEY <key>])
+#   XOR_KEY 可选: 指定后资源以「异或流打包」形式写入二进制, 运行期由 JZResources::add
+#   透明解包(上层 JZFile/JZFileInfo/JZDir 完全无感)。key 支持 0x十六进制 / 十进制 / 任意口令。
 function(jz_add_resources TARGET_NAME)
     set(JZ_RES_PY "${JZFRAMEWORK_ROOT_DIR}/tools/jz_resources.py")
     set(GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/${TARGET_NAME}")
@@ -368,7 +371,41 @@ function(jz_add_resources TARGET_NAME)
 
     set(OUT_CPPS "")
 
-    foreach(QRC_FILE ${ARGN})
+    # 选项与 qrc 列表分离 (兼容 CMake 3.12: 不用 list(POP_FRONT))
+    set(JZ_RES_QRC_FILES "")
+    set(JZ_RES_XOR_KEY "")
+    set(_jz_res_args ${ARGN})
+    while(_jz_res_args)
+        list(GET _jz_res_args 0 _jz_res_arg)
+        list(REMOVE_AT _jz_res_args 0)
+        if(_jz_res_arg STREQUAL "XOR_KEY")
+            list(LENGTH _jz_res_args _jz_res_len)
+            if(_jz_res_len GREATER 0)
+                list(GET _jz_res_args 0 JZ_RES_XOR_KEY)
+                list(REMOVE_AT _jz_res_args 0)
+            endif()
+        else()
+            list(APPEND JZ_RES_QRC_FILES "${_jz_res_arg}")
+        endif()
+    endwhile()
+
+    set(_jz_res_pack_arg "")
+    if(NOT "${JZ_RES_XOR_KEY}" STREQUAL "")
+        set(_jz_res_pack_arg --xor-key "${JZ_RES_XOR_KEY}")
+    endif()
+
+    # 把 key 落成 stamp 文件参与 DEPENDS: 只改 XOR_KEY(不改 qrc/资源)时也能触发重新生成。
+    # 内容相同则不写, 避免每次 configure 都刷新 mtime 导致全量重编资源。
+    set(_jz_res_key_stamp "${GEN_DIR}/xor_key.txt")
+    set(_jz_res_key_old "")
+    if(EXISTS "${_jz_res_key_stamp}")
+        file(READ "${_jz_res_key_stamp}" _jz_res_key_old)
+    endif()
+    if(NOT "${_jz_res_key_old}" STREQUAL "${JZ_RES_XOR_KEY}")
+        file(WRITE "${_jz_res_key_stamp}" "${JZ_RES_XOR_KEY}")
+    endif()
+
+    foreach(QRC_FILE ${JZ_RES_QRC_FILES})
         get_filename_component(QRC_NAME "${QRC_FILE}" NAME_WE)
         set(OUT_CPP "${GEN_DIR}/jz_${QRC_NAME}_resources.cpp")
         set(OUT_H "${GEN_DIR}/jz_${QRC_NAME}_resources.h")
@@ -397,8 +434,8 @@ function(jz_add_resources TARGET_NAME)
 
         add_custom_command(
             OUTPUT "${OUT_CPP}" "${OUT_H}"
-            COMMAND ${CMAKE_COMMAND} -E env "${JZ_PYTHON_EXECUTABLE}" "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}"
-            DEPENDS "${QRC_ABS}" "${JZ_RES_PY}" ${QRC_RESOURCES}
+            COMMAND ${CMAKE_COMMAND} -E env "${JZ_PYTHON_EXECUTABLE}" "${JZ_RES_PY}" "${QRC_ABS}" -o "${OUT_CPP}" -d "${DEPFILE}" ${_jz_res_pack_arg}
+            DEPENDS "${QRC_ABS}" "${JZ_RES_PY}" "${_jz_res_key_stamp}" ${QRC_RESOURCES}
             DEPFILE "${DEPFILE}"
             COMMENT "Generating resources: ${QRC_FILE} -> ${OUT_CPP}"
         )

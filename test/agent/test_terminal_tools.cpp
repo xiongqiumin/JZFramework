@@ -1,17 +1,21 @@
 // 终端工具类冒烟测试: terminal_run / terminal_cancel
 //
-// 为什么单独测这一层: 终端 API 本身已被 test_virtual_terminal 覆盖, 但**工具类**
+// 为什么单独测这一层: 终端 API 本身已由 JZShell/JZVirtualTerminal 覆盖, 但**工具类**
 // (JZTerminalTools.cpp) 的参数解析、回包文案、错误分支以前没有任何测试 —— 而那才是模型
 // 真正看到的东西。
 //
-// 终端是**单前台任务**: 一次只有一条命令, 回包就是这条命令的输出 ——
-// 没有 run_id、没有 terminal_query、没有 background 参数。
-// 后台由命令自己写 `&`(输出跟命令自己的重定向走), cancel 停的是"当前那一条"。
+// 2026-11-12 起终端改成**池化 + 无状态执行**: 每个 agent 一个 JZTerminalPool, 每次
+// terminal_run 借一台、跑完归还 —— 多条命令真并发, 各自独占一台终端; 到并发上限
+// (maxLive)直接报忙(不排队)。没有 run_id / terminal_query / background 参数。
+// 单台 JZVirtualTerminal 仍是"一次一条", 并发由池摊到多台; terminal_cancel 一次停全部。
+// `cmd &` 起的后台进程不占前台槽, 也不归 cancel 管。
 //
 // 覆盖:
 //   terminal_run: 前台跑完才回包 / 回包是原样输出 / 空 command /
-//                 被拒命令**只回一次包** / `&` 立刻回包且不占前台 / 单前台任务(第二条被拒)
-//   terminal_cancel: 停当前在跑的 / 停完再停(没得停) / 全新终端(没得停)
+//                 被拒命令**只回一次包** / `&` 立刻回包且不占前台槽 /
+//                 两条并发各占一台 / 第三条撞并发上限被拒
+//   terminal_cancel: 一次停掉所有在跑的 / 停完再停(没得停) / 全新池(没得停)
+//   上下文阀: 超长输出只回末尾 + 一行标记
 // 期望输出: ALL PASS
 
 #include <stdio.h>
@@ -62,10 +66,10 @@ public:
 
         JZVirtualTerminalConfig cfg;
         cfg.zone.workspace = m_ws;
-        m_term.setId("t1");
-        m_term.setTerminalConfig(cfg);
-        m_term2.setId("t2");            // 全新终端: 用来测"没有在跑的命令"
-        m_term2.setTerminalConfig(cfg);
+        m_pool.setConfig(cfg);
+        m_pool.setMaxLive(2);        // 两条并发, 第三条正好撞上限
+        m_pool.setKeepIdle(-1);      // 归还的终端全留着: 别在终端自己的线程里 delete 它
+        m_freshPool.setConfig(cfg);  // 全新池: 从没跑过命令
 
         connect(&m_run.sigResult, [this](const ToolCallResult &r) { record(m_runRes, r); });
         connect(&m_cancel.sigResult, [this](const ToolCallResult &r) { record(m_cancelRes, r); });
@@ -104,15 +108,23 @@ private:
         return tc;
     }
 
-    // 等异步回包(count>0)或重试耗尽, 再走下一步: 前台命令什么时候退出不确定
-    void waitResult(LastResult *r, int retries, const std::function<void()> &next)
+    // 等异步回包凑够 target 条(或重试耗尽), 再走下一步: 命令什么时候退出不确定
+    void waitCount(LastResult *r, int target, int retries, const std::function<void()> &next)
     {
-        if (r->count > 0 || retries <= 0)
+        if (r->count >= target || retries <= 0)
         {
             next();
             return;
         }
-        JZTimer::singleShot(100, [this, r, retries, next]() { waitResult(r, retries - 1, next); });
+        JZTimer::singleShot(100, [this, r, target, retries, next]()
+        {
+            waitCount(r, target, retries - 1, next);
+        });
+    }
+
+    void waitResult(LastResult *r, int retries, const std::function<void()> &next)
+    {
+        waitCount(r, 1, retries, next);
     }
 
     // ---- 1. 前台: 跑完才回包, 回包就是命令的原样输出 ----
@@ -145,64 +157,82 @@ private:
         check(m_runRes.count == 1 && !m_runRes.ok, "空 command: 失败且只回一次包");
         check(contains(m_runRes.text, "command 不能为空"), "空 command: 文案正确: " + m_runRes.text);
 
-        // 被拒的命令(审核阶段就挡掉): run() 会**同步**回调一次 ok=false, 工具不能再 finish 第二次
+        // 被拒的命令(审核阶段就挡掉): run() 同步报错, 工具不能再 finish 第二次
         m_runRes = LastResult();
         m_run.call(makeCall("e2", R"({"command":"rm -rf /"})"));
         check(m_runRes.count == 1, "被拒命令: 只回一次包, 实际 " + to_string(m_runRes.count));
         check(!m_runRes.ok, "被拒命令: 失败: " + m_runRes.text);
 
+        // timeout_ms 太小会被静默改写 —— 回包必须把改写说出来
+        m_runRes = LastResult();
+        m_run.call(makeCall("e3", R"({"command":"echo note_ok","timeout_ms":500})"));
+        waitResult(&m_runRes, 100, [this]() { stepErrorsCheck(); });
+    }
+
+    void stepErrorsCheck()
+    {
+        check(m_runRes.count == 1 && m_runRes.ok, "小 timeout: 成功且只回一次包");
+        check(contains(m_runRes.text, "[提示]") && contains(m_runRes.text, "120000"),
+              "小 timeout: 回包说明已按 120000 ms 处理: " + m_runRes.text);
+
         stepBackground();
     }
 
-    // ---- 3. 后台: `cmd &` 立刻回包, 且不占前台任务 ----
+    // ---- 3. 后台: `cmd &` 立刻回包, 且不占池里的执行槽 ----
     void stepBackground()
     {
         m_runRes = LastResult();
-        m_run.call(makeCall("b1", R"({"command":"sleep 30 &","timeout_ms":20000})"));
+        m_run.call(makeCall("b1", R"({"command":"sleep 2 &","timeout_ms":20000})"));
         // 收尾要回到终端线程, 不是同步的: 等一小会再看
         waitResult(&m_runRes, 50, [this]() { stepBackgroundCheck(); });
     }
 
     void stepBackgroundCheck()
     {
-        check(m_runRes.count == 1, "后台 &: 只回一次包(没被 sleep 30 堵住)");
+        check(m_runRes.count == 1, "后台 &: 只回一次包(没被 sleep 堵住)");
         check(m_runRes.ok, "后台 &: 成功: " + m_runRes.text);
-        check(m_term.info().runningCount == 0, "后台 &: 不占前台任务(终端空闲)");
+        check(m_pool.cancelAll() == 0, "后台 &: 不占池里的执行槽(没有在跑的前台命令)");
 
-        stepBusy();
+        stepConcurrent();
     }
 
-    // ---- 4. 单前台任务: 上一条没结束, 第二条直接拒 ----
-    void stepBusy()
+    // ---- 4. 并发: 两条各占一台终端; 第三条撞池上限 ----
+    void stepConcurrent()
     {
         m_runRes = LastResult();
-        m_run.call(makeCall("s1", R"({"command":"sleep 5","timeout_ms":20000})"));
-        check(m_runRes.count == 0, "单前台: 长命令还没回包");
-        check(m_term.info().runningCount == 1, "单前台: 终端正在跑那一条");
+        m_run.call(makeCall("p1", R"({"command":"sleep 5","timeout_ms":20000})"));
+        m_run.call(makeCall("p2", R"({"command":"sleep 5","timeout_ms":20000})"));
+        check(m_runRes.count == 0, "并发: 两条长命令都还没回包(各占一台终端)");
 
-        m_runRes = LastResult();
-        m_run.call(makeCall("s2", R"({"command":"echo second"})"));
-        check(m_runRes.count == 1 && !m_runRes.ok, "单前台: 第二条被拒且只回一次包");
-        check(contains(m_runRes.text, "同时只能跑一条"), "单前台: 文案点明原因: " + m_runRes.text);
+        // 池里两台都借出去了: 第三条拿不到终端, 直接拒(不排队), 只回一次包
+        m_run.call(makeCall("p3", R"({"command":"echo third"})"));
+        check(m_runRes.count == 1 && !m_runRes.ok,
+              "并发上限: 第三条被拒且只回一次包, 实际 " + to_string(m_runRes.count));
+        check(contains(m_runRes.text, "并发上限 2 已满"),
+              "并发上限: 文案点明原因: " + m_runRes.text);
 
-        // 停掉它, 别让测试等满 5 秒
-        JZTimer::singleShot(300, [this]() { stepCancel(); });
+        stepCancel();
     }
 
-    // ---- 5. cancel: 停当前那一条; 停完再停就没得停了 ----
+    // ---- 5. cancel: 一次停掉所有在跑的; 停完再停就没得停了 ----
     void stepCancel()
     {
         m_cancelRes = LastResult();
         m_cancel.call(makeCall("k1", R"({})"));
         check(m_cancelRes.count == 1 && m_cancelRes.ok, "cancel: 成功: " + m_cancelRes.text);
-        check(contains(m_cancelRes.text, "已请求停止"), "cancel: 文案正确: " + m_cancelRes.text);
+        check(contains(m_cancelRes.text, "已请求停止 2 条命令"),
+              "cancel: 两条一起停: " + m_cancelRes.text);
 
-        JZTimer::singleShot(500, [this]() { stepCancelAgain(); });
+        // 等 p1/p2 的取消回包(count 到 3: 含上面被拒的第三条), 再走下一步
+        waitCount(&m_runRes, 3, 100, [this]() { stepCancelAgain(); });
     }
 
     void stepCancelAgain()
     {
-        check(m_term.info().runningCount == 0, "cancel 之后终端空闲");
+        check(m_runRes.count == 3,
+              "cancel: 两条都收到收尾回包(实际 " + to_string(m_runRes.count) + ")");
+        check(contains(m_runRes.text, "命令已被取消"),
+              "cancel: 回包说明是取消: " + m_runRes.text);
 
         m_cancelRes = LastResult();
         m_cancel.call(makeCall("k2", R"({})"));
@@ -213,54 +243,53 @@ private:
     }
 
     // ---- 6. 上下文阀: 超长回包只回**末尾** + 一行标记说明怎么办 ----
+    // 终端现在归池管, 外部拿不到单台终端去收紧阈值 —— 直接产出超默认 32KB 的输出来触发。
     void stepReplyCap()
     {
-        m_savedReplyMax = m_term.replyMaxBytes();
-        m_term.setReplyMaxBytes(256);   // 收紧到 256B, 好触发
-
         m_runRes = LastResult();
         // 头尾各一个哨兵: 阀只留末尾 ⇒ 头部 head_marker 不该出现, 尾部 tail_marker 必须在
-        m_run.call(makeCall("v1", R"({"command":"echo head_marker; seq 1 200; echo tail_marker","timeout_ms":20000})"));
-        waitResult(&m_runRes, 100, [this]() { stepReplyCapCheck(); });
+        m_run.call(makeCall("v1", R"({"command":"echo head_marker; seq 1 12000; echo tail_marker","timeout_ms":30000})"));
+        waitResult(&m_runRes, 200, [this]() { stepReplyCapCheck(); });
     }
 
     void stepReplyCapCheck()
     {
-        check(m_runRes.count == 1 && m_runRes.ok, "阀: 成功: " + m_runRes.text);
-        check(contains(m_runRes.text, "输出过长"), "阀: 触发时开头有显式标记: " + m_runRes.text.substr(0, 100));
+        check(m_runRes.count == 1 && m_runRes.ok,
+              "阀: 成功(回包 " + to_string(m_runRes.text.size()) + "B)");
+        check(contains(m_runRes.text, "输出过长"),
+              "阀: 触发时开头有显式标记(回包 " + to_string(m_runRes.text.size()) + "B)");
         check(contains(m_runRes.text, "tail -50"), "阀: 标记告诉模型自己过滤(tail)");
         check(contains(m_runRes.text, "read_file"), "阀: 标记给出重定向 + read_file 的路子");
         check(contains(m_runRes.text, "tail_marker"), "阀: 保留末尾(错误/结果在尾部)");
         check(!contains(m_runRes.text, "head_marker"), "阀: 头部被裁掉");
-        check(m_runRes.text.size() < 1024, "阀: 回包压到上限附近(实际 " + to_string(m_runRes.text.size()) + "B)");
+        check(m_runRes.text.size() < 40 * 1024,
+              "阀: 回包压到 32KB 上限附近(实际 " + to_string(m_runRes.text.size()) + "B)");
 
-        m_term.setReplyMaxBytes(m_savedReplyMax);   // 还原, 不影响后续步骤
-        stepFreshTerminal();
+        stepFreshPool();
     }
 
-    // ---- 7. 全新终端: 没有可停的东西 ----
-    void stepFreshTerminal()
+    // ---- 7. 全新池: 没有可停的东西 ----
+    void stepFreshPool()
     {
         m_cancel2Res = LastResult();
         m_cancel2.call(makeCall("f2", R"({})"));
-        check(m_cancel2Res.count == 1 && !m_cancel2Res.ok, "全新终端 cancel: 失败且只回一次包");
+        check(m_cancel2Res.count == 1 && !m_cancel2Res.ok, "全新池 cancel: 失败且只回一次包");
         check(contains(m_cancel2Res.text, "没有在跑的命令"),
-              "全新终端 cancel: 文案正确: " + m_cancel2Res.text);
+              "全新池 cancel: 文案正确: " + m_cancel2Res.text);
 
         jzApp->quit();
     }
 
     string m_ws;
-    JZVirtualTerminal m_term;
-    JZVirtualTerminal m_term2;
-    JZTerminalRunTool m_run { &m_term };
-    JZTerminalCancelTool m_cancel { &m_term };
-    JZTerminalCancelTool m_cancel2 { &m_term2 };
+    JZTerminalPool m_pool { 2 };        // 主池: 允许两条并发, 第三条撞上限
+    JZTerminalPool m_freshPool { 1 };   // 全新池: 从没跑过命令
+    JZTerminalRunTool m_run { &m_pool };
+    JZTerminalCancelTool m_cancel { &m_pool };
+    JZTerminalCancelTool m_cancel2 { &m_freshPool };
 
     LastResult m_runRes;
     LastResult m_cancelRes;
     LastResult m_cancel2Res;
-    size_t m_savedReplyMax = 32 * 1024;   // 上下文阀那一段原值(测完还原)
 };
 
 int main(int argc, char *argv[])

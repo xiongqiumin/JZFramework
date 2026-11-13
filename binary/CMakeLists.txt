@@ -3,8 +3,8 @@
 #
 # 只有**要发布的那些** exe 列在文件末尾那张清单里（它们 + 随附的 js_wrapper / ts_compiler /
 # example / OpenCV 等 DLL 就是发版、拷机器要打包的一整套，见 tools/release/publish.py）。
-# 测试 / 评测 exe（binary/code_agent/test/、binary/code_agent/benchmark/、
-# binary/agent_cli/test/agent_cli_test.cpp）**不进这张表**：它们与 test/ 下的测试、tools/ 里的
+# 测试 / 评测 exe（binary/agent_cli/test/agent_cli_test.cpp）**不进这张表**：
+# 它们与 test/ 下的测试、tools/ 里的
 # 开发工具一起，统一输出到 <build>/test/bin/<配置>（根 CMakeLists 的 JZ_TEST_BIN_DIR，
 # 各自 CMakeLists 里显式 set_target_properties 一句）—— 整个构建树里 exe 只有
 # "发布目录"与"test/bin"两个落点。
@@ -17,8 +17,13 @@
 # 配套的 add_custom_command 一律用 $<TARGET_FILE_DIR:目标>（自然跟着目标走），别硬编码路径。
 # ---------------------------------------------------------------------------
 set(JZ_BINARY_BIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/bin")
+# 供 js_runtime/ 推导发布目录(找 code_runtime.exe 旁的 ts_compiler/tsc/)——
+# 原来定义在 desktop/CMakeLists.txt, 迁移后提到这里, 所有子目录都能看到。
+set(CODE_AGENT_BIN_DIR "${JZ_BINARY_BIN_DIR}")
 
-add_subdirectory(agent_tool)
+# 通用 agent 工具库: 已迁到 agent_cli/tool/(target 名仍是 agent_tool, 全仓链接点不用改)。
+# 第二个参数指定构建子目录名, 免得和 add_subdirectory(agent_cli) 的目录树混在一起。
+add_subdirectory(agent_cli/tool agent_tool)
 add_subdirectory(agent_cli)   # 内含 node/: 远端被控端(agent_node)与 cli 同属一个二进制族
 add_subdirectory(frpc)
 
@@ -73,14 +78,14 @@ add_custom_target(copy_jz_js ALL DEPENDS "${JZ_JS_STAMP}")
 # ---------------------------------------------------------------------------
 # 示例工程：随发布铺到 <exe>/example/ —— 拿到发布目录的人有能直接读、也能直接编译运行的
 # 示例（类型/运行时用同级的 ../js_wrapper，编译器用同目录的 ts_compiler）。
-# 源 = binary/code_agent/runtime/<示例>（就是 code_runtime 的那几个示例/测试工程）。
+# 源 = binary/js_runtime/<示例>（就是 code_runtime 的那几个示例/测试工程）。
 # ⚠ 只铺**源码**：每个工程自己编译出来的 build/（tsconfig 的 outDir）不随发布走，
 #   由 copy_examples.py 过滤掉；它顺带把 tsconfig 里那条"仓库相对的类型来源"
 #   改写成部署布局的 ../../js_wrapper/...（仓库里那份源码不动）。
 # 用 stamp 做增量：示例源码变了才重拷（依赖用 GLOB_RECURSE 收，排除 build/ 那类产物）。
 # ---------------------------------------------------------------------------
-set(JZ_EG_SRC "${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/runtime")
-set(JZ_EG_PY "${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/copy_examples.py")
+set(JZ_EG_SRC "${JZFRAMEWORK_ROOT_DIR}/binary/js_runtime")
+set(JZ_EG_PY "${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop/copy_examples.py")
 set(JZ_EG_OUT "${JZ_BINARY_BIN_DIR}/$<CONFIG>/example")
 set(JZ_EG_STAMP "${CMAKE_CURRENT_BINARY_DIR}/examples_packaged.stamp")
 
@@ -108,7 +113,12 @@ add_subdirectory(updater)
 # virtual_device: 虚拟桌面(虚拟显示器 + 窗口管理器) + 它的宿主程序。
 # 同时提供静态库 jz_virtual_device 给 CU / 测试链 (见 binary/virtual_device/CMakeLists.txt)。
 add_subdirectory(virtual_device)
-add_subdirectory(code_agent)
+# 2026-11-13 合并: 原 binary/code_agent 拆成 js_runtime/(提到 binary 顶层, code_runtime)
+#   · agent_cli/desktop/(桌面壳) · agent_cli/benchmark/(只剩评测集 data/, 由 agent_cli_test 复用)。
+# 顺序有依赖: virtual_device -> js_runtime -> desktop。
+# ⛔ code_agent_benchmark 已删除(2026-11-13): 评测统一到 binary/agent_cli/test/agent_cli_test。
+add_subdirectory(js_runtime)
+add_subdirectory(agent_cli/desktop code_agent_desktop)
 endif()
 
 # ---------------------------------------------------------------------------

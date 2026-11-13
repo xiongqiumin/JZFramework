@@ -2237,7 +2237,9 @@ void JZAgentCli::onReset(JZHttpServerClient *client, const JZHttpRequest &req)
 
 bool JZAgentCli::cancelTask(const std::string &reason)
 {
-    if (m_tasks.empty())
+    // 排队任务也算"在途": 派发/回收的窗口里可能 m_tasks 已空但 m_pending 还有任务,
+    // 只判 m_tasks 会让 /reset 直接返回 false, 把排队任务留在队列里, 之后照样被派发。
+    if (m_tasks.empty() && m_pending.empty())
         return false;
     if (m_cancelling)
         return false;

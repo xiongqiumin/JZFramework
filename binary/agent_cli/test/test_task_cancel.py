@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""standalone 多队列取消/reset 回归。
+"""standalone 任务池取消/reset 回归。
 
 覆盖:
   1. queues=1 时, 在跑任务与排队任务 reset 后都必须回 cancelled;
-  2. queues=2 时同样成立, 且 q0 的取消不能误停/漏停其他队列;
-  3. worker(q1) 的 reply 事件必须能到 master 的 SSE;
-  4. /info.recent 必须包含所有队列, 不能只看到 q0。
+  2. queues=2 时同样成立, 且取消不能漏掉任一在跑任务 / 排队任务;
+  3. 两个并发任务对象的 reply 事件都到 master 的 SSE(2026-11-11 起本地事件统一 queue=0,
+     没有常驻 q0/q1 下标), /info.recent 在**运行期间**同时汇总两条;
+  4. 远端命令启动后 reset, node 进程必须真停, 不能只留下 cancelled 回包。
 """
 from __future__ import annotations
 
@@ -105,7 +106,10 @@ def run_case(agent_cli: str, queues: int, root: str) -> None:
             raise AssertionError("agent_cli 未启动")
         url = "http://127.0.0.1:%d/task" % port
 
-        # 先让双队列正常跑完, 验证 worker 的 SSE 与 recent 汇总。
+        # 两个活动任务并发跑完: 验证事件都到 master SSE、recent 同时看得到两条。
+        # ⚠ 2026-11-11 起任务对象按需新建、回包即销毁, 没有常驻的 q0/q1 编号:
+        #   本地事件统一 queue=0, /info.queues 是"当前活着的任务对象"数组, recent 也只汇总
+        #   还活着的任务 —— 所以 busy / recent 必须在**运行期间**查, 不能在 join 之后查。
         if queues == 2:
             events: list = []
             th_sse = threading.Thread(target=read_sse, args=(port, events, sse_holder), daemon=True)
@@ -115,22 +119,34 @@ def run_case(agent_cli: str, queues: int, root: str) -> None:
                        threading.Thread(target=submit, args=(url, "TASK-B", out, "b"))]
             for th in threads:
                 th.start()
+
+            info_url = "http://127.0.0.1:%d/info" % port
+            running: dict = {}
+            busy, prompts = 0, set()
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                running = http_json(info_url, None, 2.0)
+                busy = sum(1 for q in (running.get("queues") or []) if q.get("busy"))
+                prompts = {x.get("prompt") for x in (running.get("recent") or [])}
+                if busy >= 2 and {"TASK-A", "TASK-B"} <= prompts:
+                    break
+                time.sleep(0.05)
+            assert busy >= 2, running
+            assert {"TASK-A", "TASK-B"} <= prompts, running.get("recent")
+
             for th in threads:
                 th.join()
             assert out["a"].get("status") == "success", out
             assert out["b"].get("status") == "success", out
             time.sleep(0.2)
             replies = [e for e in events if e.get("type") == "reply"]
-            assert any((e.get("data") or {}).get("queue") == 1 for e in replies), replies
-            assert any((e.get("data") or {}).get("queue") == 0 for e in replies), replies
-            recent = http_json("http://127.0.0.1:%d/info" % port, None, 2.0).get("recent") or []
-            prompts = {x.get("prompt") for x in recent}
-            assert "TASK-A" in prompts and "TASK-B" in prompts, recent
-            assert {x.get("queue") for x in recent} >= {0, 1}, recent
+            reply_text = "".join(t for t in ((e.get("data") or {}).get("text") for e in replies) if t)
+            assert "done TASK-A" in reply_text and "done TASK-B" in reply_text, replies
+            assert all((e.get("data") or {}).get("queue") == 0 for e in replies), replies
             if "resp" in sse_holder:
                 sse_holder["resp"].close()
             th_sse.join(timeout=2)
-            log("queues=2: worker reply/SSE 与 recent 汇总正确")
+            log("queues=2: 两个活动任务并发, 两条 reply 都到 master SSE, recent 汇总两条")
 
         # 每个队列一条在跑, 再排一条; reset 必须给所有提交方明确回 cancelled。
         out = {}

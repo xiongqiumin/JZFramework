@@ -88,8 +88,8 @@ add_executable(test_jscu
     test_jscu.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZJSEngine/JZJSComputerUseModule.cpp
     ${JZFRAMEWORK_ROOT_DIR}/JZComputerUse/JZComputerUse.cpp
-    ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent/JZScreenShot.cpp)
-target_include_directories(test_jscu PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/code_agent)
+    ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop/JZScreenShot.cpp)
+target_include_directories(test_jscu PRIVATE ${JZFRAMEWORK_ROOT_DIR}/binary/agent_cli/desktop)
 target_link_libraries(test_jscu JZFramework)
 # 虚拟桌面后端 (JZComputerUse 的 setVirtualDesktop 用它)
 target_link_libraries(test_jscu jz_virtual_device)

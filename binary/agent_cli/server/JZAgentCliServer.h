@@ -2,6 +2,7 @@
 #define JZ_AGENT_CLI_SERVER_H_
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -28,20 +29,18 @@ class JZHttpRequest;
 // ---------------------------------------------------------------------------
 
 // 后台网页 / 管理 API 配置
-//   HTTPS 默认开启, 且默认要求客户端证书(双向认证 / mTLS): 管理台能停/起 agent、
-//   能往任意 agent 下发任务, 明文 HTTP 一旦被访问就等于把执行权交出去。
+//   HTTPS 只做加密(单向 TLS: 客户端不认证)。客户端证书(mTLS)那一套已于 2026-11-14 移除,
+//   应用层鉴权(登录 / token)后续再做 —— 在那之前, 谁能连上这个端口谁就能管理,
+//   所以默认只绑 127.0.0.1, 对外开放必须靠网络隔离。
 //   只有显式 ssl.enabled=false 才会退回明文(启动时打警告)。
 struct JZCliServerHttpConfig
 {
     std::string bind = "127.0.0.1";
     int port = 8088;
 
-    // 鉴权只靠传输层: 默认 HTTPS + 强制客户端证书。不再有应用层 token。
-    bool sslEnabled = true;     // 是否用 TLS 提供网页 / API(默认开)
+    bool sslEnabled = true;     // 是否用 TLS 提供网页 / API(默认开, 仅加密)
     std::string certFile;       // 服务器证书链(PEM); 空 = <配置文件目录>/certs/server.crt
     std::string keyFile;        // 服务器私钥(PEM);   空 = <配置文件目录>/certs/server.key
-    std::string caFile;         // 客户端 CA(PEM);    空 = <配置文件目录>/certs/ca.crt
-    bool requireClientCert = true;  // 是否校验客户端证书(需要 caFile; false = 单向 TLS)
 };
 
 // 被管理的一个 agent_cli 实例的配置
@@ -170,13 +169,15 @@ public:
     void onApiProjects(JZHttpServerClient *client, const JZHttpRequest &req);
     // 从"曾经连过"的列表里删掉一台(默认保留它的任务记录, withTasks=1 连记录一起删)
     void onApiAgentForget(JZHttpServerClient *client, const JZHttpRequest &req);
-    // 页面: web/<name>, 找不到回 404; onDashboard = servePage("index.html")
+    // 页面: server_web/<name>, 找不到回 404; 桌面/手机按 UA 由 servePage 选文件
     void servePage(JZHttpServerClient *client, const JZHttpRequest &req, const std::string &name);
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
 private:
     void startHttp();
     void startHub();                     // 起控制面(JZNetServer)
+    // 这个 agentId 是否还值得打开(在线/内置/离线档案/本地子进程) —— 首页按 cookie 跳转前校验
+    bool agentKnown(const std::string &id) const;
     void onHubPacket(uint64_t conn, JZNetPackPtr pack);
     void onHubDisconnected(uint64_t conn);
     void dropAgent(uint64_t conn, const std::string &reason);   // 断开/心跳超时共用
@@ -190,7 +191,6 @@ private:
     void appendLog(JZCliServerAgentInstance *inst, const std::string &chunk);
     // 管理台网页的落盘目录(<exeDir>/server_web); 页面 CSS/JS 也从这里读
     std::string dashboardDir() const;
-    bool loadDashboardHtml(std::string &html, std::string &error) const;
 
     JZCliServerConfig m_config;
     JZHttpServer *m_http = nullptr;
@@ -198,7 +198,6 @@ private:
     // init() 时读入的 PEM 内容(证书文件读不到就直接启动失败, 不静默降级成明文 HTTP)
     std::string m_httpCertPem;
     std::string m_httpKeyPem;
-    std::string m_httpCaPem;
     std::map<std::string, JZCliServerAgentInstance*> m_agents;  // name -> 实例
     int64_t m_startTime = 0;
 
@@ -286,6 +285,8 @@ private:
 
     // GET /api/tasks/subscribe?id= 的订阅者: taskId -> 若干 SSE 连接
     std::map<std::string, std::vector<JZHttpServerClient*> > m_taskStreams;
+    // ?slim=1 的网页订阅者: 首帧/终态帧发瘦信号, 不发完整 Task 快照
+    std::set<JZHttpServerClient*> m_slimStreams;
     JZTimer *m_streamTimer = nullptr;
     void removeTaskStream(JZHttpServerClient *client);
     void dropTaskStreams(const std::string &taskId);   // 记录已删: 推 deleted 后关流

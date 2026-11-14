@@ -89,10 +89,11 @@ export class ServerResponse extends EventEmitter {
     statusCode: number;
     readonly finished: boolean;
 
-    setHeader(name: string, value: string | number): this;
-    getHeader(name: string): string | undefined;
+    /** string[] 时: Set-Cookie 逐条发送, 其它头用 ", " 合并(与 Node 一致) */
+    setHeader(name: string, value: string | number | string[]): this;
+    getHeader(name: string): string | string[] | undefined;
     removeHeader(name: string): void;
-    writeHead(statusCode: number, headers?: Record<string, string | number>): this;
+    writeHead(statusCode: number, headers?: Record<string, string | number | string[]>): this;
 
     /** sent immediately (buffered by the underlying transport), same as Node write() */
     write(chunk: Data, encoding?: DataEncoding, cb?: () => void): boolean;

@@ -1,6 +1,8 @@
 ﻿set(JZHTTP_SERVER_SOURCES    
     JZHttpRequest.cpp
 	JZHttpRequest.h
+    JZHttpCookie.cpp
+	JZHttpCookie.h
     JZHttpRoute.cpp
 	JZHttpRoute.h
     JZHttpRespone.cpp

@@ -34,6 +34,7 @@ JZHttpStream::~JZHttpStream()
 void JZHttpStream::setStatusCode(int code) { m_statusCode = code; }
 void JZHttpStream::setContentType(const std::string& t) { m_headers["Content-Type"] = t; }
 void JZHttpStream::setHeader(const std::string& k, const std::string& v) { m_headers[k] = v; }
+void JZHttpStream::setCookie(const JZHttpCookie& cookie) { m_cookies.push_back(cookie); }
 void JZHttpStream::setSSE(bool on) { m_sse = on; }
 void JZHttpStream::setContentEncoding(JZCompressAlgorithm algo)
 {
@@ -58,6 +59,8 @@ void JZHttpStream::open()
     }
     for (const auto& kv : m_headers)
         resp.setHeader(kv.first, kv.second);
+    for (const auto& cookie : m_cookies)
+        resp.setCookie(cookie);
 
     if (m_compressEnabled)
     {

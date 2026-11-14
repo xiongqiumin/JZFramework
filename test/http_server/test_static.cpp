@@ -214,10 +214,8 @@ public:
     int m_step = 0;
 };
 
-int main()
+int test_static_files()
 {
-    JZApplication a;
-
     LOG("########## HTTP 静态文件流式发送测试 ##########");
     JZEventLoop loop;
     HttpStaticTest test(&loop);

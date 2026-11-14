@@ -67,10 +67,17 @@ static void test_route_match()
     CHECK(router.match("/user/42/posts", h, p) && h == &hPosts,
           "specific route wins over catch-all");
 
-    // 6. 无匹配 -> 返回 false（服务器据此返回 404）
-    p.clear(); h = nullptr;
-    CHECK(!router.match("/user", h, p), "/user without id should not match");
-    CHECK(h == nullptr, "no handler for /user");
+    // 6. 无匹配 -> 返回 false（服务器据此返回 404）。
+    //    上面那张表里有 /<path:path> 兜底, 所以这里另起一张**没有兜底**的表来验证。
+    {
+        JZHttpRoute bare;
+        bare.addRoute("/", &hRoot);
+        bare.addRoute("/user/<id>", &hUser);
+        JZHttpHandler *bh = nullptr;
+        std::map<std::string, std::string> bp;
+        CHECK(!bare.match("/user", bh, bp), "/user without id should not match");
+        CHECK(bh == nullptr, "no handler for /user");
+    }
 }
 
 // ---------------- JZHttpRequest 访问器单元测试 ----------------
@@ -106,9 +113,8 @@ static void test_request_api()
     CHECK(bodyStr == "hello world", "body");
 }
 
-int main()
+int test_route()
 {
-    JZApplication app;
     test_route_match();
     test_request_api();
     printf("[OK] JZHttpServer route & request API unit tests passed\n");

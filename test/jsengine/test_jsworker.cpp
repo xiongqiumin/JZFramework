@@ -61,7 +61,7 @@ static bool writeTextFile(const string& path, const string& text)
     return true;
 }
 
-int main()
+int test_jsworker(int argc, char *argv[])
 {
     STEP("enter main");
     setbuf(stdout, NULL);
@@ -79,7 +79,6 @@ int main()
         _Exit(99);   // <cstdlib>: 立即终止, 不做 flush/静态析构(看门狗语义)
     }).detach();
 
-    JZApplication a;
     JZEventLoop loop;
 
     JZJSEngine engine;

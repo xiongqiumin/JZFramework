@@ -287,23 +287,97 @@ private:
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
-static void respondJson(JZHttpServerClient *client, const JZHttpRequest &req, int code, const Json::Value &v)
+static void respondJson(JZHttpServerClient *client, const JZHttpRequest &req, int code, const Json::Value &v,
+                        const JZHttpCookie *cookie = nullptr)
 {
     JZHttpRespone resp;
     resp.setStatusCode(code);
     resp.setJson(Json::FastWriter().write(v));
+    if (cookie)
+        resp.setCookie(*cookie);
     client->response(resp, req);
+}
+
+// 浏览器到服务端那一跳是不是 https —— 决定 cookie 要不要带 Secure。
+//   直连: 后端开了 TLS 就是 https;
+//   前面挂 nginx 时: 后端是明文, 看 X-Forwarded-Proto(多级代理可能是 "https, http", 取第一段)。
+static bool isClientHttps(const JZHttpRequest &req, bool backendTls)
+{
+    if (backendTls)
+        return true;
+
+    string proto = req.header("X-Forwarded-Proto");
+    size_t comma = proto.find(',');
+    if (comma != string::npos)
+        proto = proto.substr(0, comma);
+
+    size_t b = proto.find_first_not_of(" \t");
+    size_t e = proto.find_last_not_of(" \t");
+    if (b == string::npos)
+        return false;
+    proto = proto.substr(b, e - b + 1);
+    for (size_t i = 0; i < proto.size(); i++)
+    {
+        if (proto[i] >= 'A' && proto[i] <= 'Z')
+            proto[i] = (char)(proto[i] + 32);
+    }
+    return proto == "https";
+}
+
+// 只做 query 取值需要的编码: 保留 unreserved 字符, 其余按 %XX
+static string urlEncodeComponent(const string &s)
+{
+    static const char *hex = "0123456789ABCDEF";
+    string out;
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        unsigned char c = (unsigned char)s[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~')
+            out += (char)c;
+        else
+        {
+            out += '%';
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        }
+    }
+    return out;
+}
+
+// 手机浏览器 → 手机页; ?ui=mobile|desktop 可强制覆盖(便于真机/自动化验证与书签)。
+// UA 只用来选「哪份 HTML 外壳」: 数据层和 /api 接口完全是同一套。
+static bool isMobileBrowser(const JZHttpRequest &req)
+{
+    const string force = req.queryParam("ui");
+    if (force == "mobile") return true;
+    if (force == "desktop") return false;
+
+    string ua = req.userAgent();
+    for (char &c : ua)
+        if (c >= 'A' && c <= 'Z') c = char(c + 32);
+    static const char *keys[] = {
+        "mobile", "android", "iphone", "ipad", "ipod",
+        "windows phone", "blackberry", "opera mini", "iemobile", "webos"
+    };
+    for (const char *k : keys)
+        if (ua.find(k) != string::npos) return true;
+    return false;
 }
 
 static void respondText(JZHttpServerClient *client, const JZHttpRequest &req, int code,
                         const string &text, const string &ctype = "text/plain; charset=utf-8",
-                        const string &cacheControl = string())
+                        const string &cacheControl = string(),
+                        const string &vary = string())
 {
     JZHttpRespone resp;
     resp.setStatusCode(code);
     resp.setContentType(ctype);
     if (!cacheControl.empty())
         resp.setHeader("Cache-Control", cacheControl);
+    // 同一 URL 按 UA 返回不同 HTML: 中间有代理/缓存时必须声明 Vary
+    if (!vary.empty())
+        resp.setHeader("Vary", vary);
     resp.setBody(text);
     client->response(resp, req);
 }
@@ -492,6 +566,19 @@ static string sseChunk(const string &frame)
     return string(head) + frame + "\r\n";
 }
 
+// 网页专用的"瘦"Task 帧: /tasks 详情页把 SSE 当纯信号, 收到帧自己 GET /api/tasks/detail。
+// 完整 Task 快照随 events 累积能到几 MB, 单帧会撑爆 3MB send buffer 被 net 层关连,
+// 而 EventSource 自动重连后的首帧又是同一个大帧 —— 于是变成反复拉大包的重连风暴。
+// 网页订阅(?slim=1)只发 id/state/eventSeq; 不带 slim 的 A2A 调用方仍拿完整 Task, 语义不变。
+static Json::Value makeSlimTaskSignal(const string &taskId, const string &state, Json::Int64 eventSeq)
+{
+    Json::Value j(Json::objectValue);
+    j["id"] = taskId;
+    j["state"] = state;
+    j["eventSeq"] = eventSeq;
+    return j;
+}
+
 static const char *stateString(JZProcess::ProcessState s)
 {
     switch (s)
@@ -559,12 +646,11 @@ bool JZAgentCliServer::init(const JZCliServerConfig &config, std::string &error)
 {
     m_config = config;
 
-    // HTTPS 证书: 页面/API 默认走 TLS 且默认要求客户端证书, 所以这里先读进内存。
+    // HTTPS 证书: 页面/API 默认走 TLS(只加密, 不认证客户端), 所以这里先把服务器证书读进内存。
     // 读不到直接失败(而不是退回明文 HTTP): 静默降级等于把"起停 agent + 下发任务"的执行权
     // 暴露成裸 HTTP, 现场根本看不出来。
     m_httpCertPem.clear();
     m_httpKeyPem.clear();
-    m_httpCaPem.clear();
     if (m_config.http.sslEnabled)
     {
         if (!readTextFile(m_config.http.certFile, m_httpCertPem))
@@ -575,11 +661,6 @@ bool JZAgentCliServer::init(const JZCliServerConfig &config, std::string &error)
         if (!readTextFile(m_config.http.keyFile, m_httpKeyPem))
         {
             error = "HTTPS 已启用, 但读不到服务器私钥: " + m_config.http.keyFile;
-            return false;
-        }
-        if (m_config.http.requireClientCert && !readTextFile(m_config.http.caFile, m_httpCaPem))
-        {
-            error = "HTTPS 要求校验客户端证书, 但读不到客户端 CA: " + m_config.http.caFile;
             return false;
         }
     }
@@ -1690,6 +1771,7 @@ void JZAgentCliServer::recordEvent(const string &taskId, const string &type, con
 // ---- SSE 订阅者 ----
 void JZAgentCliServer::removeTaskStream(JZHttpServerClient *client)
 {
+    m_slimStreams.erase(client);
     for (auto it = m_taskStreams.begin(); it != m_taskStreams.end(); )
     {
         vector<JZHttpServerClient*> &v = it->second;
@@ -1708,20 +1790,37 @@ void JZAgentCliServer::broadcastTaskEvent(const string &taskId, const string &ev
     // 这条连接不随任务结束关闭 —— 关流/重连就是"连接中断"的来源。
     if (!m_pageStreams.empty())
     {
+        // 常连对网页只是"这个任务有新数据了"的信号(前端只读 taskId), 别把整段原始分片
+        // 再下发一遍: 一条 tool_result 可以到 96KB, 会随 150ms 节流反复推给每个页面。
+        // /api/tasks/subscribe 那条流仍带完整 payload, 供 A2A 订阅者使用。
         Json::Value w(Json::objectValue);
         w["taskId"] = taskId;
         w["event"] = event;
-        w["data"] = looseJson(payload);
         broadcastPageEvent("task", w);
     }
 
     auto it = m_taskStreams.find(taskId);
     if (it == m_taskStreams.end())
         return;
-    const string chunk = sseChunk(makeSseFrame(event, payload));
     const vector<JZHttpServerClient*> clients = it->second;   // 拷贝: 回调可能改动订阅表
+
+    // 网页订阅(slim)把帧当纯信号, 内容自己 GET detail; 只有 A2A 订阅者需要完整 payload。
+    // 一条 tool_result 可到 96KB, 按 150ms 一帧推下去就是 MB/s 量级的无效下行。
+    bool needFull = false, needSlim = false;
     for (JZHttpServerClient *c : clients)
+    {
+        if (m_slimStreams.count(c))
+            needSlim = true;
+        else
+            needFull = true;
+    }
+    const string full = needFull ? sseChunk(makeSseFrame(event, payload)) : string();
+    const string slim = needSlim ? sseChunk(makeSseFrame(event, "{}")) : string();
+    for (JZHttpServerClient *c : clients)
+    {
+        const string &chunk = m_slimStreams.count(c) ? slim : full;
         c->write(chunk.data(), (int)chunk.size(), false);
+    }
 }
 
 // ---- 网页常连(下行) ----
@@ -1800,6 +1899,7 @@ void JZAgentCliServer::dropTaskStreams(const string &taskId)
     {
         c->write(chunk.data(), (int)chunk.size(), false);
         c->write("0\r\n\r\n", 5, true);
+        m_slimStreams.erase(c);
     }
     m_taskStreams.erase(it);
 }
@@ -1810,13 +1910,31 @@ void JZAgentCliServer::finishTaskStreams(const string &taskId)
     if (it == m_taskStreams.end())
         return;
     TaskRecord *r = findTask(taskId);
-    const string chunk = sseChunk(makeSseFrame("task",
-        r ? toJsonLine(taskJson(*r)) : string("{}")));
     const vector<JZHttpServerClient*> clients = it->second;
+
+    // 只在真有非 slim 订阅者时才序列化完整 Task(可能几 MB); 全是网页订阅时省掉这次大拷贝。
+    bool needFull = false, needSlim = false;
     for (JZHttpServerClient *c : clients)
     {
+        if (m_slimStreams.count(c))
+            needSlim = true;
+        else
+            needFull = true;
+    }
+    const string full = needFull ? (r ? toJsonLine(taskJson(*r)) : string("{}")) : string();
+    const string slim = needSlim
+        ? (r ? toJsonLine(makeSlimTaskSignal(taskId, r->state, (Json::Int64)r->eventSeq))
+             : string("{}"))
+        : string();
+
+    for (JZHttpServerClient *c : clients)
+    {
+        const bool isSlim = m_slimStreams.count(c) != 0;
+        const string chunk = sseChunk(makeSseFrame("task", isSlim ? slim : full));
         c->write(chunk.data(), (int)chunk.size(), false);
         c->write("0\r\n\r\n", 5, true);   // 终态关流; 前端 EventSource 也要主动 close
+        if (isSlim)
+            m_slimStreams.erase(c);
     }
     m_taskStreams.erase(it);
 }
@@ -1982,9 +2100,12 @@ void JZAgentCliServer::onApiTaskEvents(JZHttpServerClient *client, const JZHttpR
 // A2A SubscribeToTask: 首帧必发当前 Task 快照, 之后逐帧推状态/产物事件, 终态关流。
 // 传输用 chunked(与 agent_cli 的 /events 同口径): 不带 Content-Length 的流式响应在非浏览器
 // 客户端里要等连接关闭才一次性交付, 那样就看不到过程了。
+// ?slim=1 是网页(/tasks 详情页)专用: 它把帧当信号, 数据自己 GET detail, 首帧/终态帧只给
+// 瘦信号, 免得长任务的完整 Task 单帧撑爆 send buffer。不带 slim 的 A2A 调用方行为不变。
 void JZAgentCliServer::onApiTaskSubscribe(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     const string taskId = req.queryParam("id");
+    const bool slim = req.queryParam("slim") == "1";
     if (taskId.empty())
     {
         respondJson(client, req, 400, Json::Value("缺少 id"));
@@ -2007,10 +2128,15 @@ void JZAgentCliServer::onApiTaskSubscribe(JZHttpServerClient *client, const JZHt
     client->write(resp.toHeadByteArray(0, false), false);
 
     m_taskStreams[taskId].push_back(client);
+    if (slim)
+        m_slimStreams.insert(client);
     connect(static_cast<JZSignal<JZObject*>*>(&client->sigDestroyed), this,
             [this, client](JZObject *) { removeTaskStream(client); });
 
-    const string first = sseChunk(makeSseFrame("task", toJsonLine(taskJson(*r))));
+    const string firstPayload = slim
+        ? toJsonLine(makeSlimTaskSignal(taskId, r->state, (Json::Int64)r->eventSeq))
+        : toJsonLine(taskJson(*r));
+    const string first = sseChunk(makeSseFrame("task", firstPayload));
     client->write(first.data(), (int)first.size(), false);
 
     // 订阅的那一刻已经终态: 快照给完就关, 不留悬挂连接
@@ -2135,7 +2261,7 @@ Json::Value JZAgentCliServer::agentCardJson(const string &id) const
         }
     }
     card["skills"] = skills;
-    card["securitySchemes"]["mtls"]["type"] = "mutualTLS";
+    // 不声明 securitySchemes: 客户端证书(mTLS)已移除, 应用层 token 鉴权还没接上。
 
     Json::Value meta(Json::objectValue);
     meta["agentId"] = id;
@@ -2691,7 +2817,34 @@ void JZAgentCliServer::onApiAgentDetail(JZHttpServerClient *client, const JZHttp
 
     out["tasks"] = tasksJson(id, "", 20, "", kOriginUser);   // 台账只列人下发的任务
     out["card"] = agentCardJson(id);      // A2A: 能力自述, 详情页直接渲染
-    respondJson(client, req, 200, out);
+
+    // 记住"最后打开的是哪台 agent": 下次访问 / 时由 onDashboard 直接 302 回来,
+    // 不用等 JS 先拉一遍 projects 再猜(首屏也不会闪一下别的 agent)。
+    // 只影响"打开哪页", 不是身份凭据 —— 鉴权还没做(token 待接入)。
+    JZHttpCookie last("jz_agent", id);
+    last.path = "/";
+    last.httpOnly = true;
+    last.sameSite = "Lax";
+    last.secure = isClientHttps(req, m_config.http.sslEnabled);
+    last.maxAge = 30 * 24 * 3600;         // 30 天
+    respondJson(client, req, 200, out, &last);
+}
+
+// 这个 id 还值得打开吗: 在线的、内置的、见过的(离线档案)、本地子进程都算
+bool JZAgentCliServer::agentKnown(const string &id) const
+{
+    if (id.empty())
+        return false;
+    if (isSelfAgentId(id))
+        return true;
+    for (auto it = m_onlineByConn.begin(); it != m_onlineByConn.end(); ++it)
+    {
+        if (it->second.agentId == id)
+            return true;
+    }
+    if (m_known.find(id) != m_known.end())
+        return true;
+    return m_agents.find(id) != m_agents.end();
 }
 
 // 删除一台 agent 的档案(只删"曾经连过"的记录; 默认保留历史任务)
@@ -2770,7 +2923,9 @@ void JZAgentCliServer::onApiAgentForget(JZHttpServerClient *client, const JZHttp
 void JZAgentCliServer::servePage(JZHttpServerClient *client, const JZHttpRequest &req,
                                  const std::string &name)
 {
-    const string path = dashboardDir() + "/" + name;
+    // 桌面入口 index.html 在手机浏览器上改投 mobile.html; 其它页面(如 tasks)照旧。
+    const string file = (name == "index.html" && isMobileBrowser(req)) ? "mobile.html" : name;
+    const string path = dashboardDir() + "/" + file;
     ifstream ifs(path, ios::binary);
     if (!ifs)
     {
@@ -2782,7 +2937,7 @@ void JZAgentCliServer::servePage(JZHttpServerClient *client, const JZHttpRequest
     ss << ifs.rdbuf();
     // 页面本身不带版本号(只有 app.js/app.css 有 ?v=), 所以必须每次校验:
     // 否则浏览器留着旧 HTML, 里面的 ?v= 也是旧的, 改完前端刷新看不到效果。
-    respondText(client, req, 200, ss.str(), "text/html; charset=utf-8", "no-cache");
+    respondText(client, req, 200, ss.str(), "text/html; charset=utf-8", "no-cache", "User-Agent");
 }
 
 // ---------------------------------------------------------------------------
@@ -3221,21 +3376,22 @@ void JZAgentCliServer::startHttp()
     m_http = new JZHttpServer(this);
 
     // HTTPS: 证书在 init() 里已读进内存(读不到就不会走到这里)。
-    //   sslCa 非空 ⇒ mongoose 服务端用 SSL_VERIFY_PEER|FAIL_IF_NO_PEER_CERT, 即强制客户端证书;
-    //   只给 cert/key 不给 CA ⇒ 单向 TLS(仅加密, 不验客户端)。
+    //   只给 cert/key、不给 sslCa ⇒ 单向 TLS(仅加密, 不验客户端)。
+    //   客户端证书(mTLS)已于 2026-11-14 移除, 应用层鉴权(登录/token)后续补。
     if (m_config.http.sslEnabled)
     {
         JZSSLConfig ssl;
         ssl.sslCert = m_httpCertPem;
         ssl.sslKey = m_httpKeyPem;
-        if (m_config.http.requireClientCert)
-            ssl.sslCa = m_httpCaPem;
         m_http->setSslConfig(ssl);
     }
     else
     {
         jzWarning() << "http.ssl.enabled=false: 管理台/API 将以明文 HTTP 暴露(仅限完全可信的隔离网络)";
     }
+    if (m_config.http.bind != "127.0.0.1" && m_config.http.bind != "localhost")
+        jzWarning() << "管理台/API 暂未做应用层鉴权(客户端证书已移除, token 待接入): "
+                    << m_config.http.bind << ":" << m_config.http.port << " 可被同网段任意访问";
 
     // 任务记录 + agent 档案: 先载盘, 否则重启后历史全丢
     loadTaskStore();
@@ -3291,16 +3447,18 @@ void JZAgentCliServer::startHttp()
     webFiles->setCacheMaxAge(0);
     m_http->addRoute("/app.css", webFiles);
     m_http->addRoute("/app.js", webFiles);
+    m_http->addRoute("/mobile.css", webFiles);   // 手机页专属样式
     m_http->addRoute("/ui/<path:path>", webFiles);
     // /vendor/*  第三方前端库(highlight.js 等), 全是本地文件 —— 不走 CDN
     m_http->addRoute("/vendor/<path:path>", webFiles);
 
-    // 单页: index.html 就是对话页(/ 由 DashboardHandler 读它);
-    // /agent 留一条同内容的别名, 老的 ?id= 书签继续能用。
+    // 页面: 桌面 index.html 是对话页, 手机 UA 由 servePage 改投 mobile.html。
+    // /agent 是老 ?id= 书签的别名; /mobile.html 允许显式访问(真机调试/书签)。
     m_http->addRoute("/agent", new PageHandler(this, "index.html"));
+    m_http->addRoute("/mobile.html", new PageHandler(this, "mobile.html"));
     m_http->addRoute("/tasks", new PageHandler(this, "tasks.html"));
 
-    // 首页 + 兜底(未知路径也回首页, 方便深链)
+    // 首页 + 兜底(未知路径也回首页, 方便深链); 同样按 UA 分流
     m_http->addRoute("/", new DashboardHandler(this));
     m_http->addRoute("/<path:path>", new DashboardHandler(this));
 
@@ -3309,9 +3467,7 @@ void JZAgentCliServer::startHttp()
     else
         jzInfo() << "管理网页已启动: " << (m_config.http.sslEnabled ? "https://" : "http://")
                  << m_config.http.bind << ":" << m_config.http.port
-                 << (m_config.http.sslEnabled
-                         ? (m_config.http.requireClientCert ? "  (需客户端证书)" : "  (单向 TLS)")
-                         : "  (明文!)");
+                 << (m_config.http.sslEnabled ? "  (单向 TLS, 无客户端认证)" : "  (明文!)");
 }
 
 // ---------------------------------------------------------------------------
@@ -3507,17 +3663,32 @@ void JZAgentCliServer::onApiAgentAction(JZHttpServerClient *client, const JZHttp
 
 void JZAgentCliServer::onDashboard(JZHttpServerClient *client, const JZHttpRequest &req)
 {
-    // 页面从磁盘读(web/ -> <exeDir>/server_web/), 这里只做读文件 + 回包。
-    // 鉴权在传输层: 默认 HTTPS + 强制客户端证书(mTLS), 没有 token 这一层。
-    string html;
-    string loadError;
-    if (!loadDashboardHtml(html, loadError))
+    // 默认打开用户上次打开的那台 agent: 地址里没带 id 时, 按 cookie 302 过去。
+    // 不这么做的话, JS 只能"挑第一台在线的", 每个浏览器看到的都是同一台。
+    // 只对真正的首页(/)做: 未知路径也走这个 handler 兜底, 它们不该被 302 成首页。
+    if (req.path() == "/" && req.queryParam("id").empty())
     {
-        respondText(client, req, 500, loadError, "text/plain; charset=utf-8");
-        return;
+        string last = req.cookie("jz_agent");
+        if (agentKnown(last))
+        {
+            string query = req.query();     // 保留原有参数(如 ?ui=mobile), 只补 id
+            string loc = "/?";
+            if (!query.empty())
+                loc += query + "&";
+            loc += "id=" + urlEncodeComponent(last);
+
+            JZHttpRespone resp;
+            resp.setStatusCode(302);
+            resp.setHeader("Location", loc);
+            resp.setHeader("Cache-Control", "no-store");   // 别让浏览器把这次跳转缓存住
+            client->response(resp, req);
+            return;
+        }
     }
-    // 页面必须每次校验(no-cache): HTML 不带版本号, 只有它引用的 app.js/app.css 带 ?v=
-    respondText(client, req, 200, html, "text/html; charset=utf-8", "no-cache");
+
+    // 首页 + 未知路径兜底: 手机浏览器给 mobile.html, 桌面给 index.html。
+    // 鉴权目前没有(客户端证书已移除, token 待接入); 读盘 / no-cache / Vary 由 servePage 统一处理。
+    servePage(client, req, isMobileBrowser(req) ? "mobile.html" : "index.html");
 }
 
 // ---------------------------------------------------------------------------
@@ -3528,25 +3699,5 @@ void JZAgentCliServer::onDashboard(JZHttpServerClient *client, const JZHttpReque
 string JZAgentCliServer::dashboardDir() const
 {
     return JZPlatform::applicationDirPath() + "/server_web";
-}
-
-bool JZAgentCliServer::loadDashboardHtml(string &html, string &error) const
-{
-    const string path = dashboardDir() + "/index.html";
-    ifstream ifs(path, ios::binary);
-    if (!ifs)
-    {
-        error = "读不到管理台页面: " + path + " (发布时要把 server_web/ 目录放在 exe 同目录)";
-        return false;
-    }
-    stringstream ss;
-    ss << ifs.rdbuf();
-    html = ss.str();
-    if (html.empty())
-    {
-        error = "管理台页面是空文件: " + path;
-        return false;
-    }
-    return true;
 }
 

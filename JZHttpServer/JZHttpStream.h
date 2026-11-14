@@ -2,8 +2,10 @@
 #define JZ_HTTP_STREAM_H_
 #include <string>
 #include <map>
+#include <vector>
 #include "JZObject.h"
 #include "JZCompress.h"
+#include "JZHttpCookie.h"
 
 class JZHttpServerClient;
 class JZByteArray;
@@ -33,6 +35,8 @@ public:
     void setStatusCode(int code);
     void setContentType(const std::string& type);
     void setHeader(const std::string& key, const std::string& value);
+    // 追加一条 Set-Cookie（可多次调用下发多条）；open() 时随响应头一起发出
+    void setCookie(const JZHttpCookie& cookie);
     void setSSE(bool on = true);                        // SSE 模式（open 时写 text/event-stream 头）
     void setContentEncoding(JZCompressAlgorithm algo);  // 流式压缩（gzip/deflate）
     void setCompressLevel(int level);                   // 压缩等级，-1=默认
@@ -63,6 +67,7 @@ private:
     JZHttpServerClient* m_client = nullptr;
     int m_statusCode = 200;
     std::map<std::string, std::string> m_headers;
+    std::vector<JZHttpCookie> m_cookies;
     bool m_sse = false;
     bool m_compressEnabled = false;
     JZCompressAlgorithm m_algo = JZCompressAlgorithm::GZip;

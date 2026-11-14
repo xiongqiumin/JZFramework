@@ -52,7 +52,7 @@ protected:
         JZMqttPublishOpt will;
     };
 
-    virtual JZNetObject *onAccept(uint64_t conn) override;
+    virtual JZNetObject *onAccept(uint64_t conn, const JZNetAddr &addr) override;
     virtual void onNetEvent(JZNetResEvent *event) override;
     void onClientDisconnect();
     void onClientNetEvent(JZMqttClient *client, JZNetResEvent *event);

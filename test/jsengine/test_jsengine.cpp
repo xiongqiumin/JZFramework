@@ -82,9 +82,8 @@ struct Dog : public Animal
     int bark() const { return 1; }
 };
 
-int main()
+int test_jsengine(int argc, char *argv[])
 {
-    JZApplication a;
     JZEventLoop loop;                // 事件循环: 可重入, 每次 exec() 都重新运行
     jzco_init();                     // 初始化 jzco 协程调度器(主线程)
 

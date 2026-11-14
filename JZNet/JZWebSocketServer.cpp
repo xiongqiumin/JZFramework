@@ -49,13 +49,14 @@ bool JZWebSocketServer::listen(std::string ip, int port)
     return true;
 }
 
-JZNetObject* JZWebSocketServer::onAccept(uint64_t conn)
+JZNetObject* JZWebSocketServer::onAccept(uint64_t conn, const JZNetAddr &addr)
 {
     JZWebSocket* socket = new JZWebSocket(this);
     socket->m_conn = conn;
     socket->m_connType = JZSocketInfo::WebSocketServer;
     socket->m_state = ConnectedState;
     socket->moveToThread(this->thread());
+    socket->setConnAddr(addr);      // 先写地址: 下面 sigAccept 的回调里就要能读到
 
     JZObjectPointer socket_ptr = socket->guardPointer();
     auto notify = [this, socket_ptr]

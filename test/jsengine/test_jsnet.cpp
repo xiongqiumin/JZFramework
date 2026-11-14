@@ -36,10 +36,9 @@ static void check(const string& name, bool ok)
 
 #define STEP(x) do { fprintf(stderr, "[step] %s\n", x); fflush(stderr); } while (0)
 
-int main()
+int test_jsnet(int argc, char *argv[])
 {
     STEP("enter main");
-    JZApplication a;
     STEP("app created");
     JZEventLoop loop;
     jzco_init();

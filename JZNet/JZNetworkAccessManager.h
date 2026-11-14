@@ -1,10 +1,13 @@
 #ifndef JZ_NET_WORK_ACCESS_MANAGER_H_
 #define JZ_NET_WORK_ACCESS_MANAGER_H_
+#include <mutex>
+#include <vector>
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetClient.h"
 #include "JZNetworkRequest.h"
 #include "JZNetworkReply.h"
+#include "JZNetworkCookie.h"
 #include "JZOptional.h"
 #ifdef HAS_JZCompress
 #include "JZCompress.h"
@@ -130,8 +133,23 @@ public:
     // 统一设置 HTTPS 客户端 TLS 配置(需在发起请求前设置)
     void setSsl(const JZSSLConfig &ssl);
 
+    // ---- Cookie(客户端自动存取, 默认开启) ----
+    // 收到响应里的 Set-Cookie 自动存下来(按域/路径/Secure, 处理 Max-Age/Expires),
+    // 之后同域同路径的请求自动补 Cookie 头。业务自己设了 Cookie 头时以业务的为准, 不覆盖。
+    // 只做「存取」: sid 对应的用户是谁、是否登录, 仍由业务自己校验。
+    void setCookieJarEnabled(bool on);
+    bool cookieJarEnabled() const;
+    void clearCookies();
+    int cookieCount() const;
+    std::vector<JZNetworkCookie> cookies() const;   // 快照(线程安全)
+
 protected:    
     friend JZNetworkConnect;
+
+    // 发请求前补 Cookie 头(业务显式设置的 Cookie 头优先)。返回 true 表示本次是自动注入的
+    bool applyCookies(JZNetworkRequest &request);
+    // 响应头解析后保存 Set-Cookie(由 JZNetworkConnect 调用)
+    void saveCookies(const JZUrl &url, const std::vector<std::string> &setCookieHeaders);
 
     JZNetworkConnect* findIdleConnection(const std::string &hostKey);
     void evictIdleConnection(const std::string &hostKey);
@@ -152,6 +170,10 @@ protected:
     // HTTPS 客户端 TLS 配置
     JZSSLConfig m_ssl;              // 客户端 TLS 配置
     JZOptional<JZProxyConfig> m_proxyConfig;   // HTTP 代理（http / https 目标均生效；空 = 不启用）
+
+    JZNetworkCookieJar m_cookieJar;
+    bool m_cookieJarEnabled = true;
+    mutable std::mutex m_cookieMutex;   // get/post 可能跨线程调用, jar 是共享状态
 };
 
 #endif // !JZ_NET_WORK_ACCESS_MANAGER_H_

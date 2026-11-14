@@ -11,6 +11,7 @@ int test_mqtt();
 int test_http();
 int test_netServer();
 int test_netCrypto();
+int test_netAddr();
 
 int main(int argc, char *argv[])
 {
@@ -52,6 +53,9 @@ int main(int argc, char *argv[])
 
     jzDebug() << "########## Net 模块综合测试 (mode=" << mode
         << "): 逐个运行 TCP / UDP / WebSocket / MQTT / HTTP / JZNetServer ##########";
+
+    test_netAddr();
+    jzDebug() << "【OK】连接地址(accept / connect) 通过";
 
     test_tcp();
     jzDebug() << "【OK】TCP 通过";

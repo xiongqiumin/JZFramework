@@ -103,6 +103,16 @@ struct JZFRAMEWORK_API JZSocketInfo
     std::string websocketExt;
 };
 
+// 一条连接的地址: 建立连接时一次性确定(服务端 accept / 客户端 connect 各填一次),
+// 之后不再变化。不经事件逐包携带 —— 服务端在 onAccept() 里直接拿, 客户端跟着 CONNECT 事件来一次。
+struct JZFRAMEWORK_API JZNetAddr
+{
+    std::string localIp;
+    int localPort = 0;
+    std::string remoteIp;
+    int remotePort = 0;
+};
+
 class JZFRAMEWORK_API JZNetOpenReq
 {
 public:
@@ -165,6 +175,16 @@ public:
     virtual ~JZNetResEventData();
 };
 
+// JZ_NET_EV_CONNECT 的额外信息: 客户端 TCP 握手完成时的本端/对端地址。
+// 由 JZNetObject::event() 在回调 onNetEvent 之前落到对象上(peerIp()/localIp()),
+// 所以 onNetEvent(CONNECT) / sigConnected / JS 'connect' 里都能直接读。
+// (服务端不需要它: accept 时地址由 onAccept(conn, addr) 直接交给新对象)
+class JZFRAMEWORK_API JZNetAddrResData : public JZNetResEventData
+{
+public:
+    JZNetAddr addr;
+};
+
 class JZFRAMEWORK_API JZNetResEvent : public JZEvent
 {
 public:
@@ -174,11 +194,6 @@ public:
     JZNetEvent event;
     uint64_t conn;
     JZByteArray binData;
-
-    // 本端地址/端口(net 线程回填, 给 JS 侧 socket.address()/localAddress 对齐 Node 用;
-    // client 要等 MG_EV_CONNECT、accept 出来的连接在 MG_EV_ACCEPT 之后 loc 才是最终值)
-    int localPort = 0;
-    std::string localIp;
 
     // ext
     std::shared_ptr<JZNetResEventData> extData;
@@ -213,11 +228,6 @@ protected:
 
         // 半关闭排队: 收到 Net_ShutdownWrite 时若发送缓冲还有数据, 等排空(MG_EV_WRITE)再发 FIN
         bool pendingShutdownWrite = false;
-
-        // 本端地址/端口的缓存(见 JZNetResEvent::localPort/localIp): 只在拿到最终 loc 时回读一次
-        bool locReady = false;
-        int localPort = 0;
-        std::string localIp;
     };
 
     // 半关闭的落地动作: 对连接的 fd 调 shutdown(只关写方向), 见 JZNetReqEvent::Net_ShutdownWrite
@@ -283,6 +293,16 @@ public:
     // 本端实际地址(同上, 给 JS 侧 socket.address()/localAddress 用); 未知时为空串
     const std::string &localIp() const { return m_localIp; }
 
+    // 对端 IP/端口(服务端 = 客户端地址; 客户端 = 服务端地址)。
+    //   accept 出来的对象: onAccept 里已写好, 连 server 的 sigAccept 回调都能读到;
+    //   客户端: 随 CONNECT 事件带来(回调前已写入), connect 回调里可读。
+    // 经反向代理时这里是代理地址, 真实来源看请求头 X-Forwarded-For。
+    const std::string &peerIp() const { return m_peerIp; }
+    int peerPort() const { return m_peerPort; }
+
+    // 把一条连接的地址写到本对象上(accept 时由 net 线程在 onAccept 内调用; 客户端由 ADDR 事件消费)
+    void setConnAddr(const JZNetAddr &addr);
+
     // ---- 半关闭(对齐 Node 的 socket.end()) ----
     // 语义: **只关写方向** —— 先给对端发 FIN(对端因此收到 'end'), 但本端**读方向继续**,
     // 还能收到对端的数据; 连接不拆。真正断开要靠对端关闭或 close()/destroy()。
@@ -314,8 +334,10 @@ protected:
     // - 网络线程内同步完成socket对象创建、连接绑定等核心操作
     // - 仅将"连接建立完成"的通知事件异步发送至server线程（不影响数据处理）
     // - 确保网络线程处理任何IO事件前，socket对象已存在且绑定完成
-    // onAccept 返回server 新创建的 JZNetObject, 网络线程会进行绑定 object -> conn 
-    virtual JZNetObject *onAccept(uint64_t conn);
+    // onAccept 返回 server 新创建的 JZNetObject, 网络线程会进行绑定 object -> conn。
+    // 在**网络线程内同步**调用; addr 是这条连接的本端/对端地址(此刻已是最终值), 实现方应把它
+    // 写进新建的对象(setConnAddr) —— 这样即使是紧接着派发出去的 sigAccept 之类通知, 回调里也有地址。
+    virtual JZNetObject *onAccept(uint64_t conn, const JZNetAddr &addr);
     //在net thread移除自身, 需要在一进入析构就调用,避免析构后还在net thread处理事件
     void removeNetObject();
 
@@ -332,6 +354,8 @@ protected:
     uint64_t m_conn = INVALID_NET_HANDLE;   // 本对象当前连接 id (1:1)
     int m_localPort = 0;                    // 本端实际端口(host 序), 见 localPort()
     std::string m_localIp;                  // 本端实际地址, 见 localIp()
+    int m_peerPort = 0;                     // 对端端口, 见 peerPort()
+    std::string m_peerIp;                   // 对端地址, 见 peerIp()
     JZSocketInfo::ConnType m_connType = JZSocketInfo::None;
     int m_pendingBytes = 0;
     bool m_writeEnded = false;              // 已半关闭(shutdownWrite): 之后写操作一律丢弃

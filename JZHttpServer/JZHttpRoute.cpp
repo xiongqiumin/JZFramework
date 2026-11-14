@@ -192,6 +192,12 @@ bool JZHttpRoute::matchDynamic(const RoutePattern& pattern, const std::string& p
                 requestPos = requestPath.length();
             }
 
+            // 普通参数只吃**一个路径段**: 值里出现 '/' 说明这条模式不该匹配
+            // (例: /user/<id> 对上 /user/42/posts 时会把 "42/posts" 当 id, 抢走本应
+            //  由 /user/<id>/posts 处理的请求)。跨段请用 <path:x>, 它走 matchPath。
+            if (paramValue.find('/') != std::string::npos)
+                return false;
+
             if (paramIndex < pattern.paramNames.size())
             {
                 params[pattern.paramNames[paramIndex]] = paramValue;
@@ -227,7 +233,9 @@ bool JZHttpRoute::matchPath(const RoutePattern& pattern, const std::string& path
     if (pathParamEnd == std::string::npos)
         return false;
 
-    std::string paramName = patternPath.substr(pathParamPos + 5, pathParamEnd - pathParamPos - 5);
+    // "<path:" 共 6 个字符('<' + "path" + ':'), 名字从其后开始。
+    // 之前用了 +5, 取到的是 ":name"(带冒号), 于是 params 里永远没有调用方要的那个键。
+    std::string paramName = patternPath.substr(pathParamPos + 6, pathParamEnd - pathParamPos - 6);
 
     std::string prefix = patternPath.substr(0, pathParamPos);
     std::string suffix = patternPath.substr(pathParamEnd + 1);
@@ -252,6 +260,11 @@ bool JZHttpRoute::matchPath(const RoutePattern& pattern, const std::string& path
     {
         pathValue = pathValue.substr(0, pathValue.length() - suffix.length());
     }
+
+    // "/<path:x>"(prefix 为空)时 pathValue 还带着请求路径开头的 '/', 去掉它 ——
+    // 与 Flask 的 <path:x> 一致: 请求 /a/b 得到 "a/b"
+    if (!pathValue.empty() && pathValue[0] == '/' && (prefix.empty() || prefix.back() != '/'))
+        pathValue = pathValue.substr(1);
 
     params[paramName] = pathValue;
 

@@ -2,8 +2,10 @@
 #define JZ_HTTP_RESPONE_H_
 #include <string>
 #include <map>
+#include <vector>
 #include "JZByteArray.h"
 #include "JZCompress.h"
+#include "JZHttpCookie.h"
 
 class JZFRAMEWORK_API JZHttpRespone
 {
@@ -18,9 +20,20 @@ public:
     void setStatusText(const std::string& text);
 
     const std::string& header(const std::string& key) const;
+    // 设置响应头。key 为 Set-Cookie 时**追加**一条而不是覆盖（Set-Cookie 允许多条），
+    // 等价于 setCookie(JZHttpCookie(name, value))；header("Set-Cookie") 读回最后一条。
     void setHeader(const std::string& key, const std::string& value);
+    // 移除响应头。key 为 Set-Cookie 时清空本响应已累积的全部 cookie。
     void removeHeader(const std::string& key);
     const std::map<std::string, std::string>& headers() const;
+
+    // 追加一条 Set-Cookie（同一个响应可以下发多条，例如同时设置会话与偏好）。
+    // 用 cookie() 区分用户时，通常在这里下发 sid；请求侧用 JZHttpRequest::cookie("sid") 读回。
+    void setCookie(const JZHttpCookie& cookie);
+    void setCookie(const std::string& name, const std::string& value);
+    void clearCookies();
+    // 已累积的 Set-Cookie 头值（按加入顺序，不含 "Set-Cookie: " 前缀）
+    const std::vector<std::string>& cookieLines() const;
 
     const JZByteArray& body() const;
     void setBody(const JZByteArray& body);
@@ -59,6 +72,7 @@ private:
     int m_statusCode;
     std::string m_statusText;
     std::map<std::string, std::string> m_headers;
+    std::vector<std::string> m_cookieLines;   // 多条 Set-Cookie 的头值, 序列化时逐条输出
     JZByteArray m_body;
 };
 

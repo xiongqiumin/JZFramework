@@ -30,7 +30,7 @@ static string evalStr(JZJSEngine& engine, const string& code)
     return engine.fromJSValue<string>(v.get());
 }
 
-int main(int argc, char** argv)
+int test_load_ui(int argc, char *argv[])
 {
     setbuf(stdout, NULL);   // 测试输出不缓冲: 崩溃/断言时也能看到已跑过的用例
 
@@ -39,8 +39,6 @@ int main(int argc, char** argv)
         return 1;
     }
     string path = argv[1];
-
-    JZApplication a;
 
     // 1) 加载 + 解析 UI 描述
     JZJSUiLoader loader;

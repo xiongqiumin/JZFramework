@@ -154,12 +154,13 @@ uint64_t JZNetServer::nextPendingConnection()
     return client->m_conn;
 }
 
-JZNetObject *JZNetServer::onAccept(uint64_t conn)
+JZNetObject *JZNetServer::onAccept(uint64_t conn, const JZNetAddr &addr)
 {
     JZNetClient *socket = new JZNetClient(this);
     socket->m_conn = conn;
     socket->m_state = ConnectingState;
     socket->moveToThread(this->thread());
+    socket->setConnAddr(addr);      // 先写地址: 后续握手/接收回调里要能读到
     socket->m_server = this;
     // 把服务端配置的 token 传给被 accept 的连接, 握手时才能用相同 token 派生 ChaCha20 密钥
     socket->setToken(m_token);

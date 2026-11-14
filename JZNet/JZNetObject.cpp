@@ -203,6 +203,26 @@ JZNetResEvent::~JZNetResEvent()
 {
 }
 
+// 从 mongoose 连接读本端/对端地址(端口是网络序, 转 host 序)
+static JZNetAddr mgConnAddr(mg_connection *c)
+{
+    JZNetAddr addr;
+    if (!c)
+        return addr;
+
+    char *ip = mg_mprintf("%M", mg_print_ip, &c->loc);
+    addr.localIp = std::string(ip ? ip : "");
+    mg_free(ip);
+    addr.localPort = (int)mg_ntohs(c->loc.port);
+
+    ip = mg_mprintf("%M", mg_print_ip, &c->rem);
+    addr.remoteIp = std::string(ip ? ip : "");
+    mg_free(ip);
+    addr.remotePort = (int)mg_ntohs(c->rem.port);
+
+    return addr;
+}
+
 //JZNetThread
 void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
 {
@@ -439,6 +459,18 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
     }
 
     JZMutexLocker locker(&inst->m_objectMutex);
+
+    // 客户端 connect 完成: 地址作为**这条 CONNECT 事件**的额外信息一起带过去。
+    // 对象线程在回调 onNetEvent 之前会先把它落到 m_peerIp/m_peerPort 上(见 JZNetObject::event),
+    // 所以 sigConnected / JS 'connect' 里读 peerIp() 一定拿得到。
+    // (服务端不走这里: accept 出来的对象由 onAccept(conn, addr) 直接把地址写进去)
+    if (ev == MG_EV_CONNECT)
+    {
+        auto addr_data = std::make_shared<JZNetAddrResData>();
+        addr_data->addr = mgConnAddr(c);
+        event->extData = addr_data;
+    }
+
     if (accept_id != INVALID_NET_HANDLE)
     {
         auto accept_it = inst->m_connMap.find(accept_id);
@@ -447,7 +479,9 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
             JZNetObject *accept_object = (JZNetObject*)accept_it->second.object.object();
             if (vec_contains(inst->m_objectList, accept_object))
             {
-                JZNetObject *bind_object = accept_object->onAccept(event->conn);
+                // 地址在这里一并交给新建的对象(此刻 loc/rem 已是最终值),
+                // 这样连 onAccept 里紧接着派发的 sigAccept 通知也能读到 peerIp()
+                JZNetObject *bind_object = accept_object->onAccept(event->conn, mgConnAddr(c));
                 if (bind_object)
                 {
                     inst->bindObject(event->conn, bind_object);
@@ -456,26 +490,6 @@ void mg_thread_fn(mg_connection *c, int ev, void *ev_data)
         }
         delete event;
         return;
-    }
-
-    // 本端地址/端口: 带着它一起派发, 让 JS 侧 socket.address()/localAddress 与 Node 对齐。
-    // client 要等 MG_EV_CONNECT、accept 出来的连接在 MG_EV_ACCEPT 之后 loc 才是最终值 ⇒
-    // 那时回读一次并缓存(之后每条事件只带缓存值, 不重复格式化)。
-    {
-        auto local_it = inst->m_connMap.find(c->id);
-        if (local_it != inst->m_connMap.end())
-        {
-            if (ev == MG_EV_CONNECT || ev == MG_EV_ACCEPT || ev == MG_EV_WS_OPEN || !local_it->second.locReady)
-            {
-                char *ip = mg_mprintf("%M", mg_print_ip, &c->loc);
-                local_it->second.localIp = std::string(ip ? ip : "");
-                mg_free(ip);
-                local_it->second.localPort = (int)mg_ntohs(c->loc.port);
-                local_it->second.locReady = (local_it->second.localPort != 0);
-            }
-            event->localPort = local_it->second.localPort;
-            event->localIp = local_it->second.localIp;
-        }
     }
 
     JZNetObject *object = (JZNetObject*)inst->m_connMap[c->id].object.object();
@@ -1089,12 +1103,13 @@ bool JZNetObject::event(JZEvent *event)
     if (event->type() == JZEvent_netRes) 
     {
         JZNetResEvent* net_event = (JZNetResEvent*)event;
-        // 本端地址/端口随事件带过来(见 JZNetResEvent::localPort/localIp), 这里落到对象上,
-        // 供 JS 侧 socket.address()/localAddress 用(与 Node 对齐)。
-        if (net_event->localPort != 0)
-            m_localPort = net_event->localPort;
-        if (!net_event->localIp.empty())
-            m_localIp = net_event->localIp;
+
+        // 事件携带的连接地址(客户端 CONNECT): 先落到对象上再回调,
+        // 这样 onNetEvent / sigConnected / JS 'connect' 里 peerIp() 已经有值。
+        auto addr_data = std::dynamic_pointer_cast<JZNetAddrResData>(net_event->extData);
+        if (addr_data)
+            setConnAddr(addr_data->addr);
+
         onNetEvent(net_event);
 
         // ---- FIN 往返第一步(放在父类, 所有协议共享; 见 JZNet/mongoose.c 的 iolog) ----
@@ -1108,9 +1123,22 @@ bool JZNetObject::event(JZEvent *event)
     return JZObject::event(event);
 }
 
-JZNetObject *JZNetObject::onAccept(uint64_t conn)
+JZNetObject *JZNetObject::onAccept(uint64_t conn, const JZNetAddr &addr)
 {
     return nullptr;
+}
+
+void JZNetObject::setConnAddr(const JZNetAddr &addr)
+{
+    // 只覆盖拿到的部分: 端口 0 = 未知, 不要把已知值抹掉
+    if (!addr.localIp.empty())
+        m_localIp = addr.localIp;
+    if (addr.localPort != 0)
+        m_localPort = addr.localPort;
+    if (!addr.remoteIp.empty())
+        m_peerIp = addr.remoteIp;
+    if (addr.remotePort != 0)
+        m_peerPort = addr.remotePort;
 }
 
 void JZNetObject::wakeUpNet()
@@ -1258,6 +1286,8 @@ void JZNetObject::closeConn(bool closeImmediate)
     m_pendingBytes = 0;
     m_localPort = 0;
     m_localIp.clear();
+    m_peerPort = 0;
+    m_peerIp.clear();
     m_writeEnded = false;
 }
 

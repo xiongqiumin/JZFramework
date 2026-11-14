@@ -1,0 +1,235 @@
+/* ===========================================================================
+   手机端(/mobile.html)专属样式。只在 <640 的手机壳加载, 桌面 index.html 不受影响。
+   信息架构: L1 主机/工作区选择 → L2 工作区(会话 | 文件 | 历史 三段切换)。
+   规则: 不写死颜色(全部 --jz-*); 间距只用 8/12/16; 命中区 >= var(--jz-tap)。
+   =========================================================================== */
+body.is-mobile {
+  --m-fs-body: 15px;
+  --m-fs-input: 16px;
+  --m-fs-code: 12px;
+  --m-safe: env(safe-area-inset-bottom, 0px);
+  --m-safe-top: env(safe-area-inset-top, 0px);
+  font-size: var(--m-fs-body);
+  line-height: 1.6;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior-y: contain;
+}
+body.is-mobile button { -webkit-tap-highlight-color: transparent; }
+
+/* ---- 骨架: 单列工作区；桌面 rail / 抽屉 / splitter / 顶部 tab 全部不用 ---- */
+body.is-mobile .ag-app {
+  display: flex; flex-direction: column;
+  height: 100dvh; box-sizing: border-box;
+}
+body.is-mobile .ag-rail,
+body.is-mobile .ag-splitter,
+body.is-mobile .ag-tabs,
+body.is-mobile .ag-side,
+body.is-mobile .ag-scrim { display: none !important; }
+body.is-mobile .ag-main { flex: 1; min-width: 0; min-height: 0; }
+
+/* ============================ L1 主机 / 工作区 ============================ */
+.m-hosts {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; flex-direction: column;
+  background: var(--jz-bg);
+  padding-top: var(--m-safe-top);
+  padding-bottom: var(--m-safe);
+  box-sizing: border-box;
+}
+body.is-mobile .m-hosts.hidden { display: none; }
+.m-hosts__hd {
+  flex: none; min-height: var(--jz-tap);
+  display: flex; align-items: center; gap: var(--jz-sp-2);
+  padding: var(--jz-sp-1) var(--jz-sp-3);
+  background: var(--jz-panel); border-bottom: 1px solid var(--jz-border);
+}
+.m-hosts__title { font-size: var(--jz-fs-4); font-weight: 600; }
+.m-hosts__sp { flex: 1; }
+.m-hosts__hd .jz-btn { min-width: var(--jz-tap); min-height: var(--jz-tap); }
+.m-hosts #hostsList { flex: 1; min-height: 0; overflow-y: auto; padding: var(--jz-sp-3); }
+/* 主机分组卡片: 头部 = 主机行 + 该主机专属的 ＋; 工作区行各占整行 */
+body.is-mobile .host {
+  display: flex; flex-wrap: wrap; align-items: stretch;
+  margin: 0 0 var(--jz-sp-3);
+  background: var(--jz-panel); border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2); overflow: hidden;
+  box-shadow: var(--jz-shadow-1);
+}
+body.is-mobile .host-row {
+  flex: 1; min-width: 0; width: auto;
+  min-height: var(--jz-tap); padding: 0 var(--jz-sp-3);
+}
+body.is-mobile .host-row__name { font-size: var(--m-fs-body); font-weight: 600; }
+/* 桌面是 hover 才浮出的 20px 小按钮; 触屏没有 hover, 常显成 44px 并带主机归属色 */
+body.is-mobile .host-add {
+  position: static; flex: none; align-self: center;
+  width: var(--jz-tap); height: var(--jz-tap);
+  min-width: var(--jz-tap); min-height: var(--jz-tap);
+  margin: 0 var(--jz-sp-2); padding: 0;
+  opacity: 1; border-radius: var(--jz-r-1);
+  background: var(--jz-accent-weak); color: var(--jz-accent);
+  font-size: var(--jz-fs-4); line-height: 1;
+}
+body.is-mobile .dir-row {
+  flex: 0 0 100%; min-height: 64px; width: 100%;
+  padding: var(--jz-sp-2) var(--jz-sp-3);
+  font-size: var(--m-fs-body);
+  border-top: 1px solid var(--jz-border);
+}
+body.is-mobile .dir-row__name { font-weight: 600; }
+body.is-mobile .dir-row__path { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+body.is-mobile .dir-row__go { display: none; }   /* 整行可点, 不需要小箭头 */
+
+/* ============================ L2 工作区 ============================ */
+/* 顶部: 返回主机 + 状态点 + 标题 + 更多 */
+body.is-mobile .cs-head {
+  flex: none; min-height: var(--jz-tap);
+  padding: var(--jz-sp-1) var(--jz-sp-3);
+  padding-top: calc(var(--jz-sp-1) + var(--m-safe-top));
+  gap: var(--jz-sp-2);
+}
+body.is-mobile .m-back,
+body.is-mobile #headActs .jz-btn,
+body.is-mobile #btnMore { min-height: var(--jz-tap); min-width: var(--jz-tap); }
+body.is-mobile .m-back { font-size: var(--jz-fs-4); line-height: 1; }
+body.is-mobile #btnMore { font-size: var(--jz-fs-4); line-height: 1; }
+body.is-mobile .cs-head__title { font-size: var(--m-fs-body); }
+body.is-mobile .cs-head__title::before {
+  content: ''; display: inline-block;
+  width: 8px; height: 8px; margin-right: var(--jz-sp-2);
+  border-radius: 50%; background: var(--jz-muted); vertical-align: middle;
+}
+body.is-mobile[data-state="idle"] .cs-head__title::before { background: var(--jz-ok); }
+body.is-mobile[data-state="busy"] .cs-head__title::before {
+  background: var(--jz-accent); animation: mPulse 1.4s ease-in-out infinite;
+}
+body.is-mobile[data-state="offline"] .cs-head__title::before { background: var(--jz-fail); }
+@keyframes mPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  body.is-mobile[data-state="busy"] .cs-head__title::before { animation: none; }
+}
+body.is-mobile .cs-head__sub { display: none; }
+
+/* 三段切换: 同级切换, 44px, 不压返回栈 */
+.m-seg {
+  flex: none; display: flex; align-items: stretch;
+  min-height: var(--jz-tap);
+  background: var(--jz-panel); border-bottom: 1px solid var(--jz-border);
+}
+.m-seg__btn {
+  position: relative; flex: 1; min-width: 0; min-height: var(--jz-tap);
+  border: 0; background: none; color: var(--jz-muted);
+  font: inherit; font-size: var(--m-fs-body);
+}
+.m-seg__btn.is-on { color: var(--jz-accent); font-weight: 600; }
+.m-seg__btn.is-on::after {
+  content: ''; position: absolute; left: 20%; right: 20%; bottom: 0;
+  height: 2px; background: var(--jz-accent);
+}
+
+/* 断线: 顶部下滑横幅, 不占布局高度 */
+body.is-mobile #connBar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+  padding: calc(6px + var(--m-safe-top)) var(--jz-sp-3) 6px;
+  transform: translateY(0);
+  transition: transform .18s ease;
+  box-shadow: var(--jz-shadow-2);
+}
+body.is-mobile #connBar.hidden {
+  display: flex; transform: translateY(-120%); pointer-events: none;
+}
+
+/* ---- 会话 ---- */
+body.is-mobile .pane[data-pane="chat"] { overflow: hidden; }
+body.is-mobile .cs-thread {
+  padding: var(--jz-sp-3) var(--jz-sp-3) calc(var(--jz-sp-3) + var(--kb, 0px));
+  font-size: var(--m-fs-body); line-height: 1.6;
+}
+body.is-mobile .cs-task, body.is-mobile .cs-conv { gap: var(--jz-sp-2); }
+body.is-mobile .jz-msg { max-width: 100%; align-self: stretch; align-items: stretch; }
+body.is-mobile .jz-bubble {
+  font-size: var(--m-fs-body); line-height: 1.6;
+  border-radius: var(--jz-r-2);
+}
+body.is-mobile .jz-msg--user .jz-bubble {
+  background: var(--jz-accent-weak); border-color: var(--jz-border); color: var(--jz-text);
+}
+body.is-mobile .jz-msg__meta,
+body.is-mobile .cs-task__meta { font-size: var(--jz-fs-1); }
+body.is-mobile .cs-think > summary,
+body.is-mobile .cs-tool > summary,
+body.is-mobile .ag-term > summary { min-height: var(--jz-tap); }
+body.is-mobile .jz-log { font-size: var(--m-fs-code); }
+body.is-mobile .jz-empty { font-size: var(--m-fs-body); }
+body.is-mobile .thread-more { min-height: var(--jz-tap); }
+
+/* ---- 输入区: 16px 防缩放, 贴键盘, 只点按钮发送 ---- */
+body.is-mobile .cs-composer {
+  padding: var(--jz-sp-2) var(--jz-sp-3) calc(var(--jz-sp-2) + var(--m-safe));
+}
+body.is-mobile .cs-bar .jz-btn { min-height: var(--jz-tap); min-width: var(--jz-tap); }
+body.is-mobile #btnSettings { display: none; }         /* 设置移到顶部 ⋯ */
+body.is-mobile .cs-ta { font-size: var(--m-fs-input); min-height: 48px; max-height: 30vh; }
+body.is-mobile .jz-composer__actions .jz-btn { min-height: var(--jz-tap); }
+body.is-mobile .cs-kbd { display: none; }               /* Enter 不再发送 */
+
+/* ---- 文件 / 历史 pane ---- */
+body.is-mobile .pane[data-pane="files"],
+body.is-mobile .pane[data-pane="history"] { overflow: hidden; }
+.m-pane__bar {
+  flex: none; min-height: var(--jz-tap);
+  display: flex; align-items: center; gap: var(--jz-sp-2);
+  padding: 0 var(--jz-sp-3);
+  background: var(--jz-panel-2); border-bottom: 1px solid var(--jz-border);
+}
+.m-pane__path {
+  flex: 1; min-width: 0; font-size: var(--m-fs-code); font-family: var(--jz-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.m-pane__bar .jz-btn { min-width: var(--jz-tap); min-height: var(--jz-tap); }
+body.is-mobile .pane[data-pane="files"] #fsTree,
+body.is-mobile .pane[data-pane="history"] #taskList {
+  flex: 1; min-height: 0; overflow-y: auto; padding: var(--jz-sp-2) var(--jz-sp-3);
+  background: var(--jz-panel);
+}
+body.is-mobile .pane[data-pane="history"] .ag-side__new { padding: var(--jz-sp-2) var(--jz-sp-3) 0; }
+body.is-mobile .ag-item { min-height: 64px; padding: var(--jz-sp-2) var(--jz-sp-3); font-size: var(--m-fs-body); }
+body.is-mobile .ag-item__text { line-height: 1.45; }
+body.is-mobile .ag-del { min-width: var(--jz-tap); min-height: var(--jz-tap); }
+body.is-mobile .ag-group { font-size: var(--jz-fs-1); }
+body.is-mobile .ag-new { min-height: var(--jz-tap); }
+body.is-mobile .fs-row,
+body.is-mobile .dpick-row { min-height: var(--jz-tap); }
+
+/* ---- 长按菜单: 更宽、每项 44px ---- */
+body.is-mobile #ctxMenu { min-width: 200px; }
+body.is-mobile #ctxMenu button { min-height: var(--jz-tap); font-size: var(--m-fs-body); }
+
+/* ---- 代码预览: 去掉顶栏/三段, 只留面包屑 + 左上返回文件 ---- */
+body.is-mobile.in-preview .cs-head,
+body.is-mobile.in-preview .m-seg { display: none; }
+body.is-mobile.in-preview .prev-bar {
+  padding-top: calc(var(--jz-sp-1) + var(--m-safe-top));
+  background: var(--jz-panel);
+  border-bottom: 1px solid var(--jz-border);
+}
+body.is-mobile .prev-bar { min-height: var(--jz-tap); padding: var(--jz-sp-1) var(--jz-sp-3); }
+body.is-mobile .prev-back { flex: none; min-width: var(--jz-tap); font-size: var(--jz-fs-4); line-height: 1; }
+body.is-mobile .prev-bar__path { font-size: var(--m-fs-code); }
+body.is-mobile .prev-bar__meta { font-size: var(--jz-fs-1); }
+body.is-mobile .prev-bar .jz-btn { min-height: var(--jz-tap); }
+body.is-mobile .prev-body { font-size: var(--m-fs-code); line-height: 1.5; }
+body.is-mobile.no-ln .prev-ln { display: none; }
+
+/* ---- 原生 dialog 改底部弹层(不自研 modal) ---- */
+body.is-mobile dialog.jz-dialog[open],
+body.is-mobile dialog.dirpick[open] {
+  position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+  width: 100%; max-width: none; max-height: 80dvh; margin: 0;
+  border-radius: var(--jz-r-2) var(--jz-r-2) 0 0;
+  padding-bottom: calc(var(--jz-sp-3) + var(--m-safe));
+}
+body.is-mobile dialog.jz-dialog .jz-btn,
+body.is-mobile dialog.dirpick .jz-btn,
+body.is-mobile dialog.jz-dialog .jz-dialog__x { min-height: var(--jz-tap); }

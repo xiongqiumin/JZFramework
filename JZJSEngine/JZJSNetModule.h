@@ -218,7 +218,9 @@ struct JZFRAMEWORK_API JZJSHttpResponse
     ~JZJSHttpResponse();
 
     void writeHead(int status, const Json::Value& headers);
-    void setHeader(const std::string& name, const std::string& value);
+    // 值可以是 string / number / string[](数组头, 与 Node 的 setHeader 一致:
+    // Set-Cookie 逐条发送, 其它头用 ", " 合并)
+    void setHeader(const std::string& name, const Json::Value& value);
     void write(JSValue data);
     void end(JSValue data);
 
@@ -226,7 +228,7 @@ struct JZFRAMEWORK_API JZJSHttpResponse
     JZJSNetModule* module;
     JZHttpServerClient* client;   // 不拥有（由 JZHttpServer/JZHttpServerClient 管理）
     JZByteArray body;             // write() 先缓冲，end() 时才发
-    Json::Value headers;
+    Json::Value headers;          // 原样保存(字符串/数字/数组), end() 时按 HTTP 语义展开
     int statusCode;
     bool headWritten;
     bool finished;

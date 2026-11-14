@@ -25,6 +25,8 @@
     JZNetworkRequest.cpp
     JZNetworkReply.h
     JZNetworkReply.cpp
+    JZNetworkCookie.h
+    JZNetworkCookie.cpp
 	JZWebSocket.cpp
     JZWebSocket.h
 	JZWebSocketServer.cpp

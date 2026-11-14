@@ -41,7 +41,7 @@ protected:
     void onClientPackReceive(JZNetPackPtr ptr);
 
     void onNetEvent(JZNetResEvent*event);
-    virtual JZNetObject *onAccept(uint64_t conn) override;
+    virtual JZNetObject *onAccept(uint64_t conn, const JZNetAddr &addr) override;
 
     void onHandTimer();
     void removeHandInfo(uint64_t conn);

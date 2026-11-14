@@ -150,7 +150,7 @@ def main(argv=None) -> int:
         "server": {"host": "127.0.0.1", "port": port_hub, "token": token, "agentId": "a1"},
     })
     write_json(cfg_server, {
-        # 本机回归: 明文 HTTP 只绑回环, 不对外; 生产默认仍是 HTTPS + mTLS
+        # 本机回归: 明文 HTTP 只绑回环, 不对外; 生产默认仍是 HTTPS(单向)
         "http": {"bind": "127.0.0.1", "port": port_http, "ssl": {"enabled": False}},
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": token},
         "agents": [],
@@ -187,7 +187,7 @@ def main(argv=None) -> int:
         log("AgentCard: skills/capabilities/metadata/online 齐全")
 
         if args.serve:
-            log("管理台: %s/   (明文仅回环, 生产用 HTTPS+mTLS)" % base)
+            log("管理台: %s/   (明文仅回环, 生产用 HTTPS)" % base)
             log("按 Ctrl+C 结束")
             try:
                 while True:

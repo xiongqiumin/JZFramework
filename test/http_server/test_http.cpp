@@ -266,9 +266,8 @@ int test_http()
     return 0;
 }
 
-int main()
+int test_http_all()
 {
-    JZApplication a;
     LOG("########## HTTP 综合测试 (静态分块 + SSE 流式 + Echo) ##########");
     return test_http();
 }

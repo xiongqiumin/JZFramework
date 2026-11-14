@@ -241,9 +241,8 @@ public:
     AutoHandler *m_auto;
 };
 
-int main()
+int test_compress()
 {
-    JZApplication a;
     LOG("########## HTTP 服务端压缩响应测试 (gzip / deflate / plain / auto) ##########");
     JZEventLoop loop;
     HttpCompressTest test(&loop);

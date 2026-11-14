@@ -98,7 +98,7 @@ server 与 node 都是 server 角色。这样内网机器不需要 frp、不需�
    提交方/浏览器 ──HTTP──► cli :8080 ──► JZAgent ──► 本地工具 / remote_ssh(node)
 
 (B) managed
-   server :8088（管理台/API，默认 HTTPS + 客户端证书）
+   server :8088（管理台/API，默认 HTTPS 单向；鉴权待接入 token）
         ▲  JZNetClient 出站连接（token）
         │
       cli（无 HTTP）──► JZAgent ──► 本地工具 / remote_ssh(node)
@@ -591,8 +591,8 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
   "http": {
     "bind": "0.0.0.0", "port": 8088,
     "ssl": {
-      "enabled": true, "requireClientCert": true,
-      "certFile": "certs/server.crt", "keyFile": "certs/server.key", "caFile": "certs/ca.crt"
+      "enabled": true,
+      "certFile": "certs/server.crt", "keyFile": "certs/server.key"
     }
   },
   "hub":       { "bind": "0.0.0.0", "port": 8090, "token": "<控制通道口令>" },
@@ -603,9 +603,9 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 
 | 字段 | 说明 |
 | --- | --- |
-| `http.ssl.enabled` | **默认 true**：管理台/API 走 HTTPS（`JZHttpServer::setSslConfig`）。置 false 才退回明文 HTTP，启动时打警告 |
-| `http.ssl.requireClientCert` | **默认 true**：双向认证（服务端带 CA ⇒ mongoose `SSL_VERIFY_PEER\|FAIL_IF_NO_PEER_CERT`）。置 false = 单向 TLS |
-| `http.ssl.certFile` / `keyFile` / `caFile` | PEM 路径，相对路径按**配置文件所在目录**解析（默认 `certs/`）。缺文件 ⇒ `init()` 直接失败，**不会**静默降级成明文 |
+| `http.ssl.enabled` | **默认 true**：管理台/API 走 HTTPS（`JZHttpServer::setSslConfig`，单向 TLS，只加密不认证客户端）。置 false 才退回明文 HTTP，启动时打警告 |
+| `http.ssl.certFile` / `keyFile` | PEM 路径，相对路径按**配置文件所在目录**解析（默认 `certs/`）。缺文件 ⇒ `init()` 直接失败，**不会**静默降级成明文 |
+| ~~`http.ssl.requireClientCert` / `caFile`~~ | **已于 2026-11-14 移除**（mTLS 客户端证书）。老配置里留着不报错，只是不再生效；应用层 token 鉴权待接入，在那之前管理台只应绑 `127.0.0.1` |
 | `hub.bind` / `hub.port` | `JZNetServer` 监听（默认 8090），控制面专用，不能与 `http.port` 相同 |
 | `hub.token` | 控制通道握手口令（全局单一口令） |
 | `agents[]` | server **本机**托管的 cli 子进程（`name/cmd/args/dir/enabled`），与 hub 并存；**不是** hub 白名单，也没有 per-agent token |
@@ -614,7 +614,7 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 > server 进程**不再内嵌 frps**（2026-11-10 移除）；内网穿透需要时单独部署
 > `jzfrps` / `jzfrpc`，与本架构的控制面互不依赖。旧配置文件里残留的 `frp` 段会被忽略。
 
-证书自备（浏览器/客户端要装同一 CA 签的客户端证书；用自签 CA 免得被公用 CA 拒）：
+证书自备（只需要服务器证书；客户端证书那一套随 mTLS 一起移除了）。自签 CA 免得被公用 CA 拒：
 
 ```bash
 mkdir -p certs
@@ -625,11 +625,10 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
 openssl req -newkey rsa:2048 -nodes -keyout certs/server.key -out certs/server.csr -subj "/CN=agent-cli-server"
 openssl x509 -req -in certs/server.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
   -days 3650 -out certs/server.crt -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1")
-# 3) 客户端证书(给管理员浏览器/脚本; 导入时连 ca.crt 一起装)
-openssl req -newkey rsa:2048 -nodes -keyout certs/client.key -out certs/client.csr -subj "/CN=agent-cli-admin"
-openssl x509 -req -in certs/client.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
-  -days 3650 -out certs/client.crt
-openssl pkcs12 -export -in certs/client.crt -inkey certs/client.key -out certs/client.p12
+# 3) 客户端证书: 已不需要(2026-11-14 移除 mTLS)。保留仅为历史参考:
+# openssl req -newkey rsa:2048 -nodes -keyout certs/client.key -out certs/client.csr -subj "/CN=agent-cli-admin"
+# openssl x509 -req -in certs/client.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
+#   -days 3650 -out certs/client.crt
 ```
 
 ### 7.2 cli `config.json`（managed）
@@ -686,7 +685,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 
 | 面 | 机制 | 备注 |
 | --- | --- | --- |
-| 管理台 / API | 传输层：HTTPS + **强制客户端证书**（`http.ssl.*`，默认开） | 已取消应用层 `http.token`；能连上 TLS 的前提是拿到 CA 签发的客户端证书。`ssl.enabled=false` 时等于无鉴权，只能靠网络隔离 |
+| 管理台 / API | **暂无鉴权**（客户端证书 mTLS 已于 2026-11-14 移除，应用层 token 待接入） | `http.ssl.*` 只剩加密（单向 TLS）；谁的能连上端口谁就能管理，因此默认只绑 `127.0.0.1`，对外开放必须靠网络隔离 |
 | 控制通道 | `hub.token`（握手派生密钥）+ agentId 身份 | token 不匹配表现是"包解不开"，靠 `hello` 超时给明确错误 |
 | node（`link`） | `token`（JZNet 握手）+ 默认只绑内网 | 无 token 时**拒绝启动**；`mcp` 模式仍是"无鉴权"，必须靠网络隔离 |
 | 模型侧 | node 的区域/白名单/危险命令策略照旧 | `unrestricted=true` 等于交出 shell，文档必须显著标注 |
@@ -703,7 +702,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 真正的边界只能是沙箱。
 
 **审计口径**：server 按任务记录 `{agentId, taskId, prompt, status, verify_rounds, 起止时间, 错误}`，落 `data/tasks.jsonl`。
-⚠ 目前**没有"发起人"**：鉴权只在传输层（mTLS），也不记录客户端证书 CN，所以"谁交的"只能靠外部日志。
+⚠ 目前**没有"发起人"**：管理台暂未鉴权（token 待接入），也不记录请求方，所以"谁交的"只能靠外部日志。
 
 ---
 
@@ -973,7 +972,7 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
 - **没有 agent 白名单 / per-agent token**：任何拿到 `hub.token` 的 cli 都能连上（全局单一口令）。
 - ~~管理台没有事件流~~（2026-11-10 已补）：server 在 `Task.metadata.events` 保留有界事件序列（上限 200 条，每 20 条 + 终态落盘），并提供 `GET /api/tasks/subscribe?id=` 的 SSE 订阅。**仍未做**的是 cli 控制台日志的 `logAppend`，以及管理台按轮次展示完整工具输出/trace。
 - **MCP 只在队列 0**：`mcp.servers[]` 只挂 q0（每队列一套会让 stdio MCP 被拉起 N 次），q1+ 的模型工具面不齐。
-- **审计没有发起人**：只有 mTLS，不记客户端证书 CN，`tasks.jsonl` 里也没有 requester 字段（§8）。
+- **审计没有发起人**：管理台暂未鉴权（mTLS 已移除、token 待接入），`tasks.jsonl` 里也没有 requester 字段（§8）。
 - **`tasks.jsonl` 不轮转**：内存 500 条，文件无限追加且启动全量载入，长期运行会变慢并占盘。
 
 **未决**

@@ -1,5 +1,6 @@
 #include <string>
 #include "JZHttpRequest.h"
+#include "JZHttpCookie.h"
 #include "mongoose.h"
 #include "JZDebug.h"
 #include "JZStd.h"
@@ -141,12 +142,32 @@ const std::string& JZHttpRequest::header(const std::string& key) const
 void JZHttpRequest::setHeader(const std::string& key, const std::string& value)
 {
     // 以规范化小写 key 存储，保证查找大小写不敏感
-    m_headers[str_toLower(key)] = value;
+    std::string k = str_toLower(key);
+    m_headers[k] = value;
+
+    // Cookie 额外解析一份，业务侧不必自己拆 "a=1; b=2"。
+    // 用**累加**而非覆盖: RFC 允许把 Cookie 头拆成多行发送。
+    if (k == "cookie")
+        JZHttpCookie::parseRequestHeader(value, m_cookies);
 }
 
 const std::map<std::string, std::string>& JZHttpRequest::headers() const
 {
     return m_headers;
+}
+
+const std::string& JZHttpRequest::cookie(const std::string& name) const
+{
+    static const std::string empty;
+    auto it = m_cookies.find(name);
+    if (it != m_cookies.end())
+        return it->second;
+    return empty;
+}
+
+const std::map<std::string, std::string>& JZHttpRequest::cookies() const
+{
+    return m_cookies;
 }
 
 const std::string& JZHttpRequest::param(const std::string& key) const

@@ -29,10 +29,11 @@ using namespace std;
 
 // ===========================================================================
 // 默认配置(--init 写出的文本)。
-//   http.*     后台网页 / 管理 API 的监听地址(鉴权在传输层: mTLS 客户端证书, 没有 token)。
-//   http.ssl.* HTTPS 默认开启且默认校验客户端证书(mTLS); 证书路径相对配置文件目录。
-//              要跑起来必须先备好 certs/{server.crt,server.key,ca.crt}(生成方法见
-//              docs/agent-hub-design.md §7.1); 缺文件时 server 直接启动失败, 不会退回明文。
+//   http.*     后台网页 / 管理 API 的监听地址。
+//   http.ssl.* HTTPS 默认开启(单向 TLS, 只加密不认证客户端); 证书路径相对配置文件目录。
+//              要跑起来必须先备好 certs/{server.crt,server.key}; 缺文件时 server 直接启动失败,
+//              不会退回明文。客户端证书(mTLS)已于 2026-11-14 移除, 应用层鉴权(登录/token)后续补,
+//              在那之前只绑 127.0.0.1, 对外开放必须靠网络隔离。
 //   agents[]   被管理的一系列 agent_cli(各作为一个子进程拉起并监管)。
 //   内网穿透不在本进程内: 需要时用独立的 jzfrps / jzfrpc 进程。
 // ===========================================================================
@@ -41,11 +42,9 @@ static const char *kDefaultConfigJson = R"json({
         "bind":   "127.0.0.1",
         "port":   8088,
         "ssl": {
-            "enabled":           true,
-            "certFile":          "certs/server.crt",
-            "keyFile":           "certs/server.key",
-            "caFile":            "certs/ca.crt",
-            "requireClientCert": true
+            "enabled":  true,
+            "certFile": "certs/server.crt",
+            "keyFile":  "certs/server.key"
         }
     },
     "hub": {
@@ -208,20 +207,17 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
     readString(root, "http", "bind", "httpBind", config.http.bind);
     readInt(root, "http", "port", "httpPort", config.http.port);
 
-    // http.ssl: HTTPS(默认开) + 客户端证书校验(默认开)。证书路径相对配置文件目录。
+    // http.ssl: HTTPS(默认开, 单向 TLS)。证书路径相对配置文件目录。
+    //   ssl.caFile / ssl.requireClientCert 是旧的双向认证字段, 已于 2026-11-14 移除;
+    //   老配置里留着它们也不报错, 只是不再生效(应用层鉴权 token 待接入)。
     readBool(root, "http", "ssl.enabled", "httpSslEnabled", config.http.sslEnabled);
     readString(root, "http", "ssl.certFile", "httpSslCert", config.http.certFile);
     readString(root, "http", "ssl.keyFile", "httpSslKey", config.http.keyFile);
-    readString(root, "http", "ssl.caFile", "httpSslCa", config.http.caFile);
-    readBool(root, "http", "ssl.requireClientCert", "httpSslRequireClientCert",
-             config.http.requireClientCert);
 
     if (config.http.certFile.empty())
         config.http.certFile = "certs/server.crt";
     if (config.http.keyFile.empty())
         config.http.keyFile = "certs/server.key";
-    if (config.http.caFile.empty())
-        config.http.caFile = "certs/ca.crt";
 
     const string cfgDir = dirName(path);
 
@@ -231,7 +227,6 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
 
     config.http.certFile = resolvePath(cfgDir, config.http.certFile);
     config.http.keyFile = resolvePath(cfgDir, config.http.keyFile);
-    config.http.caFile = resolvePath(cfgDir, config.http.caFile);
 
     // hub: 控制面(JZNet), agent_cli 出站连这里 —— 这才是"管远端 cli"的通道,
     //      http.* 只是给人看的网页/API, 两者是两个端口。
@@ -304,23 +299,19 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
     fprintf(stderr, "配置文件: %s\n", configPath.c_str());
     fprintf(stderr, "  角色      agent_cli 管理服务器(控制面 + 后台网页 + agent 监管)\n");
 
-    // http 网页 / API(鉴权 = mTLS 客户端证书, 没有 token)
+    // http 网页 / API(HTTPS 只加密; 应用层鉴权待接入 token)
     fprintf(stderr, "  网页      %s://%s:%d\n",
             config.http.sslEnabled ? "https" : "http", config.http.bind.c_str(),
             config.http.port);
     if (config.http.sslEnabled)
     {
-        fprintf(stderr, "    TLS     证书=%s[%s]  私钥=%s[%s]\n",
+        fprintf(stderr, "    TLS     证书=%s[%s]  私钥=%s[%s]  单向(不认证客户端)\n",
                 config.http.certFile.c_str(), JZFileInfo::exists(config.http.certFile) ? "在" : "缺失",
                 config.http.keyFile.c_str(), JZFileInfo::exists(config.http.keyFile) ? "在" : "缺失");
-        if (config.http.requireClientCert)
-            fprintf(stderr, "    客户端证书校验=开  CA=%s[%s]\n", config.http.caFile.c_str(),
-                    JZFileInfo::exists(config.http.caFile) ? "在" : "缺失");
-        else
-            fprintf(stderr, "    客户端证书校验=关(单向 TLS)\n");
     }
     else
         fprintf(stderr, "    ⚠ HTTPS 已关闭: 明文 HTTP(仅限完全可信的隔离网络)\n");
+    fprintf(stderr, "    鉴权    未接入(token 待做); 客户端证书 mTLS 已移除\n");
 
     // 控制面(agent_cli 出站连这里)
     fprintf(stderr, "  控制面    hub(JZNet) %s:%d  token=%s\n", config.hub.bind.c_str(),

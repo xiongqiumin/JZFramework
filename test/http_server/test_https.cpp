@@ -408,9 +408,8 @@ public:
     JZTimer *m_exitTimer;
 };
 
-int main()
+int test_https()
 {
-    JZApplication a;
     LOG("########## TLS 证书测试 (HTTPS + WSS + MQTTS) ##########");
 
     g_active = true;

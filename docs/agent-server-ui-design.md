@@ -7,8 +7,8 @@
 > `docs/web-ui-design.md` 是 jz-ui 视觉层与样式迁移；**本文只管管理台页面的交互行为与数据流**，
 > 不重复协议字段定义和 CSS 规范。
 >
-> 鉴权在传输层（默认 HTTPS + 强制客户端证书），UI 不承载登录、不输入 token；
-> 本地联调可 `http.ssl.enabled=false` 退回明文 HTTP（仅限环回 / 隔离网络）。
+> 鉴权尚未接入：客户端证书（mTLS）已于 2026-11-14 移除，应用层 token 待做；UI 目前不承载登录、
+> 不输入 token。默认只绑 `127.0.0.1`，本地联调可 `http.ssl.enabled=false` 退回明文 HTTP。
 
 ---
 

@@ -59,12 +59,13 @@ void JZTcpServer::close()
     }
 }
 
-JZNetObject* JZTcpServer::onAccept(uint64_t conn)
+JZNetObject* JZTcpServer::onAccept(uint64_t conn, const JZNetAddr &addr)
 {
     JZTcpSocket* socket = new JZTcpSocket(this);
     socket->m_conn = conn;
     socket->m_state = ConnectedState;
     socket->moveToThread(this->thread());
+    socket->setConnAddr(addr);      // 先写地址: 下面 sigAccept 的回调里就要能读到
 
     JZObjectPointer socket_ptr = socket->guardPointer();
     auto notify = [this, socket_ptr]

@@ -557,12 +557,11 @@ private:
     LastResult m_contextRes;
 };
 
-int main(int argc, char *argv[])
+int test_code_tools(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
 
-    JZApplication app;
     CodeToolTest test;
     return test.run();
 }

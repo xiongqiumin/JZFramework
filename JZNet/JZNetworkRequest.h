@@ -34,6 +34,8 @@ public:
 
     void setHeader(KnownHeaders header, const std::string &headerValue);
     void setRawHeader(const std::string &headerName, const std::string &headerValue);
+    // 删除原始头(名字大小写不敏感); 不存在时无操作
+    void removeRawHeader(const std::string &headerName);
     const std::map<std::string, std::string> &rawHeaders() const;
 
     // absoluteUri=true 时请求行使用完整 URL（含 scheme://host:port），用于经由 HTTP 代理转发；

@@ -243,9 +243,8 @@ public:
     JZTimer *m_timer = nullptr;
 };
 
-int main()
+int test_https_mtls()
 {
-    JZApplication app;
     LOG("########## HTTPS 双向认证(mTLS): 服务端校验客户端证书 ##########");
 
     struct CaseDesc

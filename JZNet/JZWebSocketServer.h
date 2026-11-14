@@ -27,7 +27,7 @@ jz_signals:
     JZSigVoid sigAccept;
 
 protected:    
-    virtual JZNetObject* onAccept(uint64_t conn); 
+    virtual JZNetObject* onAccept(uint64_t conn, const JZNetAddr &addr); 
     virtual void onNetEvent(JZNetResEvent*event) override;
 
     std::deque<JZWebSocket*> m_pendingConnections;

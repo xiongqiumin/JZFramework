@@ -4,6 +4,7 @@ add_executable(test_net net_test_common.cpp
 	test_http.cpp
 	test_mqtt.cpp
 	test_net.cpp
+	test_net_addr.cpp
 	test_netServer.cpp
 	test_net_crypto.cpp
 	test_tcp.cpp
@@ -15,6 +16,9 @@ target_link_libraries(test_net JZFramework)
 # test_tcp_bench/test_mg* 为基准程序、test_proxy/test_net_compress 依赖本地 python 服务, 不注册
 add_test(NAME net.test_net COMMAND test_net)
 set_tests_properties(net.test_net PROPERTIES TIMEOUT 600 LABELS "slow")
+
+# 连接地址时机(accept 的 sigAccept / 客户端的 sigConnected 里都能读到对端地址)
+# 已并入 test_net 的步骤(test_net_addr.cpp -> test_netAddr())，不再单开目标。
 
 # TCP client 上下行压测 (独立程序, 配合 iperf3/nc 等 Linux 压测工具)
 add_executable(test_tcp_bench test_tcp_bench.cpp)

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>对话 · JZAgent</title>
+<link rel="stylesheet" href="/ui/tokens.css?v=2">
+<link rel="stylesheet" href="/ui/base.css?v=2">
+<link rel="stylesheet" href="/ui/components.css?v=2">
+<link rel="stylesheet" href="/vendor/atom-one-dark.min.css?v=1">
+<link rel="stylesheet" href="/app.css?v=54">
+<link rel="stylesheet" href="/mobile.css?v=4">
+</head>
+<body data-page="agent" class="is-mobile">
+<div class="ag-app" id="app">
+
+  <!-- ============ L1: 主机 / 工作区选择（落地页，全屏覆盖层） ============ -->
+  <section class="m-hosts" id="hostsScreen" aria-label="主机">
+    <header class="m-hosts__hd">
+      <div class="m-hosts__title">主机</div>
+      <span class="m-hosts__sp"></span>
+      <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnHostsRefresh" type="button"
+        aria-label="刷新" title="刷新">↻</button>
+      <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnHostsMore" type="button"
+        aria-label="设置" title="设置">⋯</button>
+    </header>
+    <div class="hosts-body ag-side__scroll" id="hostsList"><div class="jz-empty">加载中…</div></div>
+  </section>
+
+  <!-- ============ L2: 工作区（会话 / 文件 / 历史） ============ -->
+  <main class="ag-main" id="workScreen">
+    <header class="cs-head">
+      <button class="jz-btn jz-btn--sm jz-btn--ghost m-back" id="btnBackHosts" type="button"
+        aria-label="返回主机" title="返回主机">‹</button>
+      <div class="cs-head__main">
+        <div class="cs-head__title" id="headTitle">agent</div>
+        <div class="cs-head__sub" id="headSub">加载中…</div>
+      </div>
+      <div class="cs-head__acts" id="headActs"></div>
+      <button class="jz-btn jz-btn--sm jz-btn--ghost m-more" id="btnMore" type="button"
+        aria-label="设置">⋯</button>
+    </header>
+
+    <div class="conn-bar hidden" id="connBar" role="status" aria-live="polite">
+      <span class="conn-bar__dot"></span>
+      <span id="connText">连接断开，正在重连…</span>
+    </div>
+
+    <!-- 工作区内三段切换(同级切换, 不压返回栈) -->
+    <nav class="m-seg" id="mSeg" aria-label="工作区视图">
+      <button class="m-seg__btn is-on" type="button" data-ws="chat">会话</button>
+      <button class="m-seg__btn" type="button" data-ws="files">文件</button>
+      <button class="m-seg__btn" type="button" data-ws="history">历史</button>
+    </nav>
+
+    <!-- 桌面的 tab 栏: 手机隐藏, 但 ED/renderTabs 仍用这个节点 -->
+    <nav class="tabs ag-tabs" id="tabs"></nav>
+
+    <section class="pane" data-pane="chat">
+      <div class="jz-chat cs-thread" id="thread"><div class="jz-empty">加载中…</div></div>
+
+      <details class="ag-term hidden" id="termBox">
+        <summary>终端（后台命令）<span class="muted" id="termHint"></span></summary>
+        <div class="ag-term__body" id="termList"></div>
+      </details>
+
+      <div class="jz-composer cs-composer">
+        <div class="cs-bar">
+          <span class="cs-chip hidden" id="btnVerify" title="点「⋯」修改验证命令"></span>
+          <button class="jz-btn jz-btn--sm jz-btn--ghost cs-imgbtn" id="btnImg" type="button"
+            title="添加图片（也可以直接粘贴截图）">🖼</button>
+          <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnSettings" type="button">⚙ 设置</button>
+          <span class="cs-bar__sp"></span>
+        </div>
+        <div class="jz-composer__box">
+          <div class="cs-imgs hidden" id="imgList"></div>
+          <textarea id="fPrompt" class="jz-textarea cs-ta" rows="2" enterkeyhint="send"
+            placeholder="说点什么…"></textarea>
+          <div class="jz-composer__actions">
+            <span class="cs-kbd">点发送按钮</span>
+            <button id="btnSend" class="jz-btn jz-btn--primary jz-btn--sm" type="button">发送</button>
+          </div>
+        </div>
+        <input type="file" id="fImg" accept="image/*" multiple hidden>
+        <div class="jz-composer__hint" id="msg"></div>
+      </div>
+    </section>
+
+    <section class="pane hidden" data-pane="files">
+      <div class="m-pane__bar">
+        <span class="m-pane__path" id="mFilesPath">工作区文件</span>
+        <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnFsRefresh" type="button" title="刷新">↻</button>
+      </div>
+      <div class="fs-tree ag-side__scroll" id="fsTree"><div class="jz-empty">加载中…</div></div>
+    </section>
+
+    <section class="pane hidden" data-pane="history">
+      <div class="ag-side__new">
+        <button class="jz-btn jz-btn--primary ag-new" id="btnNewTask" type="button">＋ 新建任务</button>
+      </div>
+      <div class="ag-side__scroll" id="taskList"><div class="jz-empty">加载中…</div></div>
+    </section>
+
+    <section class="pane hidden" data-pane="preview">
+      <div class="prev-bar">
+        <button class="jz-btn jz-btn--sm jz-btn--ghost prev-back" id="btnBackToDir" type="button"
+          aria-label="返回文件" title="返回文件">‹</button>
+        <span class="prev-bar__path" id="prevPath">-</span>
+        <span class="prev-bar__meta" id="prevMeta"></span>
+        <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnLineNums" type="button"
+          title="显示/隐藏行号">行号</button>
+        <button class="jz-btn jz-btn--sm jz-btn--ghost" id="btnPrevCopy" type="button"
+          title="复制内容" disabled>复制</button>
+      </div>
+      <pre class="prev-body" id="prevBody"></pre>
+    </section>
+  </main>
+
+  <!-- 桌面结构保留 id 契约(隐藏): setSideView / initSplitter / on() 都会查这些节点 -->
+  <nav class="ag-rail" id="rail">
+    <button class="rail-btn is-on" type="button" data-view="files" title="文件">🗂</button>
+    <button class="rail-btn" type="button" data-view="hosts" title="主机">🖥</button>
+    <button class="rail-btn" type="button" data-view="chats" title="任务">💬</button>
+    <span class="rail-sp"></span>
+    <button class="rail-btn" type="button" id="railTasks" title="全部任务">📋</button>
+    <button class="rail-btn" type="button" id="railSettings" title="设置">⚙</button>
+  </nav>
+  <aside class="ag-side" id="agSide">
+    <div class="ag-side__hd">
+      <button class="side-toggle" id="btnSideCollapse" type="button" title="折叠">⌄</button>
+      <div class="ag-side__brand">
+        <div class="ag-side__title" id="sideTitle">文件</div>
+        <div class="ag-side__sub" id="sideSub">加载中…</div>
+      </div>
+      <div class="side-acts" id="sideActs">
+        <button class="side-icon" id="btnFsNewFile" type="button" disabled>＋</button>
+        <button class="side-icon" id="btnFsNewDir" type="button" disabled>📁</button>
+        <button class="side-icon" id="btnFsCollapse" type="button">⌄</button>
+      </div>
+      <button class="jz-btn jz-btn--sm jz-btn--ghost ag-side__x" id="btnSideClose" type="button">×</button>
+    </div>
+    <div class="side-view" data-view="files" id="viewFiles"></div>
+    <div class="side-view hidden" data-view="hosts" id="viewHosts"></div>
+    <div class="side-view hidden" data-view="chats" id="viewChats"></div>
+  </aside>
+  <div class="ag-splitter" id="agSplitter"></div>
+</div>
+<div class="ag-scrim" id="scrim"></div>
+
+<dialog class="jz-dialog" id="dlgSettings">
+  <div class="jz-dialog__hd">
+    <h2 class="jz-dialog__title">设置</h2>
+    <button class="jz-dialog__x" id="btnSetClose" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="jz-dialog__bd">
+    <div class="jz-field">
+      <label for="fVerify">验证命令</label>
+      <input id="fVerify" class="jz-input" placeholder="例如 python verify.py（留空 = 跑完即通过）">
+    </div>
+    <div class="jz-field" style="margin-top:12px">
+      <label for="fToken">访问令牌（agent_cli 配置了 http.token 时填）</label>
+      <input id="fToken" class="jz-input" placeholder="留空 = 不带 token">
+    </div>
+    <p class="cs-note">退出码 0 视为通过；失败时把输出交回 agent 继续改。保存在本机浏览器里。</p>
+  </div>
+  <div class="jz-dialog__ft">
+    <button class="jz-btn jz-btn--primary" id="btnSetSave" type="button">保存</button>
+  </div>
+</dialog>
+
+<dialog class="dirpick" id="dlgDir">
+  <div class="dpick__hd">
+    <input id="fDirPath" class="dpick__input" spellcheck="false" autocomplete="off"
+      placeholder="输入路径或名字，例如 C:/work 或 work">
+    <button class="jz-btn jz-btn--primary" id="btnDirUse" type="button">打开</button>
+  </div>
+  <div class="dpick__list" id="dirList"></div>
+</dialog>
+
+<div class="ctx-menu hidden" id="ctxMenu" role="menu">
+  <button type="button" data-act="new-dir" role="menuitem">新建文件夹</button>
+  <button type="button" data-act="new-file" role="menuitem">新建文件</button>
+  <span class="ctx-menu__sep" data-sep role="separator"></span>
+  <button type="button" data-act="rename" role="menuitem">重命名<span class="ctx-menu__kbd">F2</span></button>
+  <button type="button" data-act="delete" class="ctx-menu__danger" role="menuitem">删除</button>
+  <span class="ctx-menu__sep" role="separator"></span>
+  <button type="button" data-act="copy" role="menuitem">复制路径</button>
+  <button type="button" data-act="copy-rel" role="menuitem">复制相对路径</button>
+  <button type="button" data-act="copy-name" role="menuitem">复制名称</button>
+</div>
+
+<dialog class="jz-dialog" id="dlgNew">
+  <div class="jz-dialog__hd">
+    <h2 class="jz-dialog__title" id="dlgNewTitle">新建文件夹</h2>
+    <button class="jz-dialog__x" id="btnNewClose" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="jz-dialog__bd">
+    <div class="jz-field">
+      <label for="fNewName" id="lblNewName">名字</label>
+      <input id="fNewName" class="jz-input" spellcheck="false" autocomplete="off">
+    </div>
+    <p class="cs-note" id="newNote"></p>
+  </div>
+  <div class="jz-dialog__ft">
+    <button class="jz-btn" id="btnNewCancel" type="button">取消</button>
+    <button class="jz-btn jz-btn--primary" id="btnNewOk" type="button">创建</button>
+  </div>
+</dialog>
+
+<script src="/ui/jz-ui.js?v=2"></script>
+<script src="/vendor/highlight.min.js?v=1"></script>
+<script src="/app.js?v=80"></script>
+</body>
+</html>

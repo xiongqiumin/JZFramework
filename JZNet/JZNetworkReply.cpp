@@ -95,6 +95,11 @@ std::string JZNetworkReply::header(const std::string &key) const
     return (it != m_headers.end()) ? it->second : std::string();
 }
 
+const std::vector<std::string>& JZNetworkReply::setCookies() const
+{
+    return m_setCookies;
+}
+
 JZByteArray JZNetworkReply::readAll()
 {
     JZByteArray ret = m_body;

@@ -70,7 +70,7 @@ void JZMqttServer::close()
     }
 }
 
-JZNetObject* JZMqttServer::onAccept(uint64_t conn)
+JZNetObject* JZMqttServer::onAccept(uint64_t conn, const JZNetAddr &addr)
 {
     JZMqttClient* socket = new JZMqttClient(this);
     socket->m_conn = conn;
@@ -78,6 +78,7 @@ JZNetObject* JZMqttServer::onAccept(uint64_t conn)
     socket->m_connType = JZSocketInfo::MqttClientServer;
     socket->m_server = this;
     socket->moveToThread(this->thread());
+    socket->setConnAddr(addr);      // 先写地址: 后续 CONNECT/收发回调里要能读到
     connect(&socket->sigDisconnected, this, &JZMqttServer::onClientDisconnect);
 
     JZObjectPointer socket_ptr = socket->guardPointer();

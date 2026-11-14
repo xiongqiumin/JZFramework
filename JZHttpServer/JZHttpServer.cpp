@@ -11,9 +11,32 @@ using namespace std;
 // 判断 HTTP 响应头是否"自定界": 含 Content-Length 或 Transfer-Encoding: chunked 时为 true。
 // 不自定界的响应(如 SSE 流式, 无 Content-Length)在 HTTP/1.1 keep-alive 下客户端无法判断
 // 响应何时结束, 只能靠关闭连接来界定 —— 因此 sendFinished() 应自动关闭连接。
+// 来源地址: 前面挂反向代理(nginx)时, 客户端 IP 在 X-Forwarded-For 里, 多级代理是逗号分隔的
+// 列表, 取最左边一段(= 最初的客户端)。没有这个头就退回 TCP 对端地址。
+static std::string clientAddrOf(const JZHttpRequest &request, const std::string &peerIp)
+{
+    std::string xff = request.header("X-Forwarded-For");
+    if (!xff.empty())
+    {
+        size_t comma = xff.find(',');
+        std::string first = str_trimmed((comma == std::string::npos) ? xff : xff.substr(0, comma));
+        if (!first.empty())
+            return first;
+    }
+    return peerIp;
+}
+
 static bool headIsDelimited(const std::string &head)
 {
-    std::string h = str_toLower(head);
+    // 只做 ASCII 小写: 头名本来就是 ASCII; 不能走 JZString(UTF-16) —— 一旦头里混进
+    // 非 UTF-8 字节(压缩体/二进制 body)整串转换会失败返回空, 于是"有 Content-Length"
+    // 被判成"不自定界", 响应后连接被关, 下一个 keep-alive 请求就 ConnectError。
+    std::string h = head;
+    for (size_t i = 0; i < h.size(); i++)
+    {
+        if (h[i] >= 'A' && h[i] <= 'Z')
+            h[i] = (char)(h[i] - 'A' + 'a');
+    }
     if (h.find("content-length:") != std::string::npos)
         return true;
     size_t te = h.find("transfer-encoding:");
@@ -106,7 +129,9 @@ void JZHttpServerClient::write(const char *data, int size, bool is_finish)
         auto pos = m_headAccum.find("\r\n\r\n");
         if (pos != std::string::npos)
         {
-            m_responseDelimited = headIsDelimited(m_headAccum);
+            // 只把头(到 \r\n\r\n 为止)拿去判定: m_headAccum 累积的是整块数据,
+            // 后面可能紧跟二进制 body(压缩响应), 整块一起转小写会失败
+            m_responseDelimited = headIsDelimited(m_headAccum.substr(0, pos + 4));
             m_responseStarted = true;
             m_headAccum.clear();
         }
@@ -173,12 +198,13 @@ void JZHttpServer::addRoute(const std::string& path, JZHttpHandler* handler)
     m_route.addRoute(path, handler);
 }
 
-JZNetObject* JZHttpServer::onAccept(uint64_t conn)
+JZNetObject* JZHttpServer::onAccept(uint64_t conn, const JZNetAddr &addr)
 {
     JZHttpServerClient* client = new JZHttpServerClient(this);
     client->m_conn = conn;
     client->m_connType = JZSocketInfo::HttpClientServer;
     client->moveToThread(this->thread());
+    client->setConnAddr(addr);      // 请求对象/JS 侧 req.remoteAddress 都靠它
     return client;
 }
 
@@ -244,6 +270,9 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
         JZByteArray body(hm.body.buf, hm.body.len);
         request.setBody(body);
     }
+
+    // 来源地址(直连 = TCP 对端; 经 nginx 等反向代理 = X-Forwarded-For 第一段)
+    request.setRemoteAddr(clientAddrOf(request, client->peerIp()));
 
     JZHttpHandler* handler = nullptr;
     std::map<std::string, std::string> params;

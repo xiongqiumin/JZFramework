@@ -50,8 +50,10 @@ static string pad(const string &tail)
     return head + "\n\n" + tail;
 }
 
-int main()
+int test_loopdetect(int argc, char *argv[])
 {
+    (void)argc;
+    (void)argv;
     printf("== JZToolLoopDetector ==\n\n");
 
     // ---- 1) 签名归一化 ----

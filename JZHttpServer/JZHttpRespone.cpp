@@ -123,17 +123,50 @@ const std::string& JZHttpRespone::header(const std::string& key) const
 
 void JZHttpRespone::setHeader(const std::string& key, const std::string& value)
 {
-    m_headers[str_toLower(key)] = value;
+    std::string k = str_toLower(key);
+    // Set-Cookie 是唯一允许多次出现的响应头, map 存不下多条 —— 走 cookie 列表追加。
+    // m_headers 里同时留一份(只有最后一条), 让 header("Set-Cookie") 仍能读回。
+    if (k == "set-cookie")
+    {
+        m_cookieLines.push_back(value);
+        m_headers[k] = value;
+        return;
+    }
+    m_headers[k] = value;
 }
 
 void JZHttpRespone::removeHeader(const std::string& key)
 {
-    m_headers.erase(str_toLower(key));
+    std::string k = str_toLower(key);
+    if (k == "set-cookie")
+        m_cookieLines.clear();
+    m_headers.erase(k);
 }
 
 const std::map<std::string, std::string>& JZHttpRespone::headers() const
 {
     return m_headers;
+}
+
+void JZHttpRespone::setCookie(const JZHttpCookie& cookie)
+{
+    m_cookieLines.push_back(cookie.toHeaderValue());
+}
+
+void JZHttpRespone::setCookie(const std::string& name, const std::string& value)
+{
+    setCookie(JZHttpCookie(name, value));
+}
+
+void JZHttpRespone::clearCookies()
+{
+    m_cookieLines.clear();
+    m_headers.erase("set-cookie");
+}
+
+const std::vector<std::string>& JZHttpRespone::cookieLines() const
+{
+    return m_cookieLines;
 }
 
 const JZByteArray& JZHttpRespone::body() const
@@ -198,7 +231,14 @@ JZByteArray JZHttpRespone::toHeadByteArray(int contentLength, bool includeConten
 
     for (const auto& pair : m_headers)
     {
+        // Set-Cookie 由 m_cookieLines 逐条输出(可能多条), 这里跳过以免与它重复
+        if (pair.first == "set-cookie")
+            continue;
         oss << pair.first << ": " << pair.second << "\r\n";
+    }
+    for (const auto& line : m_cookieLines)
+    {
+        oss << "Set-Cookie: " << line << "\r\n";
     }
 
     if (includeContentLength)

@@ -37,8 +37,13 @@ public:
     void setQuery(const std::string& query);
 
     const std::string& header(const std::string& key) const;
+    // 设置请求头。key 为 Cookie 时会同步解析到 cookie()/cookies()（多次设置按累加处理）。
     void setHeader(const std::string& key, const std::string& value);
     const std::map<std::string, std::string>& headers() const;
+
+    // 解析后的 Cookie(键为 cookie 名, 值已去掉两端双引号)。没有 Cookie 头时为空表。
+    const std::string& cookie(const std::string& name) const;
+    const std::map<std::string, std::string>& cookies() const;
 
     const std::string& param(const std::string& key) const;
     void setParam(const std::string& key, const std::string& value);
@@ -64,6 +69,7 @@ private:
     std::string m_methodString;
     std::string m_path;
     std::map<std::string, std::string> m_headers;
+    std::map<std::string, std::string> m_cookies;
     std::map<std::string, std::string> m_params;
     std::map<std::string, std::string> m_queryParams;
     JZByteArray m_body;

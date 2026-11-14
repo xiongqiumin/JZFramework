@@ -53,11 +53,9 @@ static void dumpNode(const JZUiNode& node, int depth)
         dumpNode(c, depth + 1);
 }
 
-int main()
+int test_jsui(int argc, char *argv[])
 {
     setbuf(stdout, NULL);   // 测试输出不缓冲: 崩溃/断言时也能看到已跑过的用例
-
-    JZApplication a;
 
     testContainerGetters();   // 第 17 节: 容器 getter(引擎侧回吐控件对象)
 

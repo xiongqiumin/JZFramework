@@ -1,4 +1,5 @@
 #include "JZNetworkRequest.h"
+#include "JZStd.h"
 
 //JZNetworkRequest
 JZNetworkRequest::JZNetworkRequest()
@@ -28,6 +29,18 @@ void JZNetworkRequest::setUrl(const JZUrl& url)
 void JZNetworkRequest::setRawHeader(const std::string& headerName, const std::string& headerValue)
 {
     m_headers[headerName] = headerValue;
+}
+
+void JZNetworkRequest::removeRawHeader(const std::string& headerName)
+{
+    std::string lower = str_toLower(headerName);
+    for (auto it = m_headers.begin(); it != m_headers.end();)
+    {
+        if (str_toLower(it->first) == lower)
+            it = m_headers.erase(it);
+        else
+            ++it;
+    }
 }
 
 const std::map<std::string, std::string>& JZNetworkRequest::rawHeaders() const

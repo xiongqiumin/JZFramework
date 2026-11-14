@@ -115,7 +115,7 @@ public:
 
         LOG("[test] step0: GET /");
         m_step = 0;
-        fetch("/");   // expect "root"
+        fetch("/", 200, "root");
     }
 
     void fetch(const string &path, int expectCode = 200, const string &expectBody = "",
@@ -153,25 +153,25 @@ public:
         {
             LOG("[test] / -> root OK, step1: GET /user/42");
             m_step = 1;
-            fetch("/user/42");
+            fetch("/user/42", 200, "user:42");
         }
         else if (m_step == 1)
         {
             LOG("[test] /user/42 OK, step2: GET /user/42/posts");
             m_step = 2;
-            fetch("/user/42/posts");
+            fetch("/user/42/posts", 200, "post:42");
         }
         else if (m_step == 2)
         {
             LOG("[test] /user/42/posts OK, step3: GET /search?q=hello");
             m_step = 3;
-            fetch("/search?q=hello");
+            fetch("/search?q=hello", 200, "hello");
         }
         else if (m_step == 3)
         {
             LOG("[test] /search?q=hello OK, step4: POST /echo");
             m_step = 4;
-            fetch("/echo", 200, "payload123", "POST", JZByteArray("payload123", 11));
+            fetch("/echo", 200, "payload123", "POST", str_toUtf8("payload123"));
         }
         else if (m_step == 4)
         {
@@ -198,9 +198,8 @@ public:
     int m_step = 0;
 };
 
-int main()
+int test_routing()
 {
-    JZApplication a;
     LOG("########## HTTP 路由集成测试 ##########");
     JZEventLoop loop;
     RoutingTest test(&loop);

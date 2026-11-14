@@ -40,10 +40,9 @@ static void check(const string& name, bool ok)
 
 #define STEP(x) do { fprintf(stderr, "[step] %s\n", x); fflush(stderr); } while (0)
 
-int main()
+int test_jsmodbus(int argc, char *argv[])
 {
     STEP("enter main");
-    JZApplication a;
     JZEventLoop loop;
     jzco_init();
 

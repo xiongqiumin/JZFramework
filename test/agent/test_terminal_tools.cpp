@@ -292,7 +292,7 @@ private:
     LastResult m_cancel2Res;
 };
 
-int main(int argc, char *argv[])
+int test_terminal_tools(int argc, char *argv[])
 {
     (void)argc;
     (void)argv;
@@ -301,8 +301,8 @@ int main(int argc, char *argv[])
     setvbuf(stdout, nullptr, _IONBF, 0);
     printf("[step] main\n");
 
-    JZApplication app;
-    printf("[step] app ready, dir=%s\n", app.applicationDirPath().c_str());
+
+    printf("[step] app ready, dir=%s\n", jzApp->applicationDirPath().c_str());
 
     TerminalToolTest test;
     printf("[step] terminal tool test ready\n");

@@ -1,5 +1,6 @@
 #ifndef JZ_NEWWORK_REPLY_H_
 #define JZ_NEWWORK_REPLY_H_
+#include <vector>
 #include "JZNetObject.h"
 #include "JZByteArray.h"
 #include "JZNetworkRequest.h"
@@ -58,6 +59,10 @@ public:
     const std::map<std::string, std::string>& headers() const;  // 解析后的头（key 已小写）
     std::string header(const std::string &key) const;            // 按 key 取单个头（大小写不敏感）
 
+    // 响应里的全部 Set-Cookie 头值（按出现顺序）。headers() 是 map，同名头只会留最后一条，
+    // 想逐条处理 cookie 时用这个。
+    const std::vector<std::string>& setCookies() const;
+
     // 重定向支持
     void setFollowRedirects(bool enable);
     bool isFollowRedirects() const;
@@ -91,8 +96,10 @@ protected:
     std::string m_statusText;
     std::string m_head;           // 原始响应头（head）
     std::map<std::string, std::string> m_headers;  // 解析后的头（key 已小写）
+    std::vector<std::string> m_setCookies;         // 全部 Set-Cookie 头值（同名头在 map 里会丢）
 
     JZNetworkRequest m_request;
+    bool m_cookieAutoInjected = false;   // 本次请求的 Cookie 头是 cookie jar 自动注入的(重定向时需按新域重算)
     JZNetworkConnect *m_conn;
     int m_timeOut;
     int64_t m_readLimitBytesPerSec = 0;   // 下行接收限速(字节/秒), 断开后重置为0

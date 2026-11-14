@@ -24,7 +24,7 @@ jz_signals:
     JZSigVoid sigAccept;    
 
 protected:
-    virtual JZNetObject *onAccept(uint64_t conn) override;
+    virtual JZNetObject *onAccept(uint64_t conn, const JZNetAddr &addr) override;
     virtual void onNetEvent(JZNetResEvent* event) override;
 
     int m_port;

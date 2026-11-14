@@ -5,6 +5,7 @@
 #include "JZByteArray.h"
 #include "JZJSBind.h"
 #include "JZLog.h"      // LOG_W: Web 全局包没装上时的提示(见 loadWebGlobalModules)
+#include "JZStd.h"      // str_toLower(end() 里判断 Set-Cookie)
 
 // 注: 早先这里有个自写的 jsSameValue(直接比 ptr + tag)。现在 off() 里统一用 quickjs 的
 // JS_IsStrictEqual —— 语义等价(同一对象 / 同一原始值), 且不必依赖 JSValue 的内部布局。
@@ -822,8 +823,9 @@ JZJSHttpResponse::~JZJSHttpResponse()
         end(JS_UNDEFINED);
 }
 
-void JZJSHttpResponse::setHeader(const std::string& name, const std::string& value)
+void JZJSHttpResponse::setHeader(const std::string& name, const Json::Value& value)
 {
+    // 原样保存: 值可能是字符串/数字/数组(string[]), 由 end() 按 HTTP 语义展开
     headers[name] = value;
 }
 
@@ -833,7 +835,7 @@ void JZJSHttpResponse::writeHead(int status, const Json::Value& hs)
     if (!hs.isObject())
         return;
     for (auto it = hs.begin(); it != hs.end(); ++it)
-        headers[it.key().asString()] = it->asString();
+        headers[it.key().asString()] = *it;
 }
 
 void JZJSHttpResponse::write(JSValue data)
@@ -877,7 +879,33 @@ void JZJSHttpResponse::end(JSValue data)
     JZHttpRespone resp;
     resp.setStatusCode(statusCode);
     for (auto it = headers.begin(); it != headers.end(); ++it)
-        resp.setHeader(it.key().asString(), it->asString());
+    {
+        const std::string key = it.key().asString();
+        if (it->isArray())
+        {
+            // 数组头(对齐 Node): Set-Cookie 允许多条, 逐条输出; 其它头用 ", " 合并
+            if (str_toLower(key) == "set-cookie")
+            {
+                for (Json::ArrayIndex i = 0; i < it->size(); ++i)
+                    resp.setHeader(key, (*it)[i].asString());
+            }
+            else
+            {
+                std::string joined;
+                for (Json::ArrayIndex i = 0; i < it->size(); ++i)
+                {
+                    if (!joined.empty())
+                        joined += ", ";
+                    joined += (*it)[i].asString();
+                }
+                resp.setHeader(key, joined);
+            }
+        }
+        else
+        {
+            resp.setHeader(key, it->asString());
+        }
+    }
     resp.setBody(body);
 
     JZHttpServerClient* c = client;
@@ -1078,9 +1106,18 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_socket.def("destroy", [](JZJSNetSocket* o) { o->destroy(); });
     bind_socket.def("on", [](JZJSNetSocket* o, const std::string& e, JSValue cb) { o->sink.on(e, cb); });
     bind_socket.def("off", [](JZJSNetSocket* o, const std::string& e, JSValue cb) { o->sink.off(e, cb); });
-    bind_socket.defProperty<std::string>("remoteAddress",
-                                         [](JZJSNetSocket* o) { return o->host; }, nullptr);
-    bind_socket.defProperty<int>("remotePort", [](JZJSNetSocket* o) { return o->port; }, nullptr);
+    // 对端地址: 优先用底层实际 IP(与 Node 的 socket.remoteAddress 一致),
+    // 连接尚未建立时退回调用方传进来的主机名(否则建连前读到空串)
+    bind_socket.defProperty<std::string>("remoteAddress", [](JZJSNetSocket* o) {
+        JZTcpSocket* s = o->liveSocket();
+        std::string ip = s ? s->peerIp() : std::string();
+        return ip.empty() ? o->host : ip;
+    }, nullptr);
+    bind_socket.defProperty<int>("remotePort", [](JZJSNetSocket* o) {
+        JZTcpSocket* s = o->liveSocket();
+        int port = s ? s->peerPort() : 0;
+        return port ? port : o->port;
+    }, nullptr);
     // 本端地址/端口: 交给底层实际值(open 时由 net 线程 getsockname 回填, 见 JZNetObject::localIp/localPort)
     bind_socket.defProperty<std::string>("localAddress", [](JZJSNetSocket* o) {
         JZTcpSocket* s = o->liveSocket();
@@ -1194,8 +1231,13 @@ void JZJSNetModule::initEngine(JZJSEngine* engine)
     bind_http_res.def("writeHead", [](JZJSHttpResponse* o, int status, const Json::Value& hs) {
         o->writeHead(status, hs);
     });
-    bind_http_res.def("setHeader", [](JZJSHttpResponse* o, const std::string& n, const std::string& v) {
-        o->setHeader(n, v);
+    // 第三个参数收原始 JSValue: 与 Node 一致, 值可以是 string / number / string[]。
+    // (不能写成 Json::Value 形参 —— 引擎只把纯对象映射成 jsonValue, 字符串/数组会被
+    //  参数校验拦成"需要类型any", 这里自己转一次)
+    bind_http_res.def("setHeader", [](JZJSHttpResponse* o, const std::string& n, JSValue v) {
+        if (!o->engine)
+            return;
+        o->setHeader(n, ::fromJSValue<Json::Value>(o->engine->context(), v));
     });
     bind_http_res.def("write", [](JZJSHttpResponse* o, JSValue data) { o->write(data); });
     bind_http_res.def("end", [](JZJSHttpResponse* o, JSValue data) { o->end(data); });

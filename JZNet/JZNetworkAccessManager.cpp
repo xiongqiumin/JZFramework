@@ -10,6 +10,7 @@
 #endif
 
 #include <cctype>
+#include <ctime>
 
 //from mongoose
 static bool is_hex_digit(int c) {
@@ -579,6 +580,7 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
             // 解析响应头：status / 头表 / Location（三种收尾方式共用，只做一次）
             m_reply->m_head.assign(hm.head.buf, hm.head.len);
             m_reply->m_headers.clear();
+            m_reply->m_setCookies.clear();
             for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++)
             {
                 struct mg_str *name = &hm.headers[i].name;
@@ -586,7 +588,14 @@ void JZNetworkConnect::onNetEvent(JZNetResEvent* event)
                 std::string key = str_toLower(std::string(name->buf, name->len));
                 std::string val = str_trimmed(std::string(hm.headers[i].value.buf, hm.headers[i].value.len));
                 m_reply->m_headers[key] = val;
+                // 同名头在 map 里会被覆盖, 但 Set-Cookie 允许多条, 单独收集全量
+                if (key == "set-cookie")
+                    m_reply->m_setCookies.push_back(val);
             }
+
+            // 自动存档 cookie(浏览器语义): 本响应的 Set-Cookie 之后同域同路径请求会自动带上
+            if (m_manager && m_manager->cookieJarEnabled())
+                m_manager->saveCookies(m_reply->m_request.url(), m_reply->m_setCookies);
 
             // 解析服务器响应 Connection 头: 得到响应侧是否要求关闭(m_respClose)。
             // 最终是否复用由 shouldCloseConnection() 综合请求意图(m_keepAlive)与响应头决定。
@@ -927,6 +936,77 @@ std::string JZNetworkAccessManager::hostKey(const JZNetworkRequest& request) con
     return key;
 }
 
+// ---- Cookie(客户端自动存取) ----
+// cookie 的过期时间用**墙钟**(不能用单调 tick), 秒精度够用
+static int64_t cookieNowMs()
+{
+    return (int64_t)std::time(nullptr) * 1000;
+}
+
+void JZNetworkAccessManager::setCookieJarEnabled(bool on)
+{
+    std::lock_guard<std::mutex> lock(m_cookieMutex);
+    m_cookieJarEnabled = on;
+}
+
+bool JZNetworkAccessManager::cookieJarEnabled() const
+{
+    std::lock_guard<std::mutex> lock(m_cookieMutex);
+    return m_cookieJarEnabled;
+}
+
+void JZNetworkAccessManager::clearCookies()
+{
+    std::lock_guard<std::mutex> lock(m_cookieMutex);
+    m_cookieJar.clear();
+}
+
+int JZNetworkAccessManager::cookieCount() const
+{
+    std::lock_guard<std::mutex> lock(m_cookieMutex);
+    return m_cookieJar.count();
+}
+
+std::vector<JZNetworkCookie> JZNetworkAccessManager::cookies() const
+{
+    std::lock_guard<std::mutex> lock(m_cookieMutex);
+    return m_cookieJar.cookies();
+}
+
+void JZNetworkAccessManager::saveCookies(const JZUrl& url, const std::vector<std::string>& setCookieHeaders)
+{
+    if (setCookieHeaders.empty())
+        return;
+
+    std::lock_guard<std::mutex> lock(m_cookieMutex);
+    if (!m_cookieJarEnabled)
+        return;
+    m_cookieJar.saveFromResponse(url, setCookieHeaders, cookieNowMs());
+}
+
+bool JZNetworkAccessManager::applyCookies(JZNetworkRequest& request)
+{
+    // 业务自己设了 Cookie 头(如要模拟别的会话) -> 以业务的为准, 不注入
+    for (auto& h : request.rawHeaders())
+    {
+        if (str_toLower(h.first) == "cookie")
+            return false;
+    }
+
+    std::string header;
+    {
+        std::lock_guard<std::mutex> lock(m_cookieMutex);
+        if (!m_cookieJarEnabled)
+            return false;
+        header = m_cookieJar.headerFor(request.url(), cookieNowMs());
+    }
+    if (header.empty())
+        return false;
+
+    request.setRawHeader("Cookie", header);
+    return true;
+}
+
 void JZNetworkAccessManager::open(JZNetworkReply *reply, const JZNetworkRequest &request)
 {
     std::string hostKey = this->hostKey(request);
@@ -1000,8 +1080,10 @@ JZNetworkReply *JZNetworkAccessManager::get(const JZNetworkRequest &request)
     reply->m_request = req;
     reply->m_method = JZNetworkRequest::Get;
 
-    reply->m_send = str_toUtf8(req.buildHttpHeader(JZNetworkRequest::Get, proxy));        
-    open(reply, req);
+    // 自动补 Cookie 头(业务自己设了 Cookie 则以业务的为准)
+    reply->m_cookieAutoInjected = applyCookies(reply->m_request);
+    reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Get, proxy));
+    open(reply, reply->m_request);
     return reply;
 }
 
@@ -1034,9 +1116,12 @@ JZNetworkReply *JZNetworkAccessManager::post(const JZNetworkRequest &request, co
     reply->m_request = mutableRequest;
     reply->m_method = JZNetworkRequest::Post;
     reply->m_postBody = body;
-    reply->m_send = str_toUtf8(mutableRequest.buildHttpHeader(JZNetworkRequest::Post, proxy));        
+
+    // 自动补 Cookie 头(业务自己设了 Cookie 则以业务的为准)
+    reply->m_cookieAutoInjected = applyCookies(reply->m_request);
+    reply->m_send = str_toUtf8(reply->m_request.buildHttpHeader(JZNetworkRequest::Post, proxy));
     reply->m_send.append(body);
-    open(reply, mutableRequest);
+    open(reply, reply->m_request);
 
     return reply;
 }
@@ -1119,6 +1204,16 @@ bool JZNetworkAccessManager::followRedirect(JZNetworkReply *reply, const std::st
     reply->m_statusText.clear();
     reply->m_head.clear();
     reply->m_headers.clear();
+    reply->m_setCookies.clear();
+
+    // 重定向换了目标：上一次自动注入的 Cookie 必须按新域重算，
+    // 否则同源策略之外的重定向会把旧站点的 cookie 带过去（业务自己设的 Cookie 头保留）。
+    if (reply->m_cookieAutoInjected)
+    {
+        reply->m_request.removeRawHeader("Cookie");
+        reply->m_cookieAutoInjected = false;
+    }
+    reply->m_cookieAutoInjected = applyCookies(reply->m_request);
 
     // 重建发送缓冲（重定向目标若仍走 http 代理，则请求行继续用绝对 URI）
     bool proxy = useHttpProxy(m_proxyConfig, reply->m_request);

@@ -237,8 +237,9 @@ export class ServerResponse extends EventEmitter {
     set statusCode(v: any) { this._h.statusCode = v | 0; }
     get finished() { return this._ended; }
     setHeader(k: any, v: any) {
-        this._headers[String(k).toLowerCase()] = String(v);
-        this._h.setHeader(String(k), String(v));
+        // 值原样保存(可能与 Node 一致地是 string[]), 由底层在 end() 时按 HTTP 语义展开
+        this._headers[String(k).toLowerCase()] = v;
+        this._h.setHeader(String(k), v);
         return this;
     }
     getHeader(k: any) { return this._headers[String(k).toLowerCase()]; }
@@ -249,7 +250,7 @@ export class ServerResponse extends EventEmitter {
         return this;
     }
     writeHead(status: any, headers: any) {
-        if (headers) for (const k in headers) this._headers[String(k).toLowerCase()] = String(headers[k]);
+        if (headers) for (const k in headers) this._headers[String(k).toLowerCase()] = headers[k];
         this._h.writeHead(status | 0, headers || {});
         return this;
     }

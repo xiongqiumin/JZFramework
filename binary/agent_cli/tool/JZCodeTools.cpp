@@ -1808,11 +1808,9 @@ static string searchField(const Json::Value &obj, const std::vector<string> &key
 }
 
 // 默认搜索源：必应网页搜索的 RSS 输出（~6KB、结构稳定、链接是直链、无需 API Key）。
-// 三个前提（都实测过，缺一不可）：
+// 两个前提（都实测过，缺一不可）：
 //   - 必须带 setlang=zh-CN&cc=CN：不带时必应按 IP/默认市场返回，容易掉进"词典/无关结果"降级态；
 //   - 必须跟随 www.bing.com -> cn.bing.com 的 302（runNextSearch 里已显式放宽为允许跨主机）；
-//   - ⚠ 不要走代理：出口 IP 会被必应判滥用，返回与查询无关的结果（实测搜 python 返回 Lidl 超市）；
-//     国内直连才是正确路径。
 // 曾经还接过 HTML 结果页做兜底（RSS 改版时用），后来去掉了：RSS 一直可用，HTML 只是 18 倍体积
 // 换同一批结果，多一条解析路径就多一处会坏的地方。
 static const char *kBingRssSearchUrl =

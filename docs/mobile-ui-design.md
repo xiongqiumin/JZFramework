@@ -284,3 +284,69 @@ vv.addEventListener('resize', () => {
 - [ ] 长按文件树唤起菜单，位置不超出视口；
 - [ ] 断网后 5s 内出现断线提示，恢复后自动消失；
 - [ ] 连续切换 3 个底部 tab，不出现布局跳动。
+
+
+---
+
+## 11. 本地安卓验证环境（下载来源与打包）
+
+手机页本身不依赖任何安卓工具链（纯 HTML/CSS/JS，由 `agent_cli` 或 `agent_cli_server` 托管）。
+下面这套环境**只是为了把 WebView 壳打成 APK、并在真机上验收**，与网页运行无关。
+
+### 11.1 下载清单（已落地 `E:\libs\android-min`）
+
+| 组件 | 版本 | 来源 | 用途 |
+|---|---|---|---|
+| `platform-tools`（含 adb） | 29.0.6 | `https://repo.huaweicloud.com/android/repository/platform-tools_r29.0.6-windows.zip` | 安装 APK、`adb reverse` 端口转发、真机调试 |
+| `build-tools`（aapt2/d8/apksigner/zipalign） | 29.0.3 | `https://repo.huaweicloud.com/android/repository/build-tools_r29.0.3-windows.zip` | 手动打包签名 APK（不用 Gradle / Android Studio） |
+| `platforms/android-29`（android.jar） | r04 | `https://repo.huaweicloud.com/android/repository/platform-29_r04.zip` | 编译壳时作为 bootclasspath，提供 Android API 29 类 |
+| JDK（含 javac） | Temurin 11.0.33 | `https://mirrors.tuna.tsinghua.edu.cn/Adoptium/11/jdk/x64/windows/OpenJDK11U-jdk_x64_windows_hotspot_11.0.33_10.zip` | 编译 Java 壳源码 |
+
+> 下载方式与速度：华为云镜像实测 ~6.4 MB/s、清华 Adoptium ~5.7 MB/s，直连即可。
+> 压缩包保留在 `E:\libs\_downloads`。
+
+### 11.2 是不是「完整 SDK」
+
+**不是。** 上面是 Android SDK 的**平台 / 构建工具组件**，缺这些：
+
+- 没有 `sdkmanager` / SDK 仓库管理（无法在线装其它 API 级别或系统镜像）；
+- 没有 `emulator` 及系统镜像（**不能跑模拟器**，只能真机验收）；
+- 没有 Android Studio。
+
+但足够**手动打包并签名 APK**（aapt2 → d8 → apksigner 链路齐全），也足够 `adb` 真机安装与端口转发。
+真机验收流程见 §11.4。
+
+### 11.3 WebView 壳（Java 侧）现状
+
+壳在 `E:\libs\android-min\shell\`，`build.ps1` 走 `javac → jar → d8 → aapt2 link → 注入 dex → zipalign → apksigner`，
+产物 `shell/jzwebview.apk`（v1/v2/v3 签名通过）。
+
+当前 `MainActivity.java` 是**最小可用壳**，已实现：
+
+- 全屏 WebView；`setJavaScriptEnabled` + `setDomStorageEnabled`（app.js 用 localStorage）；
+- 返回键 `goBack`；URL 经 intent extra `-e url` 传入并持久化到 `SharedPreferences`；
+- `usesCleartextTraffic`（本机是 http）、`adjustResize`（软键盘顶起输入框）、沉浸状态栏；
+- 页面走 HTTP 指回主机，**不放进 assets**（避免 `file://` 的 `origin=null` 撞 `/api/*` 的 CORS）。
+
+**不是全功能**，待补（按收益排序）：
+
+1. `WebChromeClient.onShowFileChooser` —— 设计 §1 的「图片附件」场景在真机 WebView 里目前点不了选择；
+2. `onCreateWindow` / 新窗口处理（页面 `window.open` 时不丢失）；
+3. 加载进度 / 网络错误兜底页。
+
+需要「全功能」时再补上述项；当前最小壳已能验证手机页的全部布局与交互。
+
+### 11.4 真机验收步骤
+
+```bat
+:: 装壳（已签名，可覆盖）
+E:\libs\android-min\platform-tools\adb.exe install -r E:\libs\android-min\shell\jzwebview.apk
+
+:: 调试用 mock（本机 8081 有假数据）：把手机 8081 转回 PC
+E:\libs\android-min\platform-tools\adb.exe reverse tcp:8081 tcp:8081
+E:\libs\android-min\platform-tools\adb.exe shell am start -n com.jz.webview/.MainActivity -e url http://127.0.0.1:8081/mobile.html
+
+:: 真数据：需先重编 agent_cli 让 /api/* 生效，把手机 8080 转回 PC
+E:\libs\android-min\platform-tools\adb.exe reverse tcp:8080 tcp:8080
+E:\libs\android-min\platform-tools\adb.exe shell am start -n com.jz.webview/.MainActivity -e url http://127.0.0.1:8080/mobile.html
+```

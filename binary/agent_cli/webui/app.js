@@ -17,6 +17,11 @@
 const PAGE = document.body.dataset.page || 'agents';
 const api = (p) => '/api/' + p;
 const QS = new URLSearchParams(location.search);
+// 手机壳 mobile.html 带 .is-mobile; 桌面 index.html / tasks.html 不带。
+// 手机分支只加行为, 数据与渲染函数仍是同一套。
+const IS_MOBILE = document.body.classList.contains('is-mobile');
+// 手机导航: L1 主机页 → L2 工作区(会话 | 文件 | 历史 | 代码预览)
+const MOBILE = { screen: 'hosts', view: 'chat', agentId: '', dir: '' };
 
 const S = {
   SUBMITTED: 'TASK_STATE_SUBMITTED',
@@ -555,7 +560,7 @@ function welcomeHtml() {
   return `<div class="jz-empty cs-welcome">
     <div class="cs-welcome__logo">JZ</div>
     <div class="cs-welcome__title">给 agent 派活</div>
-    <div>在下面写清楚要做的事，Enter 发送。每提交一次 = 一个任务队列，左边会多一条。</div>
+    <div>在下面写清楚要做的事，${IS_MOBILE ? '点「发送」按钮' : 'Enter 发送'}。每提交一次 = 一个任务队列。</div>
     <div class="cs-welcome__tips">
       点左边某条任务看它内部的多轮对话；验证命令在「⚙ 设置」里填一次即可。
     </div>
@@ -623,7 +628,7 @@ function renderSide() {
     html += `<div class="ag-group">${DAY_BUCKETS[i]} <span class="ag-group__n">${arr.length}</span></div>`
       + arr.map(sideItemHtml).join('');
   });
-  box.innerHTML = html || `<div class="jz-empty">还没有任务。<br>在右边写一句，Enter 发送。</div>`;
+  box.innerHTML = html || `<div class="jz-empty">还没有任务。<br>写一句，${IS_MOBILE ? '点「发送」' : 'Enter 发送'}。</div>`;
   box.querySelectorAll('[data-task]').forEach(el => {
     el.onclick = () => selectTask(el.dataset.task, true);
   });
@@ -662,6 +667,7 @@ function selectTask(id, scroll) {
   history.replaceState(null, '', url);
   closeNav();
 }
+// 抽屉只属于桌面/平板侧栏; 手机端是 L1/L2 两级页面, 不用 is-nav
 function openNav() { const el = document.getElementById('app'); if (el) el.classList.add('is-nav'); }
 function closeNav() { const el = document.getElementById('app'); if (el) el.classList.remove('is-nav'); }
 
@@ -742,6 +748,7 @@ function renderHead() {
   const acts = document.getElementById('headActs');
   const online = info.online !== false;
   title.textContent = AG.id || 'agent';
+  if (IS_MOBILE && MOBILE.dir) title.textContent = AG.id + ' / ' + projName(MOBILE.dir);
   // 工作区 = 这条任务要跑的目录(侧栏可切换); 完整路径放 title
   const proj = workdir() || info.rootDir || info.project || '';
   sub.innerHTML = `${esc(info.name || '')}${proj ? ' · 工作区 <code title="' + esc(proj) + '">' + esc(projName(proj)) + '</code>' : ''}${info.modelName ? ' · ' + esc(info.modelName) : ''}`
@@ -762,6 +769,11 @@ function renderHead() {
     loadTasks();
   };
   document.getElementById('btnRefresh').onclick = () => { AG.sig = ''; loadTasks(); };
+  if (IS_MOBILE) {
+    // 手机顶部只留状态点: idle/busy/offline 由 CSS 上色 + 呼吸动画
+    document.body.dataset.state = !online ? 'offline'
+      : (AG.busy || AG.tasks.some(isRunning)) ? 'busy' : 'idle';
+  }
 }
 
 function syncComposer() {
@@ -777,8 +789,8 @@ function syncComposer() {
   ta.disabled = false;
   send.disabled = !online;
   ta.placeholder = !online ? '该 agent 已离线，只能看历史'
-    : running ? '任务执行中，可以先写下一条（Enter 会排队或被告知正忙）'
-    : '说一下要它做什么，Enter 发送 / Shift+Enter 换行';
+    : running ? (IS_MOBILE ? '任务执行中，可以先写下一条' : '任务执行中，可以先写下一条（Enter 会排队或被告知正忙）')
+    : (IS_MOBILE ? '说点什么…（点发送）' : '说一下要它做什么，Enter 发送 / Shift+Enter 换行');
   if (!online) {
     msg.dataset.blocked = '1';
     msg.textContent = '该 agent 已离线，只能查看历史';
@@ -1023,8 +1035,10 @@ function useDirPick(path) {
   if (target === AG.id) {
     setWorkdir(path);
     if (window.JzUI) JzUI.toast('工作目录：' + path, 'ok');
+    if (IS_MOBILE) enterWorkspace(AG.id, path);
     return;
   }
+  if (IS_MOBILE) { enterWorkspace(target, path); return; }
   location.href = '?id=' + encodeURIComponent(target) + '&dir=' + encodeURIComponent(path);
 }
 
@@ -1093,9 +1107,8 @@ async function loadInfo() {
     lsSet(WD_KEY + AG.id, dq);
     u0.searchParams.delete('dir');
     history.replaceState(null, '', u0);
-    // 既然是在"打开某个目录"的动作里跳过来的, 落地就该是那个目录的文件列表,
-    // 不是对话页 —— 否则还要再点一次 rail 的文件图标
-    setSideView('files');
+    // 桌面: 打开某个目录的动作落地到文件树; 手机: 只记住工作区, 落地仍是主机页
+    if (!IS_MOBILE) setSideView('files');
   }
 
 }
@@ -1198,7 +1211,8 @@ function openEvents() {
     let m = null;
     try { m = JSON.parse(e.data); } catch (_) { m = null; }
     if (!m || !m.taskId) return;
-    if (m.taskId === AG.sel) loadDetail(m.taskId);
+    // 不为每帧拉 /api/tasks/detail: 对话页没有详情面板, 那份全量 JSON 拉回来也只能被
+    // renderDetail 丢掉。内容由下面 800ms 合并的 loadTasks() 刷新。
     scheduleTasksRefresh();              // 侧栏/状态要跟着变(限流 800ms)
   });
   EVT.addEventListener('deleted', (e) => {
@@ -1428,6 +1442,8 @@ function activateTab(id) {
   });
   if (t.kind === 'file') paintFileTab(t);
   renderTabs();
+  // 手机: 代码预览去掉会话顶栏, 顶部只留面包屑 + 返回目录
+  if (IS_MOBILE) document.body.classList.toggle('in-preview', t.kind === 'file');
 }
 function closeTab(id) {
   const i = ED.list.findIndex(t => t.id === id);
@@ -1638,11 +1654,12 @@ async function deleteEntry(path, isDir) {
 /* 点文件树里的文件: 已经开着就切过去, 没开过才新建一个 tab */
 async function openFileTab(path) {
   const id = edFileId(path);
-  if (edById(id)) { activateTab(id); return; }
+  if (edById(id)) { activateTab(id); if (IS_MOBILE) setWorkspaceView('preview'); return; }
   const seg = String(path).replace(/[\\/]+$/, '').split(/[\\/]/);
   const t = { id, kind: 'file', path, title: seg[seg.length - 1] || path, text: '', note: '读取中…' };
   ED.list.push(t);
   activateTab(id);
+  if (IS_MOBILE) setWorkspaceView('preview');   // 手机: 切到代码预览, 三段仍高亮「文件」
 
   const show = () => { if (ED.act === id) paintFileTab(t); };
   let r = null;
@@ -1773,6 +1790,7 @@ function initChatPage() {
     if (files.length) { e.preventDefault(); addImageFiles(files); }
   });
   ta.addEventListener('keydown', (e) => {
+    if (IS_MOBILE) return;             // 手机: Enter 换行, 只点「发送」(输入法也靠它)
     if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
     e.preventDefault();
     if (!document.getElementById('btnSend').disabled) doSend();
@@ -1869,8 +1887,9 @@ function initChatPage() {
   const termBox = document.getElementById('termBox');
   if (termBox) termBox.addEventListener('toggle', () => { if (termBox.open) loadTerminal(); });
 
-  // 默认进「会话」(打开页面通常是接着聊); 上次选过哪个就还是哪个
-  setSideView(lsGet(SIDE_KEY) || 'chats');
+  // 桌面默认进侧栏「会话」; 手机落地是 L1 主机页, 先渲染主机/工作区列表
+  if (IS_MOBILE) loadHosts(true);
+  else setSideView(lsGet(SIDE_KEY) || 'chats');
 
   loadInfo()
     .then(() => {
@@ -1922,6 +1941,7 @@ function setSideView(name) {
     loadHosts(true);
   }
   else renderSide();
+  if (IS_MOBILE) markMobileTabs(name);
 }
 
 /* ---- 侧栏宽度可拖(rail | 侧栏 | 拖拽条 | 主区) ---- */
@@ -2058,7 +2078,9 @@ function showCtxMenu(ev, path, isDir) {
   m.style.left = '0px'; m.style.top = '0px';
   const r = m.getBoundingClientRect();
   const x = Math.min(ev.clientX, window.innerWidth - r.width - 8);
-  const y = Math.min(ev.clientY, window.innerHeight - r.height - 8);
+  // 手机长按: 菜单贴触点上方, 别被手指挡住
+  const cy = ev.above ? ev.clientY - r.height - 8 : ev.clientY;
+  const y = Math.min(cy, window.innerHeight - r.height - 8);
   m.style.left = Math.max(8, x) + 'px';
   m.style.top = Math.max(8, y) + 'px';
 }
@@ -2251,6 +2273,8 @@ function renderHosts() {
   box.querySelectorAll('.dir-row[data-dir]').forEach(b => {
     b.onclick = (ev) => {
       const a = b.dataset.agent, d = b.dataset.dir;
+      // 手机: 整行就是「进入这个工作区的会话」, 不要再点小箭头
+      if (IS_MOBILE) { enterWorkspace(a, d); return; }
       if (!ev.target.closest('.dir-row__go')) {
         HOSTS.sel = a + '|' + d;
         renderHosts();
@@ -2270,14 +2294,36 @@ function renderHosts() {
 
 /* ============================ /tasks  Task 记录 ============================ */
 
+/* SSE 帧只是"数据变了"的信号: 150ms 内的多帧合并成一次 detail 拉取, 且上一次没回来时
+   不重复发。否则 150ms 一帧 × 全量 GetTask(默认 1000 条事件)会把下行放大到 MB/s,
+   长任务还会并发堆一串同样的请求。 */
+let DETAIL_TIMER = 0, DETAIL_BUSY = false, DETAIL_AGAIN = false;
 let ES = null, DETAIL_ID = '', CURRENT_TASK = null;
 
-function closeDetailWatch() { if (ES) { ES.close(); ES = null; } }
+function closeDetailWatch() {
+  if (ES) { ES.close(); ES = null; }
+  clearTimeout(DETAIL_TIMER); DETAIL_TIMER = 0; DETAIL_AGAIN = false;
+}
+function scheduleDetail(id) {
+  DETAIL_AGAIN = true;
+  if (DETAIL_TIMER || DETAIL_BUSY) return;
+  DETAIL_TIMER = setTimeout(() => { DETAIL_TIMER = 0; flushDetail(id); }, 150);
+}
+function flushDetail(id) {
+  if (DETAIL_BUSY || DETAIL_ID !== id) return;
+  DETAIL_BUSY = true;
+  DETAIL_AGAIN = false;
+  loadDetail(id, true).catch(() => {}).then(() => {
+    DETAIL_BUSY = false;
+    if (DETAIL_AGAIN && DETAIL_ID === id) scheduleDetail(id);
+  });
+}
 function openStream(id) {
   if (typeof EventSource === 'undefined') return;
-  const es = new EventSource(withToken(api('tasks/subscribe?id=' + encodeURIComponent(id))));
+  // slim=1: 网页只要信号帧, 首帧/终态帧不发完整 Task(长任务会是大包甚至撑爆连接)。
+  const es = new EventSource(withToken(api('tasks/subscribe?id=' + encodeURIComponent(id) + '&slim=1')));
   ES = es;
-  const onAny = () => { if (DETAIL_ID === id) loadDetail(id, true).catch(() => {}); };
+  const onAny = () => { if (DETAIL_ID === id) scheduleDetail(id); };
   ['task', 'status_update', 'artifact_update'].forEach(n => es.addEventListener(n, onAny));
 }
 function taskRows(list) {
@@ -2481,6 +2527,180 @@ async function loadTasksPage() {
   if (id) loadDetail(id);
 }
 
+/* ============================ 手机端(mobile.html) ============================
+   只加交互与壳的映射: 同一份数据、同一套渲染函数、同一批 /api 接口。
+   <640 的底部 tab / 全宽抽屉 / 长按 / 软键盘 / 返回键都在这里。 */
+
+/* ---- 手机导航: L1 主机页 → L2 工作区(会话/文件/历史/代码预览) ---- */
+function showPane(name) {
+  document.querySelectorAll('.pane').forEach(p => {
+    p.classList.toggle('hidden', p.dataset.pane !== name);
+  });
+}
+
+/* 三段高亮: 代码预览仍算「文件」 */
+function markSeg(view) {
+  const seg = document.getElementById('mSeg');
+  if (!seg) return;
+  const cur = (view === 'preview') ? 'files' : view;
+  seg.querySelectorAll('button[data-ws]').forEach(b => {
+    b.classList.toggle('is-on', b.dataset.ws === cur);
+  });
+}
+
+/* 工作区内切视图: 只用 replaceState 记状态, 不压返回栈 */
+function setWorkspaceView(view) {
+  if (!IS_MOBILE || MOBILE.screen !== 'workspace') return;
+  const v = ['chat', 'files', 'history', 'preview'].indexOf(view) >= 0 ? view : 'chat';
+  MOBILE.view = v;
+  if (v === 'chat') { activateTab('chat'); showPane('chat'); }
+  else if (v === 'files') { showPane('files'); fsEnter(true); }
+  else if (v === 'history') { showPane('history'); renderSide(); }
+  else { showPane('preview'); }
+  document.body.classList.toggle('in-preview', v === 'preview');
+  markSeg(v);
+  const u = new URL(location.href);
+  u.searchParams.set('view', v);
+  history.replaceState({ ws: 1, view: v }, '', u);
+}
+
+/* 点工作区行 → 进工作区会话(压一层历史, 返回键回主机) */
+function enterWorkspace(agentId, dir) {
+  if (!IS_MOBILE) return;
+  MOBILE.screen = 'workspace';
+  MOBILE.agentId = agentId || AG.id;
+  MOBILE.dir = dir || workdir();
+  AG.id = MOBILE.agentId;
+  QS.set('id', AG.id);                 // QS 是启动时的快照, 跨 agent 时要同步
+  lsSet(WD_KEY + AG.id, MOBILE.dir);
+  const u = new URL(location.href);
+  u.searchParams.set('id', AG.id);
+  u.searchParams.delete('dir');
+  history.pushState({ ws: 1 }, '', u);
+  const box = document.getElementById('hostsScreen');
+  if (box) box.classList.add('hidden');
+  loadInfo()
+    .then(() => loadTasks())
+    .then(() => { syncComposer(); fsEnter(true); loadTerminal(); })
+    .catch((e) => { if (window.JzUI) JzUI.toast('读取失败：' + e, 'fail'); });
+  setWorkspaceView('chat');
+}
+
+/* 回主机页 */
+function leaveWorkspace() {
+  if (!IS_MOBILE) return;
+  MOBILE.screen = 'hosts';
+  MOBILE.view = 'chat';
+  document.body.classList.remove('in-preview');
+  const box = document.getElementById('hostsScreen');
+  if (box) box.classList.remove('hidden');
+  const u = new URL(location.href);
+  u.searchParams.delete('view');
+  history.replaceState(null, '', u);
+  markSeg('chat');
+  loadHosts(true);
+}
+
+function initMobile() {
+  const hosts = document.getElementById('hostsScreen');
+  const seg = document.getElementById('mSeg');
+  if (!hosts || !seg) return;
+
+  // L1: 刷新 / 设置 / 选工作区
+  on('btnHostsRefresh', () => loadHosts(true));
+  on('btnHostsMore', openSettings);
+
+  // L2: 返回主机 / 三段切换 / 代码预览返回文件树
+  on('btnBackHosts', () => { if (MOBILE.screen === 'workspace') history.back(); });
+  seg.querySelectorAll('button[data-ws]').forEach(b => {
+    b.onclick = () => setWorkspaceView(b.dataset.ws);
+  });
+  on('btnBackToDir', () => setWorkspaceView('files'));
+  on('btnMore', openSettings);
+  on('btnLineNums', () => document.body.classList.toggle('no-ln'));
+  if (window.innerWidth <= 480) document.body.classList.add('no-ln');
+
+  // 历史里点某条任务 → 自动切回会话(renderSide 的 onclick 先选中, 这里冒泡补切视图)
+  const hist = document.getElementById('taskList');
+  if (hist) hist.addEventListener('click', (e) => {
+    if (e.target.closest && e.target.closest('[data-task]')) setWorkspaceView('chat');
+  });
+
+  markSeg('chat');
+  // L1 期间按 15s 刷一次主机在线状态(SSE 主要给工作区用)
+  setInterval(() => {
+    if (MOBILE.screen === 'hosts' && !document.hidden) loadHosts(true);
+  }, 15000);
+
+  // 长按 500ms = 右键(位移 >10px 或滚动取消); 复用同一个 showCtxMenu
+  const tree = document.getElementById('fsTree');
+  if (tree) {
+    let lpTimer = 0, lpStart = null, lpFired = false;
+    const cancelLp = () => { clearTimeout(lpTimer); lpTimer = 0; lpStart = null; };
+    tree.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) { cancelLp(); return; }
+      const b = e.target.closest && e.target.closest('button[data-dir],button[data-file]');
+      if (!b) { cancelLp(); return; }
+      const t = e.touches[0];
+      lpStart = { x: t.clientX, y: t.clientY };
+      lpTimer = setTimeout(() => {
+        lpFired = true;
+        showCtxMenu({
+          clientX: lpStart.x, clientY: lpStart.y, above: true,
+          preventDefault() {}
+        }, b.dataset.dir || b.dataset.file, !!b.dataset.dir);
+        setTimeout(() => { lpFired = false; }, 700);
+      }, 500);
+    }, { passive: true });
+    tree.addEventListener('touchmove', (e) => {
+      if (!lpStart || !lpTimer || !e.touches[0]) return;
+      const t = e.touches[0];
+      if (Math.abs(t.clientX - lpStart.x) > 10 || Math.abs(t.clientY - lpStart.y) > 10) cancelLp();
+    }, { passive: true });
+    tree.addEventListener('touchend', cancelLp, { passive: true });
+    tree.addEventListener('touchcancel', cancelLp, { passive: true });
+    tree.addEventListener('click', (e) => {
+      // 长按后浏览器还会补一个 click, 别顺手把文件打开了
+      if (lpFired) { e.preventDefault(); e.stopPropagation(); lpFired = false; return; }
+      // 点文件由 openFileTab → setWorkspaceView('preview') 负责切视图
+    }, true);
+  }
+
+  // 任务列表: 下拉 60px 刷新(只做这一处, 会话页靠 SSE 自动更新)
+  const list = document.getElementById('taskList');
+  if (list) {
+    let y0 = 0, pulling = false;
+    list.addEventListener('touchstart', (e) => {
+      pulling = (list.scrollTop <= 0 && MOBILE.view === 'history' && !!e.touches[0]);
+      y0 = pulling ? e.touches[0].clientY : 0;
+    }, { passive: true });
+    list.addEventListener('touchmove', (e) => {
+      if (!pulling || !e.touches[0]) return;
+      if (e.touches[0].clientY - y0 > 60) { pulling = false; AG.sig = ''; loadTasks(); }
+    }, { passive: true });
+    list.addEventListener('touchend', () => { pulling = false; }, { passive: true });
+  }
+
+  // 软键盘: 高度差写进 --kb, .cs-thread 用它撑底部 padding
+  const vv = window.visualViewport;
+  if (vv) {
+    const syncKb = () => {
+      const h = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      document.documentElement.style.setProperty('--kb', h + 'px');
+    };
+    vv.addEventListener('resize', syncKb);
+    vv.addEventListener('scroll', syncKb);
+    syncKb();
+  }
+
+  // 返回键: 代码预览 → 文件树; 其它工作区视图 → 回主机(左边缘右滑不接管)
+  window.addEventListener('popstate', () => {
+    if (MOBILE.screen !== 'workspace') return;
+    if (MOBILE.view === 'preview') setWorkspaceView('files');
+    else leaveWorkspace();
+  });
+}
+
 /* ============================ 启动 ============================ */
 
 if (PAGE === 'agents') {
@@ -2489,6 +2709,7 @@ if (PAGE === 'agents') {
   if (btn) btn.onclick = loadAgentsPage;
 } else if (PAGE === 'agent') {
   initChatPage();
+  if (IS_MOBILE) initMobile();
 } else if (PAGE === 'tasks') {
   loadTasksPage();
   ['fAgent', 'fState', 'fLimit', 'fContext', 'fProject', 'fAllOrigin'].forEach(key => {

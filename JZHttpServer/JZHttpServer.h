@@ -57,6 +57,11 @@ public:
     //path 语法 和 flask 类似, 具体见 JZHttpRoute 文档
     void addRoute(const std::string& path, JZHttpHandler* handler);
 
+    // 鉴权钩子: 在路由分发**之前**调用, 返回 false 表示"已自行回过包(如 401)", 本次请求结束。
+    // 放在这里而不是塞进每个 handler: 路由有十几条, 漏一条就是漏洞。
+    // 参数是原始 request(路径 / 查询串 / 头 / cookie 都可读)。
+    void setAuthFilter(std::function<bool(JZHttpServerClient *, const JZHttpRequest &)> filter);
+
 protected:
     friend JZHttpServerClient;
 
@@ -65,6 +70,7 @@ protected:
     void onHttpMessage(JZHttpServerClient *client, const JZByteArray &buffer);
 
     JZHttpRoute m_route;
+    std::function<bool(JZHttpServerClient *, const JZHttpRequest &)> m_authFilter;
 };
 
 #endif // ! MG_SERVER_H_

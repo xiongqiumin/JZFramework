@@ -621,6 +621,13 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
 
                     // 取消请求落在这个窗口(已投递、exec 还没进)时, exec 入口会把取消标志
                     // 重置掉 —— 这里先自检一次, 免得"刚发出去就被取消"的命令照样跑完。
+                    // ⚠ 顺序不能反: **先**清解释器的标志, **再**消费 pending。
+                    //   · 清标志之前来的 cancel: pending 还是 true ⇒ 下面的分支自己收尾
+                    //   · 清标志之后来的 cancel: 解释器标志由 requestCancel() 置上, 而下面
+                    //     用的是 exec(..., keepCancel=true), 不会再被清掉 ⇒ 由 exec 内部杀掉
+                    //   反过来写(先 exchange 再靠 exec 清)会留下一个窗口: cancel 正好落在
+                    //   "exchange 之后、exec 清标志之前"就被吞了, 回包说已取消、命令照跑完。
+                    sh->clearCancel();
                     if (self->m_cancelPending.exchange(false))
                     {
                         runOnObject(self->guardPointer(), [self]()
@@ -637,7 +644,8 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
                     // 那种"模型看不见又一直留着"的状态是持久 shell 最容易踩的坑。
                     sh->resetState(cwd0);
                     sh->setCommandTimeoutMs(cmdTimeout);
-                    JZShell::Result r = sh->exec(execCommand);
+                    // keepCancel: 取消标志已经由上面 clearCancel() 清过, 别再清第二次
+                    JZShell::Result r = sh->exec(execCommand, /*keepCancel=*/true);
                     const string cwd = sh->cwd();
                     const bool canceled = (r.exitCode == 130 && sh->cancelRequested());
 

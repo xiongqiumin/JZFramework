@@ -2135,7 +2135,12 @@ bool JZAgentCli::checkToken(const JZHttpRequest &req) const
     if (m_config.httpToken.empty())
         return true;   // 未配置 token: 不鉴权
 
-    std::string tk = req.queryParam("token");
+    // 来源优先级与 agent_cli_server 保持一致: cookie jz_token > ?token= > X-JZ-Token > Bearer
+    std::string tk = req.cookie("jz_token");
+    if (tk.empty())
+        tk = req.queryParam("token");
+    if (tk.empty())
+        tk = req.header("X-JZ-Token");
     if (tk.empty())
     {
         std::string auth = req.header("Authorization");

@@ -131,13 +131,11 @@ public:
     HttpAllTest(JZEventLoop *loop)
         : m_loop(loop)
     {
-        int port = 18222;
-        m_url = "http://127.0.0.1:" + to_string(port);
-
         prepareFiles();
 
         m_server = new JZHttpServer(this);
-        m_server->listen(port);
+        if (!choosePort(18222))
+            return;
 
         JZHttpStaticFiles *static_handler = new JZHttpStaticFiles(m_root);
         static_handler->setChunkSize(8192);
@@ -163,6 +161,30 @@ public:
         ensureDir(m_root);
         m_expect = makeContent(50000);
         writeFile(m_root + "/big.bin", m_expect);
+    }
+
+    // 端口不保证空闲: 本机可能已经有别的服务占着(实测 18222 被一个 Python WSGI 服务占着,
+    // 于是 listen 失败、客户端把请求打到别人的服务上, 表现成"静态文件 404"这种误导现象)。
+    // 从 base 往后顺延, 用 listen() 的返回值当判据, 拿不到就用明确的原因失败。
+    bool choosePort(int base)
+    {
+        int port = 0;
+        for (int p = base; p < base + 20; p++)
+        {
+            if (m_server->listen(p))
+            {
+                port = p;
+                break;
+            }
+        }
+        if (port == 0)
+        {
+            reportError("HTTP_ALL", "找不到可用端口 " + to_string(base) + "~" + to_string(base + 19) +
+                                        " (都被占用了)");
+            return false;
+        }
+        m_url = "http://127.0.0.1:" + to_string(port);
+        return true;
     }
 
     void fetch(const string &path, int expectCode, const JZByteArray &expectBody,

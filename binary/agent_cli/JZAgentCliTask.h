@@ -146,7 +146,8 @@ struct JZCliConfig
 
     std::string shellProgram;
     int recycleSec = 15 * 60;
-    std::string logFile;
+    std::string logFile;            // 日志**目录**(文件名固定 Agent.log, 见 jzLogDirOf)
+    bool logRotateDaily = false;    // true = 按天切成 Agent-yyyyMMdd.log
     std::map<std::string, std::string> programPaths;
     std::map<std::string, std::string> env;
 

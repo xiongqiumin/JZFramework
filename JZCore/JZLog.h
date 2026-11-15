@@ -62,8 +62,13 @@ public:
     bool shouldPrintTime = false;      // 是否打印时间（最常用）
     bool shouldPrintToConsole = true;  // 是否输出到控制台
     bool shouldSaveToFile = false;     // 是否保存日志到文件
-    bool shouldAutoSplitFile = false;  // 是否自动分割文件
-    std::string logPath;               // 日志保存路径
+    bool shouldAutoSplitFile = false;  // 未实现(历史字段); 按天分割请用 rotateDaily
+    std::string logPath;               // 日志保存**目录**
+
+    // 按天轮转: 每天一个新文件 "<logPath>/<模块名>-<yyyyMMdd>.log"。
+    // 关掉(默认)时固定写 "<logPath>/<模块名>.log" —— 老行为, 长驻进程会一直涨。
+    // 何时切: 下一次 flush 发现日期变了就 close + 用当天文件名重开, 不用重启进程。
+    bool rotateDaily = false;
 
     // 文件日志的落盘间隔(毫秒)。日志先攒在内存里, 由 JZLogManager 的定时器定期
     // flush —— 没有它, 就只剩析构时那一次 flush: 长驻进程(agent_node 这种)等于
@@ -73,6 +78,16 @@ public:
 
 class JZObject;
 class JZTimer;
+
+// 把配置里的 logFile 值解析成**日志目录** —— server / agent_cli / agent_node 三个宿主
+// 用同一套口径, 免得一个把值当目录、另一个当完整文件路径(实测就有这种不一致):
+//   ""                 -> defaultDir
+//   "logs"             -> "logs"      (最后一段没有扩展名: 值本身就是目录)
+//   "logs/"            -> "logs"
+//   "logs/agent.log"   -> "logs"      (老配置写了文件名: 只取目录, 文件名固定由模块名决定)
+//   "/var/log"         -> "/var/log"
+//   "./logs"           -> "./logs"
+JZFRAMEWORK_API std::string jzLogDirOf(const std::string &logFile, const std::string &defaultDir);
 
 class JZFRAMEWORK_API JZLogManager
 {
@@ -102,6 +117,8 @@ protected:
     public:
         JZLogModuleConfig config;        
         JZFile file;
+        // 当前打开的文件属于哪一天("yyyyMMdd"); 空 = 没开轮转。见 rotateDaily。
+        std::string openDay;
         std::vector<JZObject*> recvObjects;
         std::vector<JZLogItemPtr> logCache;
     };

@@ -319,6 +319,8 @@ public:
 
     void normal(JZByteArray &buffer);
     void processRead();
+    // 见 waitForFinished(): 把"我们的下游"的管道一起抽干, 否则流水线会互相卡死
+    void drainDownstream(int depth = 0);
     bool tryWaitForExit();
 
     JZProcess *q_ptr;
@@ -963,12 +965,27 @@ bool JZProcessPrivate::waitForFinished(int msecs)
         //    子进程会阻塞在 write 上再也退不出来 —— 这就是"输出稍多就卡死"的根因。
         //    以前这里只 tryWaitForExit(), 于是 `cmd | lot-of-output` 必死锁。
         processRead();
+        // 下游(setStandardOutputProcess)同理: 它没人抽干的输出会反过来把它的
+        // stdin 堵死, 于是我们既写不进去也等不到结束。
+        drainDownstream();
         if (tryWaitForExit())
             return true;
 
         JZThread::msleep(5);
     }
     return false;
+}
+
+void JZProcessPrivate::drainDownstream(int depth)
+{
+    // 链路一般只有一两跳, 给个上限纯粹是防环(setStandardOutputProcess 允许任意搭配)
+    if (depth > 8 || stdoutTarget == nullptr)
+        return;
+    JZProcessPrivate *next = stdoutTarget->d_ptr;
+    if (next == nullptr || next == this)
+        return;
+    next->processRead();
+    next->drainDownstream(depth + 1);
 }
 
 int64_t JZProcessPrivate::write(const JZByteArray &data)
@@ -1136,6 +1153,8 @@ public:
     void killProcess();
     void closeWriteChannel();
     void processRead();
+    // 见 waitForFinished(): 把"我们的下游"的管道一起抽干, 否则流水线会互相卡死
+    void drainDownstream(int depth = 0);
     // 杀整棵进程树(见实现): 子进程 setpgid(0,0) 之后 kill(-pid) 命中整组
     void killTree(int sig);
 
@@ -1147,6 +1166,10 @@ public:
     JZProcess::InputChannelMode inputMode = JZProcess::ManagedInputChannel;
     JZProcess::OutputChannelMode outputMode = JZProcess::ManagedOutputChannel;
     std::map<std::string, std::string> envVars;   // 子进程环境覆盖(见 setEnvironmentVariables)
+    // 每一路的标准 IO 目标(见 JZProcess::ChannelTarget); start() 时从 JZProcess 拷过来
+    JZProcess::ChannelTarget stdinChan;
+    JZProcess::ChannelTarget stdoutChan;
+    JZProcess::ChannelTarget stderrChan;
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;
@@ -1229,41 +1252,15 @@ bool JZProcessPrivate::createProcess()
     bool stderrCreated = false;
     int childErr = 0;
     ssize_t n = 0;
-
-    const int pipeFlags = O_NONBLOCK | O_CLOEXEC;
-    if (::pipe2(stdinPipe, pipeFlags) == -1)
-        goto cleanup_error;
-    if (::pipe2(stdoutPipe, pipeFlags) == -1)
-        goto cleanup_error;
-    if (::pipe2(errorPipe, pipeFlags) == -1)
-        goto cleanup_error;
-
     // 上游进程: 把 stdout 直接接到下游的 stdin 管道**写端**(见 setStandardOutputProcess)
     int targetFd = -1;
-    if (stdoutTarget != nullptr)
-    {
-        targetFd = stdoutTarget->d_ptr->stdinWrite;
-        if (targetFd < 0)
-        {
-            errno = EINVAL;
-            startError = "下游进程还没有启动（先 start 下游，再 start 上游）";
-            goto cleanup_error;
-        }
-        // 管道是用 O_CLOEXEC 建的: 不清掉的话子进程 exec 时会关掉, 上游就写不进去了
-        ::fcntl(targetFd, F_SETFD, 0);
-    }
-
-    // 继承模式: 不建 stderr 管道 —— 子进程直接用我们自己的 fd 1 / fd 2
+    // 继承模式: 不建 stdout / stderr 管道 —— 子进程直接用我们自己的 fd 1 / fd 2
     const bool inheritOut = (outputMode == JZProcess::InheritOutputChannel);
-    if (channelMode == JZProcess::SeparateChannels && !inheritOut)
-    {
-        if (::pipe2(stderrPipe, pipeFlags) == -1)
-            goto cleanup_error;
-        stderrCreated = true;
-    }
 
     // 文件 / NUL / 借来的句柄: 直接 dup2 到目标 fd(见 JZProcess::ChannelTarget)。
     // Pipe / Forward 返回 0 表示"交给调用处的原有逻辑"。
+    // 注意: 以上声明必须全部出现在第一个 goto 之前 —— goto cleanup_error 会跳过它们的初始化,
+    // 而 C++ 不允许跳进带初始化的变量作用域(否则报 "jump to label crosses initialization")。
     auto dupSink = [](const JZProcess::ChannelTarget &t, int targetFd) -> int
     {
         int fd = -1;
@@ -1293,6 +1290,34 @@ bool JZProcessPrivate::createProcess()
         return rc == -1 ? -1 : 0;
     };
 
+    const int pipeFlags = O_NONBLOCK | O_CLOEXEC;
+    if (::pipe2(stdinPipe, pipeFlags) == -1)
+        goto cleanup_error;
+    if (::pipe2(stdoutPipe, pipeFlags) == -1)
+        goto cleanup_error;
+    if (::pipe2(errorPipe, pipeFlags) == -1)
+        goto cleanup_error;
+
+    if (stdoutTarget != nullptr)
+    {
+        targetFd = stdoutTarget->d_ptr->stdinWrite;
+        if (targetFd < 0)
+        {
+            errno = EINVAL;
+            startError = "下游进程还没有启动（先 start 下游，再 start 上游）";
+            goto cleanup_error;
+        }
+        // 管道是用 O_CLOEXEC 建的: 不清掉的话子进程 exec 时会关掉, 上游就写不进去了
+        ::fcntl(targetFd, F_SETFD, 0);
+    }
+
+    if (channelMode == JZProcess::SeparateChannels && !inheritOut)
+    {
+        if (::pipe2(stderrPipe, pipeFlags) == -1)
+            goto cleanup_error;
+        stderrCreated = true;
+    }
+
     pid = ::fork();
     if (pid == -1)
         goto cleanup_error;
@@ -1306,6 +1331,17 @@ bool JZProcessPrivate::createProcess()
 
         ::close(errorPipe[0]);
 
+        // 管道是父进程用 O_NONBLOCK 建的(我们读写时不想被卡住), 但子进程的 0/1/2 必须是
+        // **阻塞**的: O_NONBLOCK 挂在"打开的文件描述"上, dup2 之后子进程的 fd 也带这个标志。
+        // 不清掉的后果(实测): stdin 管道空时 read() 立刻返回 EAGAIN, `cat` 报
+        // "Resource temporarily unavailable" 后以 1 退出, 上游再写就是 SIGPIPE(141/13)。
+        auto clearNonBlock = [](int fd)
+        {
+            int fl = ::fcntl(fd, F_GETFL);
+            if (fl != -1 && (fl & O_NONBLOCK))
+                ::fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+        };
+
         // 继承模式: 子进程直接用我们自己的 stdin(不 dup2), 脚本里的命令才能接着读
         if (stdinChan.kind != JZProcess::ChannelTarget::Pipe &&
             stdinChan.kind != JZProcess::ChannelTarget::Forward)
@@ -1318,12 +1354,16 @@ bool JZProcessPrivate::createProcess()
                 _exit(1);
             }
         }
-        else if (inputMode == JZProcess::ManagedInputChannel && ::dup2(stdinPipe[0], STDIN_FILENO) == -1)
+        else if (inputMode == JZProcess::ManagedInputChannel)
         {
-            int err = errno;
-            ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
-            (void)unused;
-            _exit(1);
+            if (::dup2(stdinPipe[0], STDIN_FILENO) == -1)
+            {
+                int err = errno;
+                ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
+                (void)unused;
+                _exit(1);
+            }
+            clearNonBlock(STDIN_FILENO);
         }
 
         // stdout: 显式目标(文件/NUL/句柄)优先; 否则接了上游就用上游管道, 再否则自己的管道。
@@ -1339,13 +1379,18 @@ bool JZProcessPrivate::createProcess()
                 _exit(1);
             }
         }
-        else if (!inheritOut &&
-                 ::dup2(targetFd >= 0 ? targetFd : stdoutPipe[1], STDOUT_FILENO) == -1)
+        else if (!inheritOut)
         {
-            int err = errno;
-            ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
-            (void)unused;
-            _exit(1);
+            if (::dup2(targetFd >= 0 ? targetFd : stdoutPipe[1], STDOUT_FILENO) == -1)
+            {
+                int err = errno;
+                ssize_t unused = ::write(errorPipe[1], &err, sizeof(err));
+                (void)unused;
+                _exit(1);
+            }
+            // 接上游时 targetFd 是下游的 stdin 管道写端, 同样是 O_NONBLOCK 的:
+            // 不清掉的话 echo 写满一次就 EAGAIN, 数据会半路丢掉。
+            clearNonBlock(STDOUT_FILENO);
         }
 
         // stderr: 显式目标 > 独立管道 > 跟 stdout 合并
@@ -1369,6 +1414,7 @@ bool JZProcessPrivate::createProcess()
                 (void)unused;
                 _exit(1);
             }
+            clearNonBlock(STDERR_FILENO);
         }
         else if (!inheritOut)
         {
@@ -1379,6 +1425,7 @@ bool JZProcessPrivate::createProcess()
                 (void)unused;
                 _exit(1);
             }
+            clearNonBlock(STDERR_FILENO);
         }
 
         ::close(stdinPipe[0]);
@@ -1688,12 +1735,29 @@ bool JZProcessPrivate::waitForFinished(int msecs)
     {
         // 等待期间持续收数据: 管道写满后子进程会阻塞, 不读就永远等不到退出
         processRead();
+        // 我们的 stdout 接给了下游(setStandardOutputProcess)时必须连下游一起抽:
+        // 下游的输出没人读 -> 它写满自己的 stdout 管道卡住 -> 它的 stdin 不再被取走
+        // -> 我们写不进去也退不出来, 于是这里永远等不到结束(纯轮询没有事件循环,
+        // 下游对象的定时器不会自己跑)。
+        drainDownstream();
         if (tryWaitForExit())
             return true;
 
         JZThread::msleep(5);
     }
     return false;
+}
+
+void JZProcessPrivate::drainDownstream(int depth)
+{
+    // 链路一般只有一两跳, 给个上限纯粹是防环(setStandardOutputProcess 允许任意搭配)
+    if (depth > 8 || stdoutTarget == nullptr)
+        return;
+    JZProcessPrivate *next = stdoutTarget->d_ptr;
+    if (next == nullptr || next == this)
+        return;
+    next->processRead();
+    next->drainDownstream(depth + 1);
 }
 
 int64_t JZProcessPrivate::write(const JZByteArray &data)
@@ -1905,6 +1969,10 @@ public:
     vector<string> arguments;
     string workingDirectory;
     JZProcess::ProcessChannelMode channelMode;
+    // 每一路的标准 IO 目标(见 JZProcess::ChannelTarget); start() 时从 JZProcess 拷过来
+    JZProcess::ChannelTarget stdinChan;
+    JZProcess::ChannelTarget stdoutChan;
+    JZProcess::ChannelTarget stderrChan;
     JZProcess::ProcessState state;
     int exitCode;
     JZProcess::ExitStatus exitStatus;

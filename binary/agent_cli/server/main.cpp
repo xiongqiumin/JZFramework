@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <csignal>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -23,6 +24,7 @@
 #include "JZLog.h"
 #include "JZPlatform.h"
 #include "JZString.h"
+#include "JZTimer.h"
 #include "JZDebug.h"
 
 using namespace std;
@@ -32,15 +34,19 @@ using namespace std;
 //   http.*     后台网页 / 管理 API 的监听地址。
 //   http.ssl.* HTTPS 默认开启(单向 TLS, 只加密不认证客户端); 证书路径相对配置文件目录。
 //              要跑起来必须先备好 certs/{server.crt,server.key}; 缺文件时 server 直接启动失败,
-//              不会退回明文。客户端证书(mTLS)已于 2026-11-14 移除, 应用层鉴权(登录/token)后续补,
-//              在那之前只绑 127.0.0.1, 对外开放必须靠网络隔离。
+//              不会退回明文。客户端证书(mTLS)已于 2026-11-14 移除, 应用层鉴权改为
+//              http.token: 开了 TLS 就**必须**配(见 loadConfig 里的校验), 校验范围 /api/*。
 //   agents[]   被管理的一系列 agent_cli(各作为一个子进程拉起并监管)。
 //   内网穿透不在本进程内: 需要时用独立的 jzfrps / jzfrpc 进程。
 // ===========================================================================
 static const char *kDefaultConfigJson = R"json({
+    "logFile":        "",
+    "logRotateDaily": false,
     "http": {
         "bind":   "127.0.0.1",
         "port":   8088,
+        "token":  "",
+        "auth": { "maxFails": 5, "banSeconds": 300 },
         "ssl": {
             "enabled":  true,
             "certFile": "certs/server.crt",
@@ -56,7 +62,6 @@ static const char *kDefaultConfigJson = R"json({
         {
             "name":    "agent-1",
             "enabled": true,
-            "cmd":     "agent_cli",
             "args":    ["-c", "agent1.json"],
             "dir":     ""
         }
@@ -209,10 +214,26 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
 
     // http.ssl: HTTPS(默认开, 单向 TLS)。证书路径相对配置文件目录。
     //   ssl.caFile / ssl.requireClientCert 是旧的双向认证字段, 已于 2026-11-14 移除;
-    //   老配置里留着它们也不报错, 只是不再生效(应用层鉴权 token 待接入)。
+    //   老配置里留着它们也不报错, 只是不再生效(应用层鉴权用 http.token)。
     readBool(root, "http", "ssl.enabled", "httpSslEnabled", config.http.sslEnabled);
+    readString(root, "http", "token", "httpToken", config.http.token);
+    readInt(root, "http", "auth.maxFails", "httpAuthMaxFails", config.http.authMaxFails);
+    readInt(root, "http", "auth.banSeconds", "httpAuthBanSec", config.http.authBanSeconds);
+    if (config.http.authMaxFails < 1)
+        config.http.authMaxFails = 1;      // 0/负数会让"永远不封"变成"一次就封"的错觉
+    if (config.http.authBanSeconds < 0)
+        config.http.authBanSeconds = 0;
     readString(root, "http", "ssl.certFile", "httpSslCert", config.http.certFile);
     readString(root, "http", "ssl.keyFile", "httpSslKey", config.http.keyFile);
+
+    // HTTPS 只保证"路上没人看", 不保证"对面是谁" —— 端口一旦从不可信网络可达, 谁都能
+    // 起停 agent / 下发任务。所以开 TLS 就必须带应用层 token; 想裸奔请显式关掉 ssl。
+    if (config.http.sslEnabled && config.http.token.empty())
+    {
+        error = "http.ssl.enabled=true 时必须配置 http.token(应用层鉴权); "
+                "只用 TLS 不认证调用方。要么填 http.token, 要么显式设 http.ssl.enabled=false";
+        return false;
+    }
 
     if (config.http.certFile.empty())
         config.http.certFile = "certs/server.crt";
@@ -224,6 +245,7 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
     // logFile: 空 = <exeDir>/data/logs; 相对路径按"配置文件所在目录"解析
     if (root.isMember("logFile") && root["logFile"].isString() && !root["logFile"].asString().empty())
         config.logFile = resolvePath(cfgDir, root["logFile"].asString());
+    readBool(root, "", "logRotateDaily", "logRotateDaily", config.logRotateDaily);
 
     config.http.certFile = resolvePath(cfgDir, config.http.certFile);
     config.http.keyFile = resolvePath(cfgDir, config.http.keyFile);
@@ -252,8 +274,8 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
             JZJsonStream as(&a);
             as.readMemberDefault("name", ac.name, string());
             as.readMemberDefault("enabled", ac.enabled, true);
-            as.readMemberDefault("cmd", ac.cmd, string("agent_cli"));
             as.readMemberDefault("dir", ac.dir, string());
+            // 兼容旧配置: cmd / mode 已取消(cli 一律源码引用跑在本进程的线程里), 读到也不用
             const Json::Value *args = a.isMember("args") ? &a["args"] : nullptr;
             if (args && args->isArray())
                 for (Json::ArrayIndex k = 0; k < args->size(); ++k)
@@ -299,7 +321,7 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
     fprintf(stderr, "配置文件: %s\n", configPath.c_str());
     fprintf(stderr, "  角色      agent_cli 管理服务器(控制面 + 后台网页 + agent 监管)\n");
 
-    // http 网页 / API(HTTPS 只加密; 应用层鉴权待接入 token)
+    // http 网页 / API(HTTPS 只加密; /api/* 由 http.token 鉴权)
     fprintf(stderr, "  网页      %s://%s:%d\n",
             config.http.sslEnabled ? "https" : "http", config.http.bind.c_str(),
             config.http.port);
@@ -311,11 +333,26 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
     }
     else
         fprintf(stderr, "    ⚠ HTTPS 已关闭: 明文 HTTP(仅限完全可信的隔离网络)\n");
-    fprintf(stderr, "    鉴权    未接入(token 待做); 客户端证书 mTLS 已移除\n");
+    {
+        // ⚠ 先拼成 std::string 再 .c_str(): 三元表达式两支类型不同(const char* / string)
+        //   会统一成 std::string, 直接把 string 交给 %s 就是未定义行为(实测打出乱码)。
+        const string auth = config.http.token.empty()
+            ? string("无 token(仅限完全可信的隔离网络; 且只绑 127.0.0.1)")
+            : ("token(校验 /api/* 与 /app.js, 来源: cookie jz_token / ?token= / X-JZ-Token / Bearer; "
+               "5 分钟内错 " + std::to_string(config.http.authMaxFails) + " 次封 " +
+               std::to_string(config.http.authBanSeconds) + " 秒)");
+        fprintf(stderr, "    鉴权     %s\n", auth.c_str());
+    }
 
     // 控制面(agent_cli 出站连这里)
     fprintf(stderr, "  控制面    hub(JZNet) %s:%d  token=%s\n", config.hub.bind.c_str(),
             config.hub.port, config.hub.token.empty() ? "(无)" : "(已启用)");
+
+    // 日志: 目录 + 固定文件名(Server.log); 按天轮转时是 Server-yyyyMMdd.log
+    fprintf(stderr, "  日志      %s/Server%s.log%s\n",
+            jzLogDirOf(config.logFile, JZPlatform::applicationDirPath() + "/data/logs").c_str(),
+            config.logRotateDaily ? "-yyyyMMdd" : "",
+            config.logRotateDaily ? "  (按天轮转)" : "");
 
     // agents
     if (config.agents.empty())
@@ -324,9 +361,9 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
     {
         fprintf(stderr, "  Agents    %d 个:\n", (int)config.agents.size());
         for (const auto &ac : config.agents)
-            fprintf(stderr, "    - %s  %s  %s %s\n", ac.name.c_str(),
+            fprintf(stderr, "    - %s  %s  [inproc] %s%s\n", ac.name.c_str(),
                     ac.enabled ? "[自启]" : "[手动]",
-                    ac.cmd.c_str(),
+                    ac.args.empty() ? "(默认 config.json)" : "",
                     ac.args.empty() ? "" : joinStrings(ac.args, " ").c_str());
     }
 }
@@ -384,23 +421,57 @@ int main(int argc, char *argv[])
     JZApplication app;
 
     // 日志: General 模块落盘到 <logFile目录或 exeDir/data/logs>/Server.log。
+    // logFile 一律按**目录**解释(与 agent_cli / agent_node 同一口径, 见 jzLogDirOf):
+    // 老配置里写了 data/server.log 这种完整文件名也认, 只取目录。
     // 之前 server 根本没初始化 JZLogManager, 所有 jzInfo/jzWarning 全是空转 ——
     // 排查"任务下发/续会话/agent 上下线"时什么都看不到。
     {
-        const string logDir = config.logFile.empty()
-                                  ? (JZPlatform::applicationDirPath() + "/data/logs")
-                                  : dirName(config.logFile);
+        const string logDir = jzLogDirOf(config.logFile,
+                                         JZPlatform::applicationDirPath() + "/data/logs");
         JZDir().mkpath(logDir);
 
         JZLogConfig lc;
         lc.shouldPrintTime = true;
         lc.logPath = logDir;
+        lc.rotateDaily = config.logRotateDaily;
         JZLogManager::instance()->setConfig(lc);
 
         JZLogModuleConfig general;
-        general.name = "Server";                       // 落到 Server.log
+        general.name = "Server";                       // 落到 Server.log / Server-yyyyMMdd.log
         general.type = JZLogModuleConfig::File;
         JZLogManager::instance()->setModuleConfig(LogModule_General, general);
+
+        // inproc 的 cli 与本进程共用 JZLog: 它的回合诊断(LogModule_Agent)也落这里。
+        // ⚠ logPath 是进程级全局量, 所以 inproc cli 的日志与 Server.log 同目录 ——
+        //    配置里各 cli 的 logFile 只对"独立进程模式"有意义。
+        if (!config.agents.empty())
+        {
+            JZLogModuleConfig agentLog;
+            agentLog.name = "Agent";                   // 落到 Agent.log / Agent-yyyyMMdd.log
+            agentLog.type = JZLogModuleConfig::File;
+            JZLogManager::instance()->addModule(LogModule_Agent, agentLog);
+            JZLogManager::instance()->setModuleConfig(LogModule_Agent, agentLog);
+        }
+    }
+
+    // 优雅退出: SIGTERM/SIGINT 不要直接死进程 —— 那样 C++ 析构不跑, 被托管的 agent_cli
+    // 会变孤儿(实测孤儿还会带着同一个 agentId 反复重连, 和重启后的新进程互相顶替, 一秒一次)。
+    // 这里信号处理器只置一个标志(异步信号安全), 由事件循环里的定时器转成 app.quit():
+    // 正常退出后 JZAgentCliServer / JZProcess 的析构会把子进程整棵树收掉。
+    static volatile sig_atomic_t g_stopRequest = 0;
+    std::signal(SIGTERM, [](int) { g_stopRequest = 1; });
+    std::signal(SIGINT, [](int) { g_stopRequest = 1; });
+    {
+        JZTimer *watch = new JZTimer();
+        connect(&watch->sigTimeout, []()
+                {
+                    if (!g_stopRequest)
+                        return;
+                    g_stopRequest = 0;
+                    jzInfo() << "收到退出信号, 正在停止托管的 agent...";
+                    jzApp->quit();
+                });
+        watch->start(200);
     }
 
     JZAgentCliServer server;

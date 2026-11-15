@@ -6721,7 +6721,7 @@ static string textLineAt(const string &text, int n)
     return string();
 }
 
-JZShell::Result JZShell::exec(const string &line)
+JZShell::Result JZShell::exec(const string &line, bool keepCancel)
 {
     Result out;
     // `source` 会在 runBuiltin 里再进一次 exec: 嵌套调用不能把外层的截止时间/取消信号冲掉
@@ -6743,8 +6743,11 @@ JZShell::Result JZShell::exec(const string &line)
     m_exitCode = 0;
     m_depth = 0;
     m_inBuf.clear();      // 上一行命令剩下的管道输入不能串到这一条
-    if (!nested)
-        m_cancelRequested = false;   // 只清"上一条命令"留下的取消; 嵌套时外层还在取消中
+    // 只清"上一条命令"留下的取消; 嵌套时外层还在取消中。
+    // keepCancel: 宿主已经在进 exec 之前清过(并用"取消是否已投递"判过一轮), 这里再清一次
+    // 就会把刚好落在这两步之间的取消吞掉 —— 见 JZShell.h 的 clearCancel()。
+    if (!nested && !keepCancel)
+        m_cancelRequested = false;
     // 超时是**整条命令行**的预算: 进来记一次截止时间, 后面每个外部命令等待都按剩余时间算。
     // 以前是"每个外部命令各算一遍 timeout", `for d in a b c; do du -s "$d"; done` 就能
     // 跑到 3×timeout, 把调用方的任务超时(server 侧 15min)撞掉 —— 20:20 那条任务就是这么挂的。

@@ -14,5 +14,6 @@
     "maxSessions":         8,
     "maxConcurrent":       1,
     "recycleSec":          900,
-    "logFile":             ""
+    "logFile":             "",
+    "logRotateDaily":      false
 }

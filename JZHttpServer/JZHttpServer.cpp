@@ -191,6 +191,11 @@ void JZHttpServer::close()
     }
 }
 
+void JZHttpServer::setAuthFilter(std::function<bool(JZHttpServerClient *, const JZHttpRequest &)> filter)
+{
+    m_authFilter = std::move(filter);
+}
+
 void JZHttpServer::addRoute(const std::string& path, JZHttpHandler* handler)
 {
     JZ_ASSERT(!handler->parent() || handler->parent() == this);
@@ -273,6 +278,10 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
 
     // 来源地址(直连 = TCP 对端; 经 nginx 等反向代理 = X-Forwarded-For 第一段)
     request.setRemoteAddr(clientAddrOf(request, client->peerIp()));
+
+    // 鉴权: 分发之前拦一道(见 setAuthFilter)
+    if (m_authFilter && !m_authFilter(client, request))
+        return;
 
     JZHttpHandler* handler = nullptr;
     std::map<std::string, std::string> params;

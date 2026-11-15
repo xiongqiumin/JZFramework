@@ -11,7 +11,9 @@
    约定:
      - 管理台的"任务日志"只列 origin=user(人下发的); agent 内部派活不算一条用户任务。
      - 验证命令不常驻: 收进「⚙ 设置」, 存本机 localStorage。
-     - token 走 ?token= 或本机保存(cli 的 http.token 用得上; server 不需要)。
+     - token: server 的 http.token 校验 /api/*。网页把输入框的值写进 cookie `jz_token`,
+       浏览器之后**每个请求**(fetch / EventSource / 静态资源)都会自动带上; 没 cookie 时
+       退回 ?token=(兼容 cli 独立 http 与 curl)。401 会弹出输入框。
    ========================================================================== */
 
 const PAGE = document.body.dataset.page || 'agents';
@@ -53,18 +55,129 @@ const WORKING = [S.SUBMITTED, S.WORKING, S.INPUT_REQUIRED, S.AUTH_REQUIRED];
 /* ---------------- 基础工具 ---------------- */
 
 const TOKEN_KEY = 'jz.http.token';
+const TOKEN_COOKIE = 'jz_token';          // 与服务端 checkHttpToken 约定的 cookie 名
 const VERIFY_KEY = 'jz.http.verifyCmd';
+function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function lsSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} }
+function cookieGet(name) {
+  const all = document.cookie ? document.cookie.split(';') : [];
+  for (const kv of all) {
+    const i = kv.indexOf('=');
+    if (i < 0) continue;
+    if (kv.slice(0, i).trim() === name) return decodeURIComponent(kv.slice(i + 1).trim());
+  }
+  return '';
+}
+function cookieSet(name, value, days) {
+  // Secure 只在 https 下加: 明文 http(本机调试)加 Secure 浏览器会直接丢掉这条 cookie
+  const secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = name + '=' + encodeURIComponent(value) +
+    '; Path=/; Max-Age=' + (days > 0 ? days * 86400 : 0) + '; SameSite=Lax' + secure;
+}
+function authToken() { return cookieGet(TOKEN_COOKIE) || lsGet(TOKEN_KEY); }
+function setAuthToken(t) {
+  t = (t || '').trim();
+  lsSet(TOKEN_KEY, t);
+  cookieSet(TOKEN_COOKIE, t, t ? 30 : 0);   // 30 天; 空值 = 删除
+}
 (function rememberToken() {
   const t = QS.get('token');
   if (!t) return;
-  try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {}
+  setAuthToken(t);
+  // 从地址栏抹掉: 带着 token 的链接会被复制/进历史记录, 没必要到处留
+  try {
+    QS.delete('token');
+    const q = QS.toString();
+    history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
+  } catch (e) {}
 })();
-function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
-function lsSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} }
 function withToken(url) {
+  // cookie 有值就让浏览器自己带(每请求都有), 不再往 URL 里塞 token;
+  // 没 cookie(例如 cli 独立 http 且用户只用 URL 传参)才退回 query, 保持兼容。
+  if (cookieGet(TOKEN_COOKIE)) return url;
   const t = lsGet(TOKEN_KEY);
   if (!t) return url;
   return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
+}
+
+/* token 输入浮层: 401 时出现; 保存后写 cookie 再 reload。
+   为什么不放在设置弹窗里就完事: 设置入口本身就在页面上, 而没 token 时页面数据全是空的,
+   用户根本不知道该去点齿轮 —— 直接在请求失败时把人拦住最省事。 */
+/* 鉴权被拒(401 / 403 banned)统一入口: 返回 true 表示"已经给人看过了", 调用方别再报网络错。 */
+function authDenied(status, j) {
+  j = j || {};
+  if (status === 403 && j.banned) { showBanNotice(j.retryAfterSec || 60, j.error); return true; }
+  if (status === 401) { showTokenGate(j.error || '这台 server 需要 token'); return true; }
+  return false;
+}
+
+/* 连错太多次被临时封禁: 只提示, 别再让人输(输了也是 403)。到点自动 reload 重试。 */
+let BAN_NOTICE = null;
+function showBanNotice(sec, why) {
+  sec = Math.max(1, parseInt(sec, 10) || 60);
+  if (BAN_NOTICE) return;
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;' +
+    'justify-content:center;background:rgba(0,0,0,.55);font:14px/1.6 system-ui,sans-serif';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#fff;color:#222;border-radius:10px;padding:20px 22px;' +
+    'max-width:360px;box-shadow:0 10px 40px rgba(0,0,0,.35)';
+  const title = document.createElement('div');
+  title.style.cssText = 'font-weight:600;margin-bottom:6px';
+  title.textContent = '尝试次数过多';
+  const body = document.createElement('div');
+  body.style.cssText = 'color:#666';
+  card.appendChild(title);
+  card.appendChild(body);
+  box.appendChild(card);
+  document.body.appendChild(box);
+  BAN_NOTICE = box;
+  let left = sec;
+  const tick = () => {
+    body.textContent = (why || 'token 连续错误，已临时封禁') +
+      '；' + left + ' 秒后自动重试。';
+    if (left-- <= 0) { location.reload(); return; }
+    setTimeout(tick, 1000);
+  };
+  tick();
+}
+
+let TOKEN_GATE = null;
+function showTokenGate(msg) {
+  if (TOKEN_GATE) { TOKEN_GATE.style.display = 'flex'; return; }
+  const box = document.createElement('div');
+  box.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;' +
+    'justify-content:center;background:rgba(0,0,0,.55);font:14px/1.6 system-ui,sans-serif';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#fff;color:#222;border-radius:10px;padding:20px 22px;' +
+    'min-width:320px;box-shadow:0 10px 40px rgba(0,0,0,.35)';
+  card.innerHTML = '<div style="font-weight:600;margin-bottom:6px">需要访问 token</div>' +
+    '<div style="color:#666;margin-bottom:10px">' + (msg || '') +
+    '<br>token 由 server.json 的 <code>http.token</code> 配置。</div>';
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.placeholder = '粘贴 token';
+  input.value = authToken();
+  input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #ccc;' +
+    'border-radius:6px;margin-bottom:10px;font:inherit';
+  const btn = document.createElement('button');
+  btn.textContent = '保存并进入';
+  btn.style.cssText = 'padding:8px 14px;border:0;border-radius:6px;background:#2f6feb;color:#fff;' +
+    'font:inherit;cursor:pointer';
+  const go = () => {
+    const v = (input.value || '').trim();
+    if (!v) { input.focus(); return; }
+    setAuthToken(v);
+    location.reload();
+  };
+  btn.addEventListener('click', go);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+  card.appendChild(input);
+  card.appendChild(btn);
+  box.appendChild(card);
+  document.body.appendChild(box);
+  TOKEN_GATE = box;
+  setTimeout(() => input.focus(), 0);
 }
 
 function showFatal(text) {
@@ -234,7 +347,12 @@ async function getJson(url) {
     throw e;
   }
   setConn(true);
-  if (!r.ok) throw new Error('HTTP ' + r.status);   // 能拿到响应 = 连接是通的
+  if (!r.ok)
+  {
+    const j = await r.json().catch(() => ({}));
+    if (!authDenied(r.status, j)) throw new Error('HTTP ' + r.status);
+    throw new Error(j.error || '需要 token');
+  }
   return r.json();
 }
 /* 复制到剪贴板: 优先 Clipboard API(仅安全上下文有), 否则退回隐藏 textarea + execCommand。
@@ -277,6 +395,7 @@ async function postJson(url, body, timeoutMs) {
   }
   setConn(true);
   const j = await r.json().catch(() => ({}));
+  if (!r.ok) authDenied(r.status, j);
   return { ok: r.ok, json: j };
 }
 async function sendMessage({ agentId, prompt, verifyCmd, contextId, taskId, rootDir, images }) {
@@ -1390,7 +1509,7 @@ async function doSend() {
 function openSettings() {
   const dlg = document.getElementById('dlgSettings');
   document.getElementById('fVerify').value = lsGet(VERIFY_KEY);
-  document.getElementById('fToken').value = lsGet(TOKEN_KEY);
+  document.getElementById('fToken').value = authToken();
   if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
   else dlg.setAttribute('open', '');
 }
@@ -1400,7 +1519,7 @@ function closeSettings() {
 }
 function saveSettings() {
   lsSet(VERIFY_KEY, document.getElementById('fVerify').value.trim());
-  lsSet(TOKEN_KEY, document.getElementById('fToken').value.trim());
+  setAuthToken(document.getElementById('fToken').value);
   closeSettings();
   syncComposer();
   if (window.JzUI) JzUI.toast('设置已保存', 'ok');

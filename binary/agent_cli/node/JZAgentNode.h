@@ -93,8 +93,10 @@ public:
     //   字段留着只为兼容旧配置(配置里还写着它), 读进来不用。
     int recycleSec = 15 * 60;
 
-    // 日志落文件(空 = 只打控制台)。长驻进程看日志全靠它。
+    // 日志落文件的**目录**(空 = 只打控制台)。长驻进程看日志全靠它。
+    // 文件名固定 Node.log; logRotateDaily=true 时按天切成 Node-yyyyMMdd.log。
     std::string logFile;
+    bool logRotateDaily = false;
 };
 
 // ---------------------------------------------------------------------------

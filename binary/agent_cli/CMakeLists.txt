@@ -8,16 +8,30 @@
 # 工具实现全部来自 binary/agent_tool(与本地 code_agent / 远端 agent_node 共用同一份),
 # JZAgent 来自 JZFramework。
 # ---------------------------------------------------------------------------
-add_executable(agent_cli
-    main.cpp
+# ---------------------------------------------------------------------------
+# agent_cli_core —— cli 的"可嵌入"部分(源码引用)
+#
+# 除了独立 exe, agent_cli_server 也需要它: inproc 模式下 server 把一台 cli 起在
+# **同进程的一个线程**里(不再 exec agent_cli.exe), 用同一份代码、同一份配置解析。
+# 所以这里必须是静态库, 而不是只编进 exe 的源文件。
+# ---------------------------------------------------------------------------
+add_library(agent_cli_core STATIC
     JZAgentCli.h
     JZAgentCli.cpp
-	JZAgentCliTask.h
-	JZAgentCliTask.cpp
+    JZAgentCliTask.h
+    JZAgentCliTask.cpp
     JZNodeLink.h
     JZNodeLink.cpp
     JZHubLink.h
     JZHubLink.cpp
+    JZCliConfigIO.h
+    JZCliConfigIO.cpp
+)
+target_link_libraries(agent_cli_core PUBLIC agent_cli_packet agent_tool)
+target_include_directories(agent_cli_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(agent_cli
+    main.cpp
 )
 
 # ---------------------------------------------------------------------------
@@ -39,7 +53,7 @@ target_link_libraries(agent_cli_packet PUBLIC JZFramework)
 # PUBLIC: server/ node/ test/ 这几个子目录里的源文件都按裸名 include 这两个头。
 target_include_directories(agent_cli_packet PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(agent_cli PRIVATE agent_cli_packet agent_tool)
+target_link_libraries(agent_cli PRIVATE agent_cli_core agent_cli_packet agent_tool)
 
 # 拷贝网页静态资源(webui/)到 exe 同目录, 使默认 httpDir(=exeDir/webui) 能找到 index.html 等。
 # 目录就叫 webui: 它是"网页界面", 不是 http 服务本身(别和 http 配置段混在一起)。

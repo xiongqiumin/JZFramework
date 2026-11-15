@@ -11,7 +11,6 @@
 #include "JZObject.h"
 
 class JZHttpServer;
-class JZProcess;
 #include "JZServerAgent.h"
 
 class JZTimer;
@@ -22,8 +21,10 @@ class JZHttpRequest;
 // ---------------------------------------------------------------------------
 // JZAgentCliServer —— agent_cli 管理服务器
 //   1) 控制面(hub): 等 cli 主动连进来, 点名下发 A2A Task;
-//   2) 管理一系列 JZAgentCli 实例: 每个作为一个子进程拉起并监管(启停/重启/状态);
-//   3) 收集各 agent 的 stdout/stderr 日志, 提供后台网页 + 管理 API 查询。
+//   2) 管理一系列 JZAgentCli 实例: **源码引用**, 每台跑在本进程的一个独立线程上
+//      (见 JZInprocCli), 可 启停/重启/看状态; `agents` 为空 = 只当纯 hub(不起任何 cli);
+//   3) cli 的日志走本进程的 JZLog(Agent 模块, 落到 <logFile 目录>/Agent.log),
+//      提供后台网页 + 管理 API 查询。
 //   网页/API 都在本类的 JZHttpServer 上; 端口由 config.http.* 控制。
 //   内网穿透不在本进程里做: 需要时用独立的 jzfrps / jzfrpc 进程。
 // ---------------------------------------------------------------------------
@@ -39,18 +40,42 @@ struct JZCliServerHttpConfig
     int port = 8088;
 
     bool sslEnabled = true;     // 是否用 TLS 提供网页 / API(默认开, 仅加密)
+
+    // 应用层鉴权口令。**sslEnabled=true 时必填**(否则启动失败): TLS 只加密, 不认证
+    // 调用方 —— 端口一旦不可信网络可达, 谁都能起停 agent、下发任务。
+    // 校验范围: /api/* (静态页/JS 不需要, 否则连登录入口都加载不出来)。
+    // 来源优先级: cookie "jz_token" > ?token= > X-JZ-Token > Authorization: Bearer。
+    std::string token;
+
+    // 失败封禁: 同一 IP 在 5 分钟窗口内**带错** authMaxFails 次 → 封 authBanSeconds 秒。
+    // ⚠ 只统计"带了 token 但不匹配"的请求: 浏览器第一次打开页面必然先打几条 /api/*
+    //   (那时还没输入 token), 把它们算成爆破会让正常用户被自己封掉。
+    // 目的是挡"对着 token 爆破"的脚本; 真人偶发输错不该被锁, 所以默认 5 次/5 分钟。
+    int authMaxFails = 5;
+    int authBanSeconds = 300;
+
     std::string certFile;       // 服务器证书链(PEM); 空 = <配置文件目录>/certs/server.crt
     std::string keyFile;        // 服务器私钥(PEM);   空 = <配置文件目录>/certs/server.key
 };
 
 // 被管理的一个 agent_cli 实例的配置
+//
+// 只有一种跑法: **源码引用** —— cli 跑在 server 进程内的独立线程上(见 JZInprocCli)。
+// 不再 exec 子进程, 所以这里没有 cmd / mode; 配置里若还留着它们, 会被忽略。
 struct JZCliServerAgentConfig
 {
-    std::string name;           // 唯一名(用于 API / 网页标识)
-    bool enabled = true;        // 是否随 server 启动
-    std::string cmd = "agent_cli";   // 程序; 默认解析到 server 同目录的 agent_cli(.exe)
-    std::vector<std::string> args;   // 启动参数, 如 ["-c","agent1.json"]
-    std::string dir;            // 工作目录(空 = server 同目录)
+    std::string name;           // 唯一名(用于 API / 网页标识, 也是 cli 的 agentId 兜底)
+    bool enabled = true;        // 是否随 server 启动; 全部 disabled / agents 为空 = 不起任何 cli
+    std::vector<std::string> args;   // 启动参数, 如 ["-c","agent1.json"](只用其中的配置文件路径)
+    std::string dir;            // 基准目录(空 = server 同目录); args 里的相对路径按它展开
+};
+
+// 一台被管理 cli 的运行状态(线程视角; 在线与否看控制面 hub 的在线列表)
+enum JZCliAgentState
+{
+    JZCliAgent_Stopped = 0,
+    JZCliAgent_Starting = 1,
+    JZCliAgent_Running = 2,
 };
 
 // 控制面(hub): cli 出站连进来的 JZNetServer
@@ -85,8 +110,10 @@ struct JZCliServerOnlineAgent
 // JZAgentCliServer 配置: 后台网页 + 被管理的一系列 agent_cli + 控制面
 struct JZCliServerConfig
 {
-    // 日志文件路径(可执行文件相对或绝对); 空 = <exeDir>/data/logs, 文件名固定 Server.log
+    // 日志**目录**(可执行文件相对或绝对); 空 = <exeDir>/data/logs, 文件名固定 Server.log。
+    // logRotateDaily=true 时按天切成 Server-yyyyMMdd.log。
     std::string logFile;
+    bool logRotateDaily = false;
 
     // 后台网页 / 管理 API
     JZCliServerHttpConfig http;
@@ -200,6 +227,21 @@ private:
     std::string m_httpKeyPem;
     std::map<std::string, JZCliServerAgentInstance*> m_agents;  // name -> 实例
     int64_t m_startTime = 0;
+
+    // ---- /api/* 鉴权: 失败计数与临时封禁(按客户端 IP) ----
+    // 计数窗口 5 分钟; 命中阈值后封 authBanSeconds 秒。只影响 /api/*, 静态页照常能打开
+    // (否则被封的人连"我在被哪台服务拒绝"都看不到)。
+    struct AuthFailRecord
+    {
+        int fails = 0;
+        int64_t windowStart = 0;   // JZPlatform::getTickCountMs()
+        int64_t banUntil = 0;      // > now 表示封禁中
+    };
+    std::map<std::string, AuthFailRecord> m_authFails;
+    JZMutex m_authMutex;
+    // 鉴权总闸: 返回 false 表示"已经回过包(401/403)", 请求到此为止
+    bool httpAuthGuard(JZHttpServerClient *client, const JZHttpRequest &req);
+    void pruneAuthFails();         // 由 5s 巡检调用, 防 map 无限长
 
     // ---- 控制面 ----
     struct PendingTask

@@ -172,7 +172,8 @@ static std::string logTextLine(const char *tag, const std::string &text)
 
 using namespace std;
 
-const int JZAgentCli::kHistoryMax;
+// 注意: JZAgentCli::kHistoryMax 的类外定义只保留在 JZAgentCli.cpp 一处。
+// 两个 .cpp 各写一遍会让同一目标内出现 "multiple definition" 链接错误。
 
 // 单次读文件上限(与 node 一致): 避免把几百兆读进内存。
 static const int kReadFileLimit = 8 * 1024 * 1024;

@@ -9,10 +9,13 @@ add_executable(agent_cli_server
     JZAgentCliServer.cpp
     JZServerAgent.h
     JZServerAgent.cpp
+    JZInprocCli.h
+    JZInprocCli.cpp
 )
 
+# agent_cli_core: inproc 模式**源码引用** cli(跑在同进程的线程里); process 模式仍 exec 独立 exe
 # agent_tool: server 内置 agent 复用同一份终端/文件工具(与 agent_cli 一致)
-target_link_libraries(agent_cli_server PRIVATE agent_cli_packet agent_tool)
+target_link_libraries(agent_cli_server PRIVATE agent_cli_core agent_cli_packet agent_tool)
 
 # 管理台网页: 与 agent_cli 自带 http 共用一份前端(binary/agent_cli/webui),
 #   拷到 <exeDir>/server_web/; 再把仓库唯一的视觉层 web/ui 拷进 server_web/ui。

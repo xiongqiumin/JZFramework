@@ -4,7 +4,7 @@
 #include "JZAgentHubPacket.h"    // 控制面协议(cli <-> server)
 #include "JZHttpServer.h"        // 后台网页 / 管理 API
 #include "JZHttpStaticFiles.h"
-#include "JZProcess.h"            // 拉起并监管 agent_cli 子进程
+#include "JZInprocCli.h"          // inproc 模式: cli 跑在同进程的独立线程里(源码引用)
 #include "JZDir.h"               // mkpath(data 目录)
 #include "JZPlatform.h"          // applicationDirPath
 #include "JZFileInfo.h"          // exists
@@ -12,6 +12,7 @@
 #include "JZDateTime.h"          // currentMSecsSinceEpoch
 #include "JZTimer.h"             // 任务超时(到点回 504 并请求 cli 取消)
 #include "JZDebug.h"
+#include "JZLog.h"            // jzLogDirOf: /api/agents/logs 读 Agent.log 尾部
 #include "JZJson.h"              // Json::Value / FastWriter
 #include "JZCodeTools.h"         // codeNormalizePath(切换工作目录时规范化路径)
 
@@ -49,17 +50,14 @@ struct SlowReqGuard
 struct JZCliServerAgentInstance
 {
     JZCliServerAgentConfig cfg;
-    JZProcess *proc = nullptr;
-    JZProcess::ProcessState state = JZProcess::NotRunning;
-    int exitCode = 0;
-    JZProcess::ExitStatus exitStatus = JZProcess::NormalExit;
+    JZInprocCli *inproc = nullptr;                     // 源码引用: 一台 cli = 一个线程
+    JZCliAgentState state = JZCliAgent_Stopped;
     int64_t startTime = 0;
     int64_t stopTime = 0;
 
-    mutable JZMutex mutex;          // 保护 logs / state / exitCode(读线程写, HTTP 线程读)
-    std::deque<std::string> logs;   // 日志环形缓冲(已按行拆分)
-    std::string recvBuf;            // 未完成的半行(仅读线程访问, 无需锁)
-    size_t logMax = 3000;
+    mutable JZMutex mutex;          // 保护 logs / state(线程写, HTTP 线程读)
+    std::deque<std::string> logs;   // 启停阶段的少量记录(运行日志走 JZLog 的 Agent.log)
+    size_t logMax = 200;
 };
 
 // ---------------------------------------------------------------------------
@@ -383,6 +381,46 @@ static void respondText(JZHttpServerClient *client, const JZHttpRequest &req, in
 }
 
 // 任务回包是**异步**的(等 cli 跑完), 那时请求对象早没了 —— 只能用 buffer 版本。
+// ---------------------------------------------------------------------------
+// /api/* 的应用层鉴权(见 JZCliServerHttpConfig::token)
+//
+// 为什么只护 /api/*: 静态页 / app.js / css 是"拿到也没用"的东西, 而登录框本身要靠它们
+// 才能加载出来 —— 把静态资源也护上, 用户永远看不到可以输入 token 的界面。
+//
+// token 来源优先级:
+//   1) cookie  jz_token=...   ← 网页把输入框里的值写进 cookie, 浏览器之后**每个请求**都带
+//   2) query   ?token=...     ← 兼容旧链接 / curl 调试
+//   3) header  X-JZ-Token: ...
+//   4) header  Authorization: Bearer ...
+// ---------------------------------------------------------------------------
+static bool tokenEquals(const string &a, const string &b)
+{
+    // 常量时间比较: 别让"第几个字节开始不同"从响应时间上泄漏出去
+    if (a.size() != b.size())
+        return false;
+    unsigned char diff = 0;
+    for (size_t i = 0; i < a.size(); i++)
+        diff |= (unsigned char)(a[i] ^ b[i]);
+    return diff == 0;
+}
+
+// 从请求里取 token(cookie > query > 头); 取不到返回空串
+static string tokenFromRequest(const JZHttpRequest &req)
+{
+    string tk = req.cookie("jz_token");
+    if (tk.empty())
+        tk = req.queryParam("token");
+    if (tk.empty())
+        tk = req.header("X-JZ-Token");
+    if (tk.empty())
+    {
+        string auth = req.header("Authorization");
+        if (auth.size() > 7 && str_toLower(auth.substr(0, 7)) == "bearer ")
+            tk = auth.substr(7);
+    }
+    return tk;
+}
+
 static void respondJsonAsync(JZHttpServerClient *client, int code, const Json::Value &v)
 {
     if (!client)
@@ -579,12 +617,12 @@ static Json::Value makeSlimTaskSignal(const string &taskId, const string &state,
     return j;
 }
 
-static const char *stateString(JZProcess::ProcessState s)
+static const char *stateString(JZCliAgentState s)
 {
     switch (s)
     {
-        case JZProcess::Running:  return "running";
-        case JZProcess::Starting: return "starting";
+        case JZCliAgent_Running:  return "running";
+        case JZCliAgent_Starting: return "starting";
         default:                  return "stopped";
     }
 }
@@ -594,13 +632,11 @@ static Json::Value agentToJson(JZCliServerAgentInstance *inst)
     Json::Value j;
     j["name"] = inst->cfg.name;
     j["enabled"] = inst->cfg.enabled;
-    j["cmd"] = inst->cfg.cmd;
     j["args"] = Json::arrayValue;
     for (const auto &a : inst->cfg.args)
         j["args"].append(a);
-    j["running"] = (inst->state == JZProcess::Running);
+    j["running"] = (inst->state == JZCliAgent_Running);
     j["state"] = stateString(inst->state);
-    j["exitCode"] = inst->exitCode;
     j["startTime"] = inst->startTime;
     j["stopTime"] = inst->stopTime;
     {
@@ -622,8 +658,13 @@ JZAgentCliServer::~JZAgentCliServer()
 {
     for (auto &kv : m_agents)
     {
-        if (kv.second->proc && kv.second->state == JZProcess::Running)
-            kv.second->proc->killProcess();
+        // inproc: 先让线程退出(join 之后才安全 delete, 否则线程还在跑对象就没了)
+        if (kv.second->inproc)
+        {
+            kv.second->inproc->stop();
+            delete kv.second->inproc;
+            kv.second->inproc = nullptr;
+        }
         delete kv.second;
     }
     m_agents.clear();
@@ -665,59 +706,15 @@ bool JZAgentCliServer::init(const JZCliServerConfig &config, std::string &error)
         }
     }
 
-    // 为每个 agent 配置建实例(进程随 server 一起存活), 并连好信号
+    // 为每个 agent 配置登记实例。真正的 cli 线程由 spawnAgent 在 hub 起来之后再起
+    // (cli 一启动就接管控制面, hub 没起会白报一轮连接失败)。
     for (const auto &ac : m_config.agents)
     {
         auto *inst = new JZCliServerAgentInstance();
         inst->cfg = ac;
-        inst->proc = new JZProcess(this);
-        inst->proc->setProcessChannelMode(JZProcess::MergedChannels);   // stdout+stderr 合并
-        if (!ac.dir.empty())
-            inst->proc->setWorkingDirectory(ac.dir);
-
-        // 收集日志(读线程触发); 跨线程写 logs, appendLog 内部加锁
-        connect(&inst->proc->sigReadyReadStandardOutput,
-                [this, inst]()
-                {
-                    JZByteArray b = inst->proc->readAllStandardOutput();
-                    if (b.size() > 0)
-                        appendLog(inst, str_fromUtf8(b));
-                });
-        // 启动成功
-        connect(&inst->proc->sigStarted,
-                [inst]()
-                {
-                    JZMutexLocker lock(&inst->mutex);
-                    inst->state = JZProcess::Running;
-                });
-        // 结束: 把残留半行作为最后一行提交, 再更新状态
-        connect(&inst->proc->sigFinished,
-                [this, inst](int code, JZProcess::ExitStatus st)
-                {
-                    if (!inst->recvBuf.empty())
-                    {
-                        string tail = inst->recvBuf;
-                        inst->recvBuf.clear();
-                        appendLog(inst, tail + "\n");
-                    }
-                    JZMutexLocker lock(&inst->mutex);
-                    inst->state = JZProcess::NotRunning;
-                    inst->exitCode = code;
-                    inst->exitStatus = st;
-                    inst->stopTime = JZDateTime::currentMSecsSinceEpoch();
-                });
-        // 起不来(程序不存在等)
-        connect(&inst->proc->sigErrorOccurred,
-                [this, inst](JZProcess::ProcessError)
-                {
-                    appendLog(inst, "[error] 进程启动/运行失败\n");   // 内部加锁
-                    JZMutexLocker lock(&inst->mutex);
-                    inst->state = JZProcess::NotRunning;
-                    inst->stopTime = JZDateTime::currentMSecsSinceEpoch();
-                });
-
         m_agents[ac.name] = inst;
     }
+
     return true;
 }
 
@@ -791,6 +788,7 @@ void JZAgentCliServer::startHub()
     {
         reapDeadAgents();     // 心跳超时的 agent
         reapStuckTasks();     // 长时间没有任何事件的任务
+        pruneAuthFails();     // 鉴权失败记录(过期就丢, 别被扫描器撑大)
         // 顺便当 SSE 心跳: 网页靠"20s 收不到任何帧"判断下行断了(前端 EVT_LAST)
         broadcastAgentEvent();
     });
@@ -1172,7 +1170,8 @@ void JZAgentCliServer::loadTaskStore()
         if (r.contextId.empty())
             r.contextId = "ctx-" + r.taskId;
         r.project = meta.get("project", "").asString();
-        r.statusMs = (long long)meta.get("statusMs", r.endMs ? r.endMs : r.startMs).asInt64();
+        r.statusMs = (long long)meta.get("statusMs",
+                                          Json::Value((Json::Int64)(r.endMs ? r.endMs : r.startMs))).asInt64();
         r.events = stringsFromJson(meta.get("events", Json::Value(Json::arrayValue)));
         r.artifacts = stringsFromJson(j.get("artifacts", Json::Value(Json::arrayValue)));
         r.history = stringsFromJson(j.get("history", Json::Value(Json::arrayValue)));
@@ -2805,13 +2804,11 @@ void JZAgentCliServer::onApiAgentDetail(JZHttpServerClient *client, const JZHttp
         Json::Value j(Json::objectValue);
         j["agentId"] = id;
         j["name"] = id;
-        j["kind"] = "process";
+        j["kind"] = "inproc";
         j["state"] = (int)inst->state;
         j["startTime"] = (Json::Int64)inst->startTime;
-        j["exitCode"] = inst->exitCode;
-        j["cmd"] = inst->cfg.cmd;
         j["nodes"] = Json::Value(Json::arrayValue);
-        out["kind"] = "process";
+        out["kind"] = "inproc";
         out["info"] = j;
     }
 
@@ -3371,6 +3368,116 @@ void JZAgentCliServer::onApiTaskDelete(JZHttpServerClient *client, const JZHttpR
 // ---------------------------------------------------------------------------
 // 后台网页 + 管理 API
 // ---------------------------------------------------------------------------
+// /api/* 的鉴权总闸: 失败计数 + 临时封禁(按客户端 IP) + token 校验。
+// 返回 false 表示已经回过包(401/403), 调用方直接结束本次请求。
+bool JZAgentCliServer::httpAuthGuard(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    // 保护范围: /api/*(数据与动作) + /app.js(前端逻辑与接口约定)。
+    // 不保护: 页面 HTML、css、图片、以及 boot.js —— 这些"拿到也没用", 而"输入 token"
+    // 的界面本身要靠它们(boot.js 内联自足)才能加载, 护上就等于把人锁在门外看不到提示。
+    const string &path = req.path();
+    const bool isApi = (path.compare(0, 5, "/api/") == 0);
+    if (!isApi && path != "/app.js")
+        return true;
+
+    const string ip = req.remoteAddr();
+    const int64_t now = JZPlatform::getTickCountMs();
+
+    // ① 封禁中: 直接 403, 连 token 都不比(否则爆破脚本还能继续试)
+    {
+        JZMutexLocker lock(&m_authMutex);
+        auto it = m_authFails.find(ip);
+        if (it != m_authFails.end() && it->second.banUntil > now)
+        {
+            const int64_t leftSec = (it->second.banUntil - now + 999) / 1000;
+            Json::Value body(Json::objectValue);
+            body["error"] = "token 连续错误, 已临时封禁 " + to_string((long long)leftSec) + " 秒";
+            body["banned"] = true;
+            body["retryAfterSec"] = (Json::Int64)leftSec;
+            respondJson(client, req, 403, body);
+            return false;
+        }
+    }
+
+    // ② token 正确: 清掉这台 IP 的失败记录
+    const string tk = tokenFromRequest(req);
+    if (tokenEquals(tk, m_config.http.token))
+    {
+        JZMutexLocker lock(&m_authMutex);
+        m_authFails.erase(ip);
+        return true;
+    }
+
+    // ②.5 "压根没带 token" 不算失败: 浏览器第一次打开页面必然先打几条 /api/*,
+    //     把它们算成爆破会让正常用户在输入 token 之前就被自己的刷新封掉。
+    //     爆破的特征是"一直带着不同 token 来试", 那种才计数。
+    if (tk.empty())
+    {
+        Json::Value body(Json::objectValue);
+        body["error"] = "需要 token";
+        body["needToken"] = true;
+        respondJson(client, req, 401, body);
+        return false;
+    }
+
+    // ③ 带错了 token: 记一次失败; 到阈值就开始封
+    int banSeconds = 0;
+    {
+        JZMutexLocker lock(&m_authMutex);
+        AuthFailRecord &r = m_authFails[ip];
+        const int64_t windowMs = 5 * 60 * 1000;
+        if (r.windowStart == 0 || now - r.windowStart > windowMs)
+        {
+            r.windowStart = now;
+            r.fails = 0;
+        }
+        r.fails++;
+        if (r.fails >= m_config.http.authMaxFails && m_config.http.authBanSeconds > 0)
+        {
+            r.banUntil = now + (int64_t)m_config.http.authBanSeconds * 1000;
+            r.fails = 0;
+            r.windowStart = now;
+            banSeconds = m_config.http.authBanSeconds;
+        }
+    }
+
+    if (banSeconds > 0)
+    {
+        jzWarning() << ("API token 连续错误, 临时封禁 " + ip + " " + to_string(banSeconds) + " 秒").c_str();
+        Json::Value body(Json::objectValue);
+        body["error"] = "token 连续错误, 已临时封禁 " + to_string(banSeconds) + " 秒";
+        body["banned"] = true;
+        body["retryAfterSec"] = banSeconds;
+        respondJson(client, req, 403, body);
+        return false;
+    }
+
+    Json::Value body(Json::objectValue);
+    body["error"] = "token 不正确";
+    body["needToken"] = true;
+    respondJson(client, req, 401, body);
+    return false;
+}
+
+// 定期丢过期记录: 否则被扫过的 IP 会一直留在 map 里(内网端口被公网扫是常态)
+void JZAgentCliServer::pruneAuthFails()
+{
+    const int64_t now = JZPlatform::getTickCountMs();
+    const int64_t windowMs = 5 * 60 * 1000;
+
+    JZMutexLocker lock(&m_authMutex);
+    for (auto it = m_authFails.begin(); it != m_authFails.end();)
+    {
+        const AuthFailRecord &r = it->second;
+        const bool banExpired = (r.banUntil == 0 || r.banUntil <= now);
+        const bool windowExpired = (r.windowStart == 0 || now - r.windowStart > windowMs);
+        if (banExpired && windowExpired)
+            it = m_authFails.erase(it);
+        else
+            ++it;
+    }
+}
+
 void JZAgentCliServer::startHttp()
 {
     m_http = new JZHttpServer(this);
@@ -3389,9 +3496,15 @@ void JZAgentCliServer::startHttp()
     {
         jzWarning() << "http.ssl.enabled=false: 管理台/API 将以明文 HTTP 暴露(仅限完全可信的隔离网络)";
     }
-    if (m_config.http.bind != "127.0.0.1" && m_config.http.bind != "localhost")
-        jzWarning() << "管理台/API 暂未做应用层鉴权(客户端证书已移除, token 待接入): "
-                    << m_config.http.bind << ":" << m_config.http.port << " 可被同网段任意访问";
+    // 应用层鉴权: 只护 /api/*(静态页/JS 不护, 否则连输入 token 的界面都拿不到)。
+    // TLS 只保证"路上没人看", 不保证"对面是谁", 所以这两层必须同时开。
+    if (!m_config.http.token.empty())
+    {
+        m_http->setAuthFilter([this](JZHttpServerClient *client, const JZHttpRequest &req)
+        {
+            return httpAuthGuard(client, req);
+        });
+    }
 
     // 任务记录 + agent 档案: 先载盘, 否则重启后历史全丢
     loadTaskStore();
@@ -3447,6 +3560,9 @@ void JZAgentCliServer::startHttp()
     webFiles->setCacheMaxAge(0);
     m_http->addRoute("/app.css", webFiles);
     m_http->addRoute("/app.js", webFiles);
+    // boot.js: 唯一**不鉴权**的脚本 —— 它先探一下 token, 通过了再动态加载 app.js
+    // (app.js 被保护, 而"输入 token"的界面不能写在 app.js 里)。
+    m_http->addRoute("/boot.js", webFiles);
     m_http->addRoute("/mobile.css", webFiles);   // 手机页专属样式
     m_http->addRoute("/ui/<path:path>", webFiles);
     // /vendor/*  第三方前端库(highlight.js 等), 全是本地文件 —— 不走 CDN
@@ -3473,18 +3589,30 @@ void JZAgentCliServer::startHttp()
 // ---------------------------------------------------------------------------
 // agent 管理
 // ---------------------------------------------------------------------------
-string JZAgentCliServer::resolveProgram(const JZCliServerAgentConfig &cfg) const
+
+// inproc 模式: 从 args 里取配置文件(-c/--config), 相对路径按 dir(或 exeDir)展开。
+// 为什么要自己解析: inproc 的 cli 没有独立进程的 cwd(它就跑在 server 进程里),
+// 直接拿相对路径会按 server 的 cwd 找, 与 process 模式的语义不一致。
+static string resolveAgentConfigPath(const JZCliServerAgentConfig &cfg)
 {
-    string program = cfg.cmd;
-    if (program.empty() || program == "agent_cli")
+    string path;
+    for (size_t i = 0; i < cfg.args.size(); i++)
     {
-        program = JZPlatform::applicationDirPath() + "/agent_cli";
-#ifdef _WIN32
-        if (!JZFileInfo::exists(program))
-            program += ".exe";
-#endif
+        if ((cfg.args[i] == "-c" || cfg.args[i] == "--config") && i + 1 < cfg.args.size())
+        {
+            path = cfg.args[i + 1];
+            break;
+        }
     }
-    return program;
+    if (path.empty())
+        path = "config.json";
+
+    const bool isAbs = path[0] == '/' || path[0] == '\\' ||
+                       (path.size() > 1 && path[1] == ':');
+    if (isAbs)
+        return path;
+    const string base = cfg.dir.empty() ? JZPlatform::applicationDirPath() : cfg.dir;
+    return base + "/" + path;
 }
 
 bool JZAgentCliServer::spawnAgent(const string &name)
@@ -3493,20 +3621,37 @@ bool JZAgentCliServer::spawnAgent(const string &name)
     if (it == m_agents.end())
         return false;
     JZCliServerAgentInstance *inst = it->second;
-    if (inst->state == JZProcess::Running || inst->state == JZProcess::Starting)
+    if (inst->state == JZCliAgent_Running || inst->state == JZCliAgent_Starting)
         return false;   // 已在跑
 
-    string program = resolveProgram(inst->cfg);
-    if (!inst->proc->start(program, inst->cfg.args))
+    // 配置文件: args 里的 -c <path>(与独立 exe 同一套); 缺省 = <dir 或 exeDir>/config.json
+    const string cfgPath = resolveAgentConfigPath(inst->cfg);
+
+    // 每次启动用新对象: JZThread 跑过一轮就 join 掉了, 复用容易踩状态残留
+    if (inst->inproc)
     {
-        appendLog(inst, "[error] 启动失败: " + program + "\n");
+        inst->inproc->stop();
+        delete inst->inproc;
+        inst->inproc = nullptr;
+    }
+    inst->inproc = new JZInprocCli();
+
+    inst->state = JZCliAgent_Starting;
+    string err;
+    if (!inst->inproc->startCli(cfgPath, inst->cfg.name,
+                                "127.0.0.1", m_config.hub.port, m_config.hub.token, err))
+    {
+        inst->state = JZCliAgent_Stopped;
+        appendLog(inst, "[error] 启动失败: " + err);
+        jzWarning() << "agent 启动失败:" << name.c_str() << err.c_str();
         return false;
     }
-    inst->state = JZProcess::Starting;   // start 成功仅表示进程创建成功, Running 等 sigStarted
+
+    // 线程起来 = Running(它自己会去连控制面, 连上后才会出现在 hub 的在线列表里)
+    inst->state = JZCliAgent_Running;
     inst->startTime = JZDateTime::currentMSecsSinceEpoch();
     inst->stopTime = 0;
-    inst->exitCode = 0;
-    jzInfo() << "agent 启动:" << name << "  cmd=" << program;
+    jzInfo() << "agent 启动:" << name.c_str() << "  cfg=" << cfgPath.c_str();
     return true;
 }
 
@@ -3516,9 +3661,17 @@ bool JZAgentCliServer::stopAgent(const string &name)
     if (it == m_agents.end())
         return false;
     JZCliServerAgentInstance *inst = it->second;
-    if (inst->state != JZProcess::Running && inst->state != JZProcess::Starting)
+    if (inst->state != JZCliAgent_Running && inst->state != JZCliAgent_Starting)
         return false;
-    inst->proc->terminate();
+
+    // 退出 cli 的事件循环并 join: 内部会析构 JZAgentCli, 控制面连接随之断开
+    if (inst->inproc)
+        inst->inproc->stop();
+    {
+        JZMutexLocker lock(&inst->mutex);
+        inst->state = JZCliAgent_Stopped;
+        inst->stopTime = JZDateTime::currentMSecsSinceEpoch();
+    }
     jzInfo() << "agent 停止:" << name;
     return true;
 }
@@ -3529,15 +3682,14 @@ bool JZAgentCliServer::restartAgent(const string &name)
     if (it == m_agents.end())
         return false;
     JZCliServerAgentInstance *inst = it->second;
-    if (inst->state == JZProcess::Running || inst->state == JZProcess::Starting)
+    if (inst->state == JZCliAgent_Running || inst->state == JZCliAgent_Starting)
     {
-        inst->proc->killProcess();
-        inst->proc->waitForFinished(2000);
+        if (inst->inproc)
+            inst->inproc->stop();
     }
     {
         JZMutexLocker lock(&inst->mutex);
-        inst->state = JZProcess::NotRunning;
-        inst->recvBuf.clear();
+        inst->state = JZCliAgent_Stopped;
     }
     return spawnAgent(name);
 }
@@ -3547,25 +3699,25 @@ bool JZAgentCliServer::restartAgent(const string &name)
 // ---------------------------------------------------------------------------
 void JZAgentCliServer::appendLog(JZCliServerAgentInstance *inst, const string &chunk)
 {
-    inst->recvBuf += chunk;
+    // 只用于启停阶段的少量记录(运行日志走 JZLog 的 Agent 模块 -> Agent.log)
     size_t pos = 0;
-    while (true)
+    while (pos <= chunk.size())
     {
-        size_t nl = inst->recvBuf.find('\n', pos);
-        if (nl == string::npos)
-            break;
-        string line = inst->recvBuf.substr(pos, nl - pos);
+        size_t nl = chunk.find('\n', pos);
+        string line = (nl == string::npos) ? chunk.substr(pos) : chunk.substr(pos, nl - pos);
         if (!line.empty() && line.back() == '\r')
             line.pop_back();
+        if (!line.empty())
         {
             JZMutexLocker lock(&inst->mutex);
             inst->logs.push_back(line);
             while (inst->logs.size() > inst->logMax)
                 inst->logs.pop_front();
         }
+        if (nl == string::npos)
+            break;
         pos = nl + 1;
     }
-    inst->recvBuf = inst->recvBuf.substr(pos);
 }
 
 // ---------------------------------------------------------------------------
@@ -3617,6 +3769,7 @@ void JZAgentCliServer::onApiAgentLogs(JZHttpServerClient *client, const JZHttpRe
 
     string out;
     {
+        // 启停阶段的少量记录(启动失败原因等)
         JZMutexLocker lock(&it->second->mutex);
         auto &logs = it->second->logs;
         size_t start = logs.size() > (size_t)lines ? logs.size() - lines : 0;
@@ -3624,6 +3777,36 @@ void JZAgentCliServer::onApiAgentLogs(JZHttpServerClient *client, const JZHttpRe
         {
             out += logs[i];
             out += "\n";
+        }
+    }
+
+    // 运行日志: cli 跑在本进程里, 回合诊断走 JZLog 的 Agent 模块(Agent-<日期>.log)。
+    // 子进程时代的 stdout 整流已经不在了, 这里直接给文件末尾。
+    {
+        const string logDir = jzLogDirOf(m_config.logFile,
+                                         JZPlatform::applicationDirPath() + "/data/logs");
+        const string today = JZDateTime::currentDateTime().toString("yyyyMMdd");
+        string text;
+        if (!readTextFile(logDir + "/Agent-" + today + ".log", text))
+            readTextFile(logDir + "/Agent.log", text);
+
+        if (!text.empty())
+        {
+            // 只取末尾 lines 行
+            std::vector<size_t> starts;
+            size_t p = 0;
+            while (p < text.size() && starts.size() <= (size_t)lines)
+            {
+                starts.push_back(p);
+                size_t nl = text.find('\n', p);
+                if (nl == string::npos)
+                    break;
+                p = nl + 1;
+            }
+            size_t from = starts.size() > (size_t)lines ? starts[starts.size() - lines] : 0;
+            out += text.substr(from);
+            if (!out.empty() && out.back() != '\n')
+                out += "\n";
         }
     }
     respondText(client, req, 200, out);   // text/plain 直接给前端展示

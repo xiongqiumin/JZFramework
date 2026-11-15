@@ -51,7 +51,8 @@ static const char *kDefaultConfigJson =
     "    \"maxSessions\":        8,\n"
     "    \"maxConcurrent\":      1,\n"
     "    \"recycleSec\":         900,\n"
-    "    \"logFile\":            \"\"\n"
+    "    \"logFile\":            \"\",\n"
+    "    \"logRotateDaily\":     false\n"
     "}\n";
 
 static string pathJoin(const string &dir, const string &name)
@@ -182,6 +183,7 @@ static bool loadConfig(const string &path, JZNodeConfig &config, string &error)
     js.readMemberDefault("maxConcurrent", config.maxConcurrent, config.maxConcurrent);
     js.readMemberDefault("recycleSec", config.recycleSec, config.recycleSec);
     js.readMemberDefault("logFile", config.logFile, config.logFile);
+    js.readMemberDefault("logRotateDaily", config.logRotateDaily, config.logRotateDaily);
     config.mode = str_toLower(config.mode);
 
     const Json::Value &arr = root["trustedDirs"];
@@ -276,7 +278,13 @@ static void printConfig(const string &configPath, const JZNodeConfig &config)
     jzInfo().noquote().nospace() << "  会话      上限=" << config.maxSessions
                                  << "  空闲回收=" << (config.recycleSec > 0 ? to_string(config.recycleSec) + "s" : string("关"));
     jzInfo().noquote().nospace() << "  shell     " << (config.shellProgram.empty() ? string("自动探测(优先 bash, 找不到回退 /bin/sh)") : config.shellProgram);
-    jzInfo().noquote().nospace() << "  日志文件  " << (config.logFile.empty() ? string("(只打控制台)") : config.logFile);
+    if (config.logFile.empty())
+        jzInfo().noquote().nospace() << "  日志文件  (只打控制台)";
+    else
+        jzInfo().noquote().nospace() << "  日志文件  "
+                                     << jzLogDirOf(config.logFile, JZPlatform::applicationDirPath() + "/data/logs")
+                                     << "/Node" << (config.logRotateDaily ? "-yyyyMMdd" : "") << ".log"
+                                     << (config.logRotateDaily ? "  (按天轮转)" : "");
 }
 
 int main(int argc, char *argv[])
@@ -347,24 +355,22 @@ int main(int argc, char *argv[])
     // 挂到 app 的事件循环上, 没有 app 就起不来。
     if (!config.logFile.empty())
     {
-        JZFileInfo info(config.logFile);
-        string logDir = info.path();
-        if (logDir.empty())
-            logDir = ".";
+        // logFile 一律按**目录**解释(与 agent_cli_server / agent_cli 同一口径, 见 jzLogDirOf):
+        // 文件名固定 Node.log; logRotateDaily=true 时按天切成 Node-yyyyMMdd.log。
+        const string logDir = jzLogDirOf(config.logFile, JZPlatform::applicationDirPath() + "/data/logs");
         if (!JZFileInfo::exists(logDir) && !JZDir().mkpath(logDir))
         {
             jzError().nospace() << "无法创建日志目录: " << logDir;
             return 1;
         }
 
-        // JZLogManager 的文件名是 "<logPath>/<模块名>.log", 所以把用户给的路径拆成
-        // 目录 + 不带后缀的模块名(/var/log/agent_node.log -> /var/log + agent_node)。
         JZLogConfig logConfig;
         logConfig.shouldSaveToFile = true;
         logConfig.logPath = logDir;
+        logConfig.rotateDaily = config.logRotateDaily;
 
         JZLogModuleConfig moduleConfig = JZLogManager::instance()->moduleConfig(LogModule_General);
-        moduleConfig.name = info.baseName();
+        moduleConfig.name = "Node";     // 落到 Node.log
         moduleConfig.type = JZLogModuleConfig::Console | JZLogModuleConfig::File;
 
         JZLogManager::instance()->setConfig(logConfig);

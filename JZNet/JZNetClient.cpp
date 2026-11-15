@@ -224,6 +224,11 @@ void JZNetClient::onNetEvent(JZNetResEvent *event)
         m_packet.append(event->binData.data(), event->binData.size());
         if (!m_packet.parse())
         {
+            // 加密模式下最常见的失败原因就是**两端 token 不一致**: 密钥不同, 密文校验通不过,
+            // 表现成"TCP 连上了但永远不上线"。不给一句日志, 运维只能靠猜。
+            jzWarning().noquote()
+                << (m_token.empty() ? "报文解析失败(明文模式)"
+                                    : "报文解析/解密失败: 多半是两端 token 不一致");
             closeConn(true);
             disconnectFromHost();
             return;

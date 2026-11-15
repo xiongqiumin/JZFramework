@@ -383,13 +383,19 @@ public:
     int commandTimeoutMs() const { return m_timeoutMs; }
 
     // 执行一整行(可以是 ; && || | if/for/while 的组合)。同步, 阻塞到结束。
-    Result exec(const std::string &line);
+    // keepCancel: 给"刚起一条新命令、自己负责清取消标志"的宿主用(见 clearCancel())。
+    Result exec(const std::string &line, bool keepCancel = false);
 
     // 协作式取消: 置位后, 正在等待的外部命令会被 kill, exec 以 130 返回。
     // 只能从**另一个线程**调(exec 是阻塞的); 同线程里想停只能等它自己结束。
     // ⚠ 必须是原子量: exec 线程在读(100ms 分片), 宿主线程在写(取消/析构)。
     void requestCancel() { m_cancelRequested.store(true); }
     bool cancelRequested() const { return m_cancelRequested.load(); }
+    // 清掉上一条命令留下的取消。**只该由"刚启动一条新命令"的宿主**调, 并且要安排在
+    // 自己的"取消已投递?"检查**之前**, 然后用 exec(line, /*keepCancel=*/true) 跑:
+    // 否则 cancel 恰好落在 exec() 内部清标志那一下, 请求就被吞了 —— 实测表现为
+    // 回包说"已请求停止", 命令却照样跑完(exit=0)。见 JZVirtualTerminal::run()。
+    void clearCancel() { m_cancelRequested.store(false); }
 
     // 只做语法检查(不执行), 给上层做"先审再跑"或自检用。
     bool parseOnly(const std::string &line, std::string *error) const;

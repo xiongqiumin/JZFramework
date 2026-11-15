@@ -34,6 +34,53 @@ JZLogModuleConfig::JZLogModuleConfig()
     type = None;
 }
 
+// ==================== 日志目录解析(三个宿主共用) ====================
+std::string jzLogDirOf(const std::string &logFile, const std::string &defaultDir)
+{
+    auto isSep = [](char c) { return c == '/' || c == '\\'; };
+
+    std::string v = logFile;
+    // 末尾分隔符没有意义, 去掉(全是分隔符的极端情况保留一个)
+    while (v.size() > 1 && isSep(v.back()))
+        v.pop_back();
+    if (v.empty())
+        return defaultDir;
+    if (v == "/" || v == "\\")
+        return v;
+
+    // 最后一段像"文件名"(带扩展名)时只取目录 —— 兼容老配置把完整文件路径写进来
+    size_t sep = v.find_last_of("/\\");
+    std::string last = (sep == std::string::npos) ? v : v.substr(sep + 1);
+    if (last.find('.') != std::string::npos)
+    {
+        if (sep == std::string::npos)
+            return ".";                 // "agent.log" -> 当前目录
+        std::string dir = v.substr(0, sep);
+        return dir.empty() ? std::string("/") : dir;
+    }
+    return v;
+}
+
+// 当天标记("yyyyMMdd"), 作按天轮转的文件名后缀
+static std::string dailyStamp()
+{
+    return JZDateTime::currentDateTime().toString("yyyyMMdd");
+}
+
+// "<logPath>/<模块名>[-<yyyyMMdd>].log"; logPath 为空时落当前目录
+static std::string logFilePathOf(const JZLogConfig &cfg, const std::string &moduleName,
+                                 const std::string &day)
+{
+    std::string path = cfg.logPath;
+    if (!path.empty() && path.back() != '/' && path.back() != '\\')
+        path += "/";
+    path += moduleName;
+    if (!day.empty())
+        path += "-" + day;
+    path += ".log";
+    return path;
+}
+
 //JZLogItem
 std::shared_ptr<JZLogItem> JZLogItem::makeLog(int module, int level, std::string message)
 {
@@ -127,12 +174,14 @@ void JZLogManager::setModuleConfig(int id, JZLogModuleConfig config)
 
     if (config.type & JZLogModuleConfig::File)
     {
-        std::string file_path = m_config.logPath + "/" + config.name + ".log";        
-        m_modules[id]->file.open(file_path, "wt");
+        // 文件名由模块名决定(模块名就是配置里给的名字, 如 Server / Agent / Node)
+        m_modules[id]->openDay = m_config.rotateDaily ? dailyStamp() : std::string();
+        m_modules[id]->file.open(logFilePathOf(m_config, config.name, m_modules[id]->openDay), "wt");
     }
     else
     {
         m_modules[id]->file.close();
+        m_modules[id]->openDay.clear();
     }
 
     updateFlushTimer();
@@ -191,10 +240,19 @@ void JZLogManager::flushFile()
     // log() 可能正在别的线程往 logCache 里塞, 这里得锁着搬
     JZMutexLocker locker(&m_lock);
 
+    // 按天轮转: 日期一变就把文件换成当天的(不重启进程也能切)
+    const std::string today = m_config.rotateDaily ? dailyStamp() : std::string();
+
     auto it = m_modules.begin();
     while (it != m_modules.end())
     {
         auto &logs = it->second->logCache;
+        if (m_config.rotateDaily && it->second->file.isOpen() && it->second->openDay != today)
+        {
+            it->second->file.close();
+            it->second->openDay = today;
+            it->second->file.open(logFilePathOf(m_config, it->second->config.name, today), "wt");
+        }
         // 文件没开(File 被关掉了 / 路径打不开): 写不进去就丢掉, 别攒着涨内存
         if (it->second->file.isOpen())
         {

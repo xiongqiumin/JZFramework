@@ -15,6 +15,7 @@
 #include "JZLog.h"            // jzLogDirOf: /api/agents/logs 读 Agent.log 尾部
 #include "JZJson.h"              // Json::Value / FastWriter
 #include "JZCodeTools.h"         // codeNormalizePath(切换工作目录时规范化路径)
+#include "JZStd.h"               // str_trimmed(CSRF: Sec-Fetch-Site / Origin / Referer 判来源)
 
 #include <algorithm>
 #include <cstdio>        // snprintf(SSE chunked 长度前缀)
@@ -296,6 +297,26 @@ static void respondJson(JZHttpServerClient *client, const JZHttpRequest &req, in
     client->response(resp, req);
 }
 
+// 有副作用的接口只接受 POST。
+// 为什么: 浏览器能被第三方页面用 <a href> / <meta refresh> / location.href 指使, 带着
+// 受害者的 cookie 发一次**顶层 GET** —— 那是 CSRF, 不是"缺 token", 所以 token 校验拦不住。
+// 而跨站 POST 在 SameSite=Lax|Strict 下都带不上 cookie, 于是"方法必须是 POST"从协议层
+// 把这条路堵死, 和 isCrossSiteRequest(来源校验)互为兜底(一个管旧浏览器, 一个管新浏览器)。
+// 参数仍可以用 query 传(POST /api/tasks/cancel?id=x 完全合法) —— 限制的是**方法**, 不是取参方式。
+static bool requirePost(JZHttpServerClient *client, const JZHttpRequest &req)
+{
+    if (req.method() == JZHttpRequest::POST)
+        return true;
+
+    JZHttpRespone resp;
+    resp.setStatusCode(405);
+    resp.setHeader("Allow", "POST");
+    resp.setJson(Json::FastWriter().write(
+        Json::Value("该接口只接受 POST(收到 " + req.methodString() + ")")));
+    client->response(resp, req);
+    return false;
+}
+
 // 浏览器到服务端那一跳是不是 https —— 决定 cookie 要不要带 Secure。
 //   直连: 后端开了 TLS 就是 https;
 //   前面挂 nginx 时: 后端是明文, 看 X-Forwarded-Proto(多级代理可能是 "https, http", 取第一段)。
@@ -419,6 +440,88 @@ static string tokenFromRequest(const JZHttpRequest &req)
             tk = auth.substr(7);
     }
     return tk;
+}
+
+// ---------------------------------------------------------------------------
+// 客户端 IP —— 这是**部署策略**, 归应用层; 框架的 req.remoteAddr() 永远只报 TCP 对端。
+//   http.trustProxy=false(默认): 直接用对端地址。
+//   http.trustProxy=true: 前面确实挂了 nginx 之类、且监听端口只对反代可达, 才取
+//     X-Forwarded-For 首段(多级代理是逗号列表, 最左 = 最初的客户端)。
+// 首段必须"看着像 IP"才采用: 这个头完全由客户端控制, 不校验形态就能塞几 KB 垃圾进来,
+// 而它会成为 m_authFails 的 key(按 IP 的失败计数) —— 等于把内存放大倍数交给对方。
+// ---------------------------------------------------------------------------
+static bool looksLikeIpAddress(const string &s)
+{
+    if (s.empty() || s.size() > 45)   // IPv6 文本形式最长 45 字符
+        return false;
+    for (size_t i = 0; i < s.size(); i++)
+    {
+        const char c = s[i];
+        const bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                        (c >= 'A' && c <= 'F') || c == '.' || c == ':';
+        if (!ok)
+            return false;
+    }
+    return true;
+}
+
+static string clientIpOf(const JZHttpRequest &req, const string &peerIp, bool trustProxy)
+{
+    if (!trustProxy)
+        return peerIp;
+
+    const string xff = req.header("X-Forwarded-For");
+    if (xff.empty())
+        return peerIp;
+
+    const size_t comma = xff.find(',');
+    const string first = str_trimmed((comma == string::npos) ? xff : xff.substr(0, comma));
+    return looksLikeIpAddress(first) ? first : peerIp;
+}
+
+// ---------------------------------------------------------------------------
+// CSRF 判定: 这个 /api/* 请求是不是"别的站点"发起的。
+//
+// 为什么 token 正确还不够: token 存在 cookie 里, 浏览器对**顶层 GET 导航**会自动带上它
+// (SameSite=Lax 的例外正是顶层 GET)。于是第三方页面里一句
+//   <meta http-equiv="refresh" content="0;url=https://admin:8088/api/agents/stop?name=a1">
+// 就能借受害者的登录态停 agent / 删任务 —— 攻击者全程不需要知道 token。
+// 前端 cookie 已改 SameSite=Strict, 这里再从服务端判一道, 因为:
+//   · Strict 是"浏览器愿意配合"才生效(旧浏览器不认识这个属性);
+//   · token 还有 ?token= 与 localStorage 两条来源, 不受 cookie 策略约束。
+//
+// 判定顺序:
+//   1) Sec-Fetch-Site —— 现代浏览器必发, 只有 "cross-site" 算攻击
+//      (same-origin / same-site / none=地址栏/书签 都放行);
+//   2) 没有它(旧浏览器): 用 Origin / Referer 的 host 与 Host 比;
+//   3) 两者都没有(curl / 脚本 / 隐私模式): 放行 —— 非浏览器请求没有"自动携带 cookie"
+//      这回事, 带得出 token 就是有权限, 也是自动化脚本的既有用法。
+// ---------------------------------------------------------------------------
+static bool isCrossSiteRequest(const JZHttpRequest &req)
+{
+    const string sfs = str_toLower(str_trimmed(req.header("Sec-Fetch-Site")));
+    if (!sfs.empty())
+        return sfs == "cross-site";
+
+    const string host = str_toLower(str_trimmed(req.header("Host")));
+    static const char *kSourceHeaders[] = {"Origin", "Referer"};
+    for (const char *name : kSourceHeaders)
+    {
+        const string v = str_toLower(str_trimmed(req.header(name)));
+        if (v.empty())
+            continue;
+        const size_t scheme = v.find("://");
+        if (scheme == string::npos)
+            continue;      // "null"(sandbox iframe) 之类: 判不出来, 交给 token
+        const size_t slash = v.find('/', scheme + 3);
+        const string src = v.substr(scheme + 3,
+                                    (slash == string::npos ? v.size() : slash) - scheme - 3);
+        if (!src.empty() && src != host)
+            return true;
+        if (!src.empty())
+            return false;  // 同源, 不用再看下一个头
+    }
+    return false;
 }
 
 static void respondJsonAsync(JZHttpServerClient *client, int code, const Json::Value &v)
@@ -718,7 +821,7 @@ bool JZAgentCliServer::init(const JZCliServerConfig &config, std::string &error)
     return true;
 }
 
-void JZAgentCliServer::start()
+bool JZAgentCliServer::start(std::string &error)
 {
     m_startTime = JZDateTime::currentMSecsSinceEpoch();
 
@@ -742,11 +845,17 @@ void JZAgentCliServer::start()
         }
     }
 
-    startHub();    // 控制面(JZNet): 等 agent_cli 出站连进来
-    startHttp();   // 后台网页 + 管理 API
+    // 两个端口都是"必须起来"的: 控制面挂了管不了远端 cli, 管理台挂了人什么都看不见。
+    // 失败就直接返回, 由 main 打印原因并退出 —— 不带着半死不活的状态进事件循环。
+    if (!startHub(error))    // 控制面(JZNet): 等 agent_cli 出站连进来
+        return false;
+    if (!startHttp(error))   // 后台网页 + 管理 API
+        return false;
+
     for (const auto &kv : m_agents)
         if (kv.second->cfg.enabled)
             spawnAgent(kv.first);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -754,7 +863,7 @@ void JZAgentCliServer::start()
 //   cli 是 client, 本进程是 server —— 内网机器不需要端口暴露/端口映射,
 //   server 也不需要知道 cli 的地址(见 docs/agent-hub-design.md §2)。
 // ---------------------------------------------------------------------------
-void JZAgentCliServer::startHub()
+bool JZAgentCliServer::startHub(std::string &error)
 {
     JZAgentHubPacketInit();
 
@@ -795,10 +904,15 @@ void JZAgentCliServer::startHub()
     m_reapTimer->start(5000);
 
     if (!m_hub->listen(m_config.hub.bind, m_config.hub.port))
-        jzWarning() << "控制面监听失败:" << m_config.hub.bind << ":" << m_config.hub.port;
-    else
-        jzInfo() << "控制面已启动(JZNet):" << m_config.hub.bind << ":" << m_config.hub.port
-                 << (m_config.hub.token.empty() ? "  token=(无)" : "  token=(已启用)");
+    {
+        error = "控制面监听失败: " + m_config.hub.bind + ":" + to_string(m_config.hub.port)
+                + " (端口被占用, 或 bind 地址不属于本机网卡)";
+        jzWarning() << error.c_str();
+        return false;
+    }
+    jzInfo() << "控制面已启动(JZNet):" << m_config.hub.bind << ":" << m_config.hub.port
+             << (m_config.hub.token.empty() ? "  token=(无)" : "  token=(已启用)");
+    return true;
 }
 
 void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
@@ -2847,6 +2961,9 @@ bool JZAgentCliServer::agentKnown(const string &id) const
 // 删除一台 agent 的档案(只删"曾经连过"的记录; 默认保留历史任务)
 void JZAgentCliServer::onApiAgentForget(JZHttpServerClient *client, const JZHttpRequest &req)
 {
+    // 删除档案(还可能带 withTasks=1 连任务记录一起删): 不可逆, 必须 POST
+    if (!requirePost(client, req))
+        return;
 
     string id = req.queryParam("agentId");
     if (id.empty())
@@ -3198,6 +3315,11 @@ void JZAgentCliServer::onSelfAgentEvent(const JZServerAgentEvent &ev)
 // ---------------------------------------------------------------------------
 void JZAgentCliServer::onApiTasks(JZHttpServerClient *client, const JZHttpRequest &req)
 {
+    // 下发任务 = 让 agent 在本机跑东西, 是最重的副作用接口: 与其它动作接口同一口径, 只收 POST
+    // (文档里本来就写成 POST /api/tasks; 之前只是没强制)。
+    if (!requirePost(client, req))
+        return;
+
     SlowReqGuard slow("api/tasks(submit)");
 
     Json::Value body;
@@ -3219,6 +3341,8 @@ void JZAgentCliServer::onApiTasks(JZHttpServerClient *client, const JZHttpReques
 
 void JZAgentCliServer::onApiTaskCancel(JZHttpServerClient *client, const JZHttpRequest &req)
 {
+    if (!requirePost(client, req))
+        return;
 
     // A2A CancelTask: 用 Task.id 指定任务(?id= 或 body {"id": "..."})
     string taskId = req.queryParam("id");
@@ -3270,6 +3394,9 @@ void JZAgentCliServer::onApiTaskCancel(JZHttpServerClient *client, const JZHttpR
 //   body {"id": "..."} 或 {"ids": [...]}; 也接受 ?id=
 void JZAgentCliServer::onApiTaskDelete(JZHttpServerClient *client, const JZHttpRequest &req)
 {
+    if (!requirePost(client, req))
+        return;
+
     vector<string> ids;
 
     const string qid = req.queryParam("id");
@@ -3380,7 +3507,21 @@ bool JZAgentCliServer::httpAuthGuard(JZHttpServerClient *client, const JZHttpReq
     if (!isApi && path != "/app.js")
         return true;
 
-    const string ip = req.remoteAddr();
+    // ⓪ CSRF: 跨站请求直接拒, 且**不进封禁计数** —— 它带的是受害者的正确 token,
+    //   记成"失败"只会把受害者自己封掉。放在 token 校验之前, 因为它和"token 对不对"无关。
+    if (isApi && isCrossSiteRequest(req))
+    {
+        jzWarning() << ("跨站请求已拒绝: " + path).c_str();
+        Json::Value body(Json::objectValue);
+        body["error"] = "跨站请求已拒绝(只接受本站页面的 /api 调用)";
+        body["banned"] = false;
+        respondJson(client, req, 403, body);
+        return false;
+    }
+
+    // 客户端 IP: 按 http.trustProxy 这个部署策略算(框架只报 TCP 对端)
+    const string ip = clientIpOf(req, client ? client->peerIp() : string(),
+                                 m_config.http.trustProxy);
     const int64_t now = JZPlatform::getTickCountMs();
 
     // ① 封禁中: 直接 403, 连 token 都不比(否则爆破脚本还能继续试)
@@ -3478,7 +3619,7 @@ void JZAgentCliServer::pruneAuthFails()
     }
 }
 
-void JZAgentCliServer::startHttp()
+bool JZAgentCliServer::startHttp(std::string &error)
 {
     m_http = new JZHttpServer(this);
 
@@ -3496,6 +3637,11 @@ void JZAgentCliServer::startHttp()
     {
         jzWarning() << "http.ssl.enabled=false: 管理台/API 将以明文 HTTP 暴露(仅限完全可信的隔离网络)";
     }
+    // 客户端 IP 的来源(应用层策略, 见 httpAuthGuard 里的 clientIpOf):
+    // 默认只认 TCP 对端; 挡在 nginx 后面时由配置显式打开(read X-Forwarded-For)
+    if (m_config.http.trustProxy)
+        jzWarning() << "http.trustProxy=true: 客户端 IP 取自 X-Forwarded-For, "
+                       "请确认端口只对反向代理可达(否则按 IP 的失败封禁可被伪造绕过)";
     // 应用层鉴权: 只护 /api/*(静态页/JS 不护, 否则连输入 token 的界面都拿不到)。
     // TLS 只保证"路上没人看", 不保证"对面是谁", 所以这两层必须同时开。
     if (!m_config.http.token.empty())
@@ -3579,11 +3725,19 @@ void JZAgentCliServer::startHttp()
     m_http->addRoute("/<path:path>", new DashboardHandler(this));
 
     if (!m_http->listen(m_config.http.bind, m_config.http.port))
-        jzWarning() << "管理网页监听失败:" << m_config.http.bind << ":" << m_config.http.port;
-    else
-        jzInfo() << "管理网页已启动: " << (m_config.http.sslEnabled ? "https://" : "http://")
-                 << m_config.http.bind << ":" << m_config.http.port
-                 << (m_config.http.sslEnabled ? "  (单向 TLS, 无客户端认证)" : "  (明文!)");
+    {
+        // HTTPS 下"端口没起来"和"浏览器握手失败"在外部看起来一样, 所以这里必须说清楚是监听失败,
+        // 而不是让运维去怀疑证书。
+        error = string("管理网页监听失败: ") + (m_config.http.sslEnabled ? "https://" : "http://")
+                + m_config.http.bind + ":" + to_string(m_config.http.port)
+                + " (端口被占用, 或 bind 地址不属于本机网卡)";
+        jzWarning() << error.c_str();
+        return false;
+    }
+    jzInfo() << "管理网页已启动: " << (m_config.http.sslEnabled ? "https://" : "http://")
+             << m_config.http.bind << ":" << m_config.http.port
+             << (m_config.http.sslEnabled ? "  (单向 TLS, 无客户端认证)" : "  (明文!)");
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3815,6 +3969,9 @@ void JZAgentCliServer::onApiAgentLogs(JZHttpServerClient *client, const JZHttpRe
 void JZAgentCliServer::onApiAgentAction(JZHttpServerClient *client, const JZHttpRequest &req,
                                          const string &action)
 {
+    if (!requirePost(client, req))
+        return;
+
     string name = req.queryParam("name");
     bool ok = false;
     string msg;

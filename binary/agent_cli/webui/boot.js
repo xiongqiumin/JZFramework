@@ -24,8 +24,9 @@
   function cookieSet(name, value, days) {
     // Secure 只在 https 下加: 手机常用 http://192.168.x.x:8188 打开, 加了浏览器直接丢
     var secure = location.protocol === 'https:' ? '; Secure' : '';
+    // 与 app.js 同一口径: Strict 不放行"别的站点顶层 GET 导航", 挡 CSRF
     document.cookie = name + '=' + encodeURIComponent(value) +
-      '; Path=/; Max-Age=' + (days > 0 ? days * 86400 : 0) + '; SameSite=Lax' + secure;
+      '; Path=/; Max-Age=' + (days > 0 ? days * 86400 : 0) + '; SameSite=Strict' + secure;
   }
 
   function overlay(title, bodyHtml) {
@@ -98,8 +99,12 @@
           return;
         }
         if (r.status === 403) {
-          r.json().then(function (j) { showBanned(j && j.retryAfterSec, j && j.error); })
-                .catch(function () { showBanned(60); });
+          // 403 不止"封禁"一种: 跨站请求被拒也是 403。只有服务端明确 banned=true 才走封禁 UI,
+          // 否则交给 app.js 自己报错(否则会误报成"尝试次数过多, N 秒后重试")。
+          r.json().then(function (j) {
+            if (j && j.banned) { showBanned(j.retryAfterSec, j.error); return; }
+            loadApp();
+          }).catch(function () { loadApp(); });
           return;
         }
         loadApp();   // 其它状态码: 交给 app.js 自己的错误提示

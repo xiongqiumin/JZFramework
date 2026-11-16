@@ -590,6 +590,8 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 {
   "http": {
     "bind": "0.0.0.0", "port": 8088,
+    "token": "<应用层口令>",
+    "trustProxy": false,
     "ssl": {
       "enabled": true,
       "certFile": "certs/server.crt", "keyFile": "certs/server.key"
@@ -605,6 +607,7 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 | --- | --- |
 | `http.ssl.enabled` | **默认 true**：管理台/API 走 HTTPS（`JZHttpServer::setSslConfig`，单向 TLS，只加密不认证客户端）。置 false 才退回明文 HTTP，启动时打警告 |
 | `http.ssl.certFile` / `keyFile` | PEM 路径，相对路径按**配置文件所在目录**解析（默认 `certs/`）。缺文件 ⇒ `init()` 直接失败，**不会**静默降级成明文 |
+| `http.trustProxy` | **默认 false**：客户端 IP 取 TCP 对端，`X-Forwarded-For` 一概不信。只有确实挡在 nginx 之类后面、且 `http.bind` 只对反代可达（通常 `127.0.0.1`）时才置 true —— 否则客户端自带一个 `X-Forwarded-For` 就能伪装来源，`http.auth.*` 的失败封禁（按 IP 计数）直接失效。开启后首段还要通过 IP 形态校验，不然退回对端地址。<br>⚠ 这是**应用层策略**：框架的 `JZHttpRequest::remoteAddr()` 恒为 TCP 对端，读 `X-Forwarded-For` 由本进程（`clientIpOf()`）自己决定 |
 | ~~`http.ssl.requireClientCert` / `caFile`~~ | **已于 2026-11-14 移除**（mTLS 客户端证书）。老配置里留着不报错，只是不再生效；应用层 token 鉴权待接入，在那之前管理台只应绑 `127.0.0.1` |
 | `hub.bind` / `hub.port` | `JZNetServer` 监听（默认 8090），控制面专用，不能与 `http.port` 相同 |
 | `hub.token` | 控制通道握手口令（全局单一口令） |

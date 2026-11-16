@@ -41,6 +41,13 @@ struct JZCliServerHttpConfig
 
     bool sslEnabled = true;     // 是否用 TLS 提供网页 / API(默认开, 仅加密)
 
+    // 是否信任反向代理写的 X-Forwarded-For。**默认 false**: 客户端 IP 一律取 TCP 对端。
+    // 只有前面确实挂了 nginx 之类、且 http.bind 只对反代可达(通常 127.0.0.1)时才设 true;
+    // 否则任何人都能自带 X-Forwarded-For 伪装来源, 按 IP 的失败封禁(见 authMaxFails)直接失效。
+    // 注意"信不信这个头"是**本进程**的决定(见 clientIpOf): 框架的 req.remoteAddr() 永远
+    // 只报 TCP 对端, 不替应用改来源地址。
+    bool trustProxy = false;
+
     // 应用层鉴权口令。**sslEnabled=true 时必填**(否则启动失败): TLS 只加密, 不认证
     // 调用方 —— 端口一旦不可信网络可达, 谁都能起停 agent、下发任务。
     // 校验范围: /api/* (静态页/JS 不需要, 否则连登录入口都加载不出来)。
@@ -140,7 +147,10 @@ public:
     bool init(const JZCliServerConfig &config, std::string &error);
 
     // 启动全部: 控制面 + 后台网页/管理 API + 拉起所有 enabled 的 agent。事件循环前调用。
-    void start();
+    // 返回 false = 关键端口(控制面 / 管理台)没监听成功, **不要**进事件循环, 直接退出。
+    //   只打一条 warning 继续跑的话, 现场看到的是"进程活着但连不上": HTTPS 下浏览器握手失败
+    //   与端口没起来的现象完全一样, 只能去翻日志。所以监听失败一律当启动失败。
+    bool start(std::string &error);
 
     // ---- 对外的 agent 管理(网页/API 调用) ----
     bool spawnAgent(const std::string &name);   // 启动(已在跑则忽略)
@@ -201,8 +211,8 @@ public:
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
 private:
-    void startHttp();
-    void startHub();                     // 起控制面(JZNetServer)
+    bool startHttp(std::string &error);
+    bool startHub(std::string &error);   // 起控制面(JZNetServer)
     // 这个 agentId 是否还值得打开(在线/内置/离线档案/本地子进程) —— 首页按 cookie 跳转前校验
     bool agentKnown(const std::string &id) const;
     void onHubPacket(uint64_t conn, JZNetPackPtr pack);

@@ -11,21 +11,6 @@ using namespace std;
 // 判断 HTTP 响应头是否"自定界": 含 Content-Length 或 Transfer-Encoding: chunked 时为 true。
 // 不自定界的响应(如 SSE 流式, 无 Content-Length)在 HTTP/1.1 keep-alive 下客户端无法判断
 // 响应何时结束, 只能靠关闭连接来界定 —— 因此 sendFinished() 应自动关闭连接。
-// 来源地址: 前面挂反向代理(nginx)时, 客户端 IP 在 X-Forwarded-For 里, 多级代理是逗号分隔的
-// 列表, 取最左边一段(= 最初的客户端)。没有这个头就退回 TCP 对端地址。
-static std::string clientAddrOf(const JZHttpRequest &request, const std::string &peerIp)
-{
-    std::string xff = request.header("X-Forwarded-For");
-    if (!xff.empty())
-    {
-        size_t comma = xff.find(',');
-        std::string first = str_trimmed((comma == std::string::npos) ? xff : xff.substr(0, comma));
-        if (!first.empty())
-            return first;
-    }
-    return peerIp;
-}
-
 static bool headIsDelimited(const std::string &head)
 {
     // 只做 ASCII 小写: 头名本来就是 ASCII; 不能走 JZString(UTF-16) —— 一旦头里混进
@@ -276,8 +261,12 @@ void JZHttpServer::onHttpMessage(JZHttpServerClient* client, const JZByteArray& 
         request.setBody(body);
     }
 
-    // 来源地址(直连 = TCP 对端; 经 nginx 等反向代理 = X-Forwarded-For 第一段)
-    request.setRemoteAddr(clientAddrOf(request, client->peerIp()));
+    // 来源地址只报**事实**: TCP 对端地址。X-Forwarded-For 是客户端可完全控制的头,
+    // "要不要相信它"是**部署策略**(前面有没有反代、端口是否只对反代可达), 属应用层决策
+    // (例: agent_cli server 的 http.trustProxy)。框架替应用做这个决定, 等于把
+    // "谁都能伪装来源"变成默认行为 —— 按 IP 的失败封禁会因此形同虚设。
+    // 需要 XFF 的场合在 handler 里自己读 req.header("X-Forwarded-For")。
+    request.setRemoteAddr(client->peerIp());
 
     // 鉴权: 分发之前拦一道(见 setAuthFilter)
     if (m_authFilter && !m_authFilter(client, request))

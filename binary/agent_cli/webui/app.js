@@ -71,8 +71,11 @@ function cookieGet(name) {
 function cookieSet(name, value, days) {
   // Secure 只在 https 下加: 明文 http(本机调试)加 Secure 浏览器会直接丢掉这条 cookie
   const secure = location.protocol === 'https:' ? '; Secure' : '';
+  // SameSite=Strict 而不是 Lax: token 是身份凭据, 不能让"别的站点的顶层 GET 导航"
+  // 借浏览器之手自动带上(那是 CSRF; Lax 恰恰放行顶层 GET)。页面 HTML 本身不鉴权,
+  // 从外部链接点进来照样能打开 —— 之后页内 fetch/EventSource 都是同源, cookie 照发。
   document.cookie = name + '=' + encodeURIComponent(value) +
-    '; Path=/; Max-Age=' + (days > 0 ? days * 86400 : 0) + '; SameSite=Lax' + secure;
+    '; Path=/; Max-Age=' + (days > 0 ? days * 86400 : 0) + '; SameSite=Strict' + secure;
 }
 function authToken() { return cookieGet(TOKEN_COOKIE) || lsGet(TOKEN_KEY); }
 function setAuthToken(t) {

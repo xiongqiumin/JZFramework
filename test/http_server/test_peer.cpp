@@ -1,6 +1,9 @@
 // 来源地址: JZHttpRequest::remoteAddr()
-//   直连        -> TCP 对端 IP
-//   反向代理    -> X-Forwarded-For 第一段(nginx: $proxy_add_x_forwarded_for)
+//   恒等于 **TCP 对端 IP**。
+//   请求头 X-Forwarded-For 是客户端可完全控制的数据, "要不要相信它"属于部署策略
+//   (前面有没有反代、端口是否只对反代可达), 由应用层自己决定 —— 框架若默认采用,
+//   等于让任何客户端都能伪装来源(按 IP 的失败封禁会因此失效)。
+//   需要 XFF 的场合在 handler 里读 req.header("X-Forwarded-For")。
 // 以前 remoteAddr() 恒为空串(setRemoteAddr 没有任何调用点)。
 
 #include <atomic>
@@ -100,20 +103,20 @@ public:
 
         if (m_step == 0)
         {
-            LOG("[test] 直连 OK (%s), step1: X-Forwarded-For 单段", body.c_str());
+            LOG("[test] 直连 OK (%s), step1: 带 X-Forwarded-For 也必须是 TCP 对端", body.c_str());
             m_step = 1;
-            fetch("10.1.2.3", "10.1.2.3");
+            fetch("10.1.2.3", "127.0.0.1");
             return;
         }
         if (m_step == 1)
         {
-            LOG("[test] 单段 OK (%s), step2: X-Forwarded-For 多段取第一段", body.c_str());
+            LOG("[test] 单段不采纳 OK (%s), step2: 多段 X-Forwarded-For 同样不采纳", body.c_str());
             m_step = 2;
-            fetch("10.1.2.3, 10.0.0.1, 172.16.0.9", "10.1.2.3");
+            fetch("10.1.2.3, 10.0.0.1, 172.16.0.9", "127.0.0.1");
             return;
         }
 
-        LOG("[test] 多段 OK (%s), ALL DONE", body.c_str());
+        LOG("[test] 多段不采纳 OK (%s), ALL DONE", body.c_str());
         g_active = false;
         m_loop->quit();
         ::exit(0);
@@ -130,7 +133,7 @@ public:
 
 int test_peer()
 {
-    LOG("########## HTTP 来源地址测试 (TCP 对端 / X-Forwarded-For) ##########");
+    LOG("########## HTTP 来源地址测试 (remoteAddr 恒为 TCP 对端) ##########");
     g_active = true;
     JZEventLoop loop;
     PeerTest test(&loop);

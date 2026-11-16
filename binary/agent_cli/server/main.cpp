@@ -32,6 +32,9 @@ using namespace std;
 // ===========================================================================
 // 默认配置(--init 写出的文本)。
 //   http.*     后台网页 / 管理 API 的监听地址。
+//   http.trustProxy  是否信任反向代理写的 X-Forwarded-For(默认 false = 只认 TCP 对端)。
+//              挡在 nginx 后面且端口只对反代可达时才开; 否则客户端能自带这个头伪装 IP,
+//              按 IP 的失败封禁(http.auth.*)就形同虚设。
 //   http.ssl.* HTTPS 默认开启(单向 TLS, 只加密不认证客户端); 证书路径相对配置文件目录。
 //              要跑起来必须先备好 certs/{server.crt,server.key}; 缺文件时 server 直接启动失败,
 //              不会退回明文。客户端证书(mTLS)已于 2026-11-14 移除, 应用层鉴权改为
@@ -46,6 +49,7 @@ static const char *kDefaultConfigJson = R"json({
         "bind":   "127.0.0.1",
         "port":   8088,
         "token":  "",
+        "trustProxy": false,
         "auth": { "maxFails": 5, "banSeconds": 300 },
         "ssl": {
             "enabled":  true,
@@ -216,6 +220,9 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
     //   ssl.caFile / ssl.requireClientCert 是旧的双向认证字段, 已于 2026-11-14 移除;
     //   老配置里留着它们也不报错, 只是不再生效(应用层鉴权用 http.token)。
     readBool(root, "http", "ssl.enabled", "httpSslEnabled", config.http.sslEnabled);
+    // 反向代理后面才打开: 客户端 IP 取 X-Forwarded-For 而不是 TCP 对端。
+    // 默认关 —— 开着而端口又直接暴露在外 = 谁都能伪造 IP, 按 IP 的失败封禁失效。
+    readBool(root, "http", "trustProxy", "httpTrustProxy", config.http.trustProxy);
     readString(root, "http", "token", "httpToken", config.http.token);
     readInt(root, "http", "auth.maxFails", "httpAuthMaxFails", config.http.authMaxFails);
     readInt(root, "http", "auth.banSeconds", "httpAuthBanSec", config.http.authBanSeconds);
@@ -343,6 +350,10 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
                std::to_string(config.http.authBanSeconds) + " 秒)");
         fprintf(stderr, "    鉴权     %s\n", auth.c_str());
     }
+    // 客户端 IP 从哪来: 决定"按 IP 的失败封禁"是否可信
+    fprintf(stderr, "    客户端IP %s\n", config.http.trustProxy
+            ? "取自 X-Forwarded-For(确认端口只对反向代理可达, 否则可被伪造)"
+            : "TCP 对端(不信任 X-Forwarded-For)");
 
     // 控制面(agent_cli 出站连这里)
     fprintf(stderr, "  控制面    hub(JZNet) %s:%d  token=%s\n", config.hub.bind.c_str(),
@@ -481,10 +492,19 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // 控制面 + 后台网页/API + 拉起 enabled 的 agent。
+    // 端口没起来(占用 / bind 地址不对)就当启动失败退出: 半死不活的进程最难查 ——
+    // 看起来"在跑", 实际上谁也连不上, HTTPS 下还会被误判成证书问题。
+    string startError;
+    if (!server.start(startError))
+    {
+        fprintf(stderr, "%s\n", startError.c_str());
+        return 1;
+    }
+
     jzDebug("JZAgentCliServer 就绪: %s=%s:%d  hub=%s:%d  agents=%d",
             config.http.sslEnabled ? "https" : "http", config.http.bind.c_str(), config.http.port,
             config.hub.bind.c_str(), config.hub.port, (int)config.agents.size());
-    server.start();   // 控制面 + 后台网页/API + 拉起 enabled 的 agent
 
     return app.exec();
 }

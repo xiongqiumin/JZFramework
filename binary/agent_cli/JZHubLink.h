@@ -45,6 +45,20 @@ public:
     typedef std::function<void(const std::string &taskId, const Json::Value &body)> SubmitHandler;
     typedef std::function<void(const std::string &taskId)> TaskIdHandler;
 
+    // 远端文件操作(管理台的文件树/目录选择器): server 只给 op + JSON 参数,
+    // 由 cli 在**自己这台机器**上执行 —— 所以文件树看到的是目标 agent 的文件系统。
+    struct FsResult
+    {
+        bool ok = false;
+        std::string error;
+        std::string body;        // list/create/rename/delete: JSON; read: 原始字节
+        int64_t size = 0;        // read: 文件总大小
+        int64_t mtime = 0;
+        bool truncated = false;  // read: 只给了前一段(包上限)
+    };
+    typedef std::function<FsResult(const std::string &op, const std::string &body)> FsHandler;
+    void setFsHandler(FsHandler h) { m_onFs = std::move(h); }
+
     explicit JZHubLink(const Config &config, JZObject *parent = nullptr);
     ~JZHubLink() override;
 
@@ -100,6 +114,7 @@ protected:
     std::function<std::string()> m_nodesProvider;
     SubmitHandler m_onSubmit;
     TaskIdHandler m_onCancel;
+    FsHandler m_onFs;
     std::function<void(const std::string &)> m_onReset;
     std::function<void()> m_onState;
 };

@@ -339,7 +339,13 @@ async function getJson(url) {
   if (!r.ok)
   {
     const j = await r.json().catch(() => ({}));
-    if (!authDenied(r.status, j)) throw new Error('HTTP ' + r.status);
+    if (!authDenied(r.status, j)) {
+      // 带上服务端的 error 文案: 只抛 "HTTP 404" 的话, 现场分不清是
+      // "接口不存在" 还是 "目录/任务不存在", 更看不到缺的是哪个路径。
+      // 兼容老接口回的裸字符串(服务端现在已统一成 {"error": ...})。
+      const msg = (j && j.error) ? j.error : (typeof j === 'string' ? j : '');
+      throw new Error(msg ? (msg + '（HTTP ' + r.status + '）') : ('HTTP ' + r.status));
+    }
     throw new Error(j.error || '需要 token');
   }
   return r.json();
@@ -1046,8 +1052,9 @@ async function loadDirPool() {
   if (DIR_POOL.loaded) return DIR_POOL.items;
   DIR_POOL.loaded = true;
   const roots = [];
+  const who = DIR_TARGET || AG.id;      // 目录选择器选的是"哪台 agent"的目录
   try {
-    const r = await getJson(api('fs'));
+    const r = await getJson(api('fs') + (who ? '?agentId=' + encodeURIComponent(who) : ''));
     (r.drives || []).forEach(d => roots.push(d));
     if (r.home) roots.push(r.home);
   } catch (e) { return DIR_POOL.items; }
@@ -1055,7 +1062,8 @@ async function loadDirPool() {
   const seen = {};
   for (const p of roots) {
     try {
-      const j = await getJson(api('fs') + '?path=' + encodeURIComponent(p));
+      const j = await getJson(api('fs') + '?path=' + encodeURIComponent(p) +
+        (who ? '&agentId=' + encodeURIComponent(who) : ''));
       (j.dirs || []).forEach(d => {
         if (!d || !d.path || seen[d.path]) return;
         seen[d.path] = 1;
@@ -1090,7 +1098,10 @@ async function refreshDirPick() {
   // ⚠ getJson 直接返回响应体(不是 {ok,json}); 失败是抛异常 —— 早期代码按 {ok,json}
   //   解, 拿到的一直是 undefined, 所以列表永远是空的(点"打开"也就没反应)。
   let j = null, why = '';
-  try { j = await getJson(api('fs') + (q.parent ? '?path=' + encodeURIComponent(q.parent) : '')); }
+  const who = DIR_TARGET || AG.id;
+  const qs = (q.parent ? 'path=' + encodeURIComponent(q.parent) + '&' : '') +
+             (who ? 'agentId=' + encodeURIComponent(who) : '');
+  try { j = await getJson(api('fs') + (qs ? '?' + qs : '')); }
   catch (e) { j = null; why = (e && e.message) ? e.message : '读不到目录'; }
   const ok = !!j;
   DIR_CUR = ok ? (j.path || q.parent || '') : '';
@@ -1694,7 +1705,7 @@ async function submitNew() {
   try {
     if (NEW.mode === 'rename') {
       const old = NEW.path;
-      const r = await postJson(api('fs/rename'), { root: workdir(), path: old, name: name });
+      const r = await postJson(api('fs/rename'), { agentId: AG.id, root: workdir(), path: old, name: name });
       if (!r.ok) {
         if (window.JzUI) JzUI.toast((r.json && r.json.error) || '重命名失败', 'fail');
         return;
@@ -1708,7 +1719,7 @@ async function submitNew() {
     const parent = NEW.dir;
     const kind = NEW.kind;
     const r = await postJson(api('fs/create'), {
-      root: workdir(), dir: parent, name: name, kind: kind,
+      agentId: AG.id, root: workdir(), dir: parent, name: name, kind: kind,
     });
     if (!r.ok) {
       if (window.JzUI) JzUI.toast((r.json && r.json.error) || '创建失败', 'fail');
@@ -1745,7 +1756,7 @@ async function deleteEntry(path, isDir) {
   }
   if (!ok) return;
   try {
-    const r = await postJson(api('fs/delete'), { root: workdir(), path: path });
+    const r = await postJson(api('fs/delete'), { agentId: AG.id, root: workdir(), path: path });
     if (!r.ok) {
       if (window.JzUI) JzUI.toast((r.json && r.json.error) || '删除失败', 'fail');
       return;
@@ -1771,7 +1782,10 @@ async function openFileTab(path) {
 
   const show = () => { if (ED.act === id) paintFileTab(t); };
   let r = null;
-  try { r = await fetchT(api('fs/raw') + '?path=' + encodeURIComponent(path), null, 15000); }
+  try {
+    r = await fetchT(api('fs/raw') + '?path=' + encodeURIComponent(path) +
+      (AG.id ? '&agentId=' + encodeURIComponent(AG.id) : ''), null, 15000);
+  }
   catch (e) { t.note = '读取失败：' + netReason(e); show(); return; }
   if (!r || !r.ok) {
     let msg = 'HTTP ' + (r ? r.status : '?');
@@ -2148,7 +2162,8 @@ async function fsLoad(path) {
   if (FS.nodes[path]) return FS.nodes[path];
   const node = { dirs: [], files: [], error: '' };
   try {
-    const j = await getJson(api('fs') + '?path=' + encodeURIComponent(path));
+    const j = await getJson(api('fs') + '?path=' + encodeURIComponent(path) +
+      (AG.id ? '&agentId=' + encodeURIComponent(AG.id) : ''));
     node.dirs = j.dirs || [];
     node.files = j.files || [];
   } catch (e) {

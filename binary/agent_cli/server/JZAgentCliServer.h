@@ -282,6 +282,29 @@ private:
     void broadcastPageEvent(const std::string &name, const Json::Value &v);
     void broadcastAgentEvent();
 
+    // ---- 远端文件操作(文件树 / 目录选择器) ----
+    // 目标 agent 跑在本进程时直接读盘; 跑在别的机器上时经控制面把 op 转给 cli,
+    // 等它回包再回 HTTP(所以是异步的: 挂起 client, 回包时再写响应)。
+    struct PendingFs
+    {
+        std::string agentId;
+        JZHttpServerClient *client = nullptr;
+        std::string kind;              // "json" = 结构化结果; "raw" = 文件原始字节
+        int64_t deadline = 0;          // tick 计数, 超时回 504
+    };
+    std::map<std::string, PendingFs> m_pendingFs;   // reqId -> 等待中的 HTTP 请求
+    int m_fsSeq = 0;
+    bool fsForward(const std::string &agentId, const std::string &op, const Json::Value &body,
+                   JZHttpServerClient *client, const std::string &kind, std::string &error);
+    // 决定这次文件操作在哪台机器上执行:
+    //   0 = 本机(内置 agent / 没指定 agentId) —— 调用方继续本地执行
+    //   1 = 已转给远端 cli, 等 fsRes 回包(调用方直接 return)
+    //   2 = 已经回过错误(agent 不在线 / cli 太旧), 调用方直接 return
+    int fsRoute(JZHttpServerClient *client, const JZHttpRequest &req, const std::string &agentId,
+                const std::string &op, const Json::Value &body, const std::string &kind);
+    void onHubFsRes(const class JZHubPackFsRes &res);
+    void reapStuckFs();
+
     JZNetServer *m_hub = nullptr;
     std::map<uint64_t, JZCliServerOnlineAgent> m_onlineByConn;
     std::map<std::string, uint64_t> m_connByAgent;        // agentId -> conn

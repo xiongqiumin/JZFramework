@@ -29,6 +29,8 @@ enum
     HubPack_reset,                        // server -> cli: 重置(scope = task / history)
     HubPack_taskEvent,                    // cli -> server: 任务事件(thinking/reply/tool_call/...)
     HubPack_taskEnd,                      // cli -> server: 任务回包(status/agent_reply/...)
+    HubPack_fsReq,                        // server -> cli: 文件操作(列目录/读/新建/改名/删)
+    HubPack_fsRes,                        // cli -> server: 上述结果
 };
 
 // cli -> server: 上线
@@ -137,6 +139,46 @@ public:
 
     std::string taskId;
     std::string result;       // JSON: {status, verify_rounds, agent_reply, last_verify_output, error?}
+};
+
+// ---------------------------------------------------------------------------
+// 远端文件操作(server -> cli -> 回包)
+//
+// 为什么走控制面: 管理台的文件树浏览的是"目标 agent 那台机器"的文件系统。agent 跑在
+// 本机(内置 agent / inproc cli)时 server 直接读盘就行; 跑在别的机器上时只能让
+// cli 在它本机执行 —— 于是有了这一对包。
+//
+// ⚠ 单包上限 256KB: cli 侧读文件会截到 160KB 左右(truncated=true), 大文件在网页上
+//   只能看一段 —— 真要整份给, 得走分片(暂不做)。
+// ---------------------------------------------------------------------------
+class JZHubPackFsReq : public JZNetPack
+{
+public:
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string reqId;        // server 生成, 回包对应
+    std::string op;           // list / read / create / rename / delete
+    std::string body;         // JSON: 各 op 的参数(见 JZAgentCli::onHubFsReq)
+};
+
+class JZHubPackFsRes : public JZNetPack
+{
+public:
+    JZHubPackFsRes();
+
+    virtual int packetType() const;
+    virtual void saveToStream(JZDataStream &s) const;
+    virtual void loadFromStream(JZDataStream &s);
+
+    std::string reqId;
+    bool ok = false;
+    std::string error;
+    std::string body;         // op=list/create/rename/delete: JSON; op=read: 原始字节
+    int64_t size = 0;         // 读文件: 文件总大小(不是 body 的大小)
+    int64_t mtime = 0;
+    bool truncated = false;   // 读文件: 只给了前一段
 };
 
 // 注册全部控制面包(幂等; 必须在 JZNetPackInit 之后调用, 两边进程各调一次)

@@ -14,6 +14,9 @@
 add_library(agent_tool STATIC
     JZCodeTools.h
     JZCodeTools.cpp
+    # 文件树/目录选择器的文件操作: server(本机) 与 cli(远端执行) 共用同一份
+    JZFileOps.h
+    JZFileOps.cpp
     JZVirtualTerminalConfig.h
     JZVirtualTerminalConfig.cpp
     JZMcpToolBridge.h

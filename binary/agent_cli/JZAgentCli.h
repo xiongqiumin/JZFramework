@@ -221,6 +221,9 @@ protected:
     void onHubTaskSubmit(const std::string &taskId, const Json::Value &body);
     void onHubTaskCancel(const std::string &taskId);
     void onHubReset(const std::string &scope);
+    // 远端文件操作(管理台文件树): server 只给 op + JSON 参数, 在**本机**执行
+    bool onHubFs(const std::string &op, const std::string &body, std::string &resBody,
+                 int64_t &size, int64_t &mtime, bool &truncated, std::string &error);
     std::string nodesJsonString() const;
     void endLoop();
     void onClientDestroyed(JZObject *);

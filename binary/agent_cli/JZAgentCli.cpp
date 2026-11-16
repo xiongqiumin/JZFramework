@@ -10,6 +10,7 @@
 #include "JZProcess.h"       // 验证命令的异步执行(超时/进程树收尾)
 #include "JZString.h"        // str_toLower
 #include "JZVirtualTerminal.h"
+#include "JZFileOps.h"          // 远端文件操作(管理台文件树): 与本机 /api/fs 同一份实现
 #include "json/json.h"
 #include "JZLog.h"              // JZLogManager / LogModule_Agent / LOG_INFO
 #include "JZUtf8Iterator.h"     // 验证输出按字符(码点)截断, 不切坏多字节字符
@@ -859,6 +860,13 @@ void JZAgentCli::startServerLink()
     });
     m_hub->setTaskCancelHandler([this](const std::string &taskId) { onHubTaskCancel(taskId); });
     m_hub->setResetHandler([this](const std::string &scope) { onHubReset(scope); });
+    // 管理台的文件树: 在**本机**执行 server 发来的文件操作, 结果原样带回
+    m_hub->setFsHandler([this](const std::string &op, const std::string &body)
+    {
+        JZHubLink::FsResult r;
+        r.ok = onHubFs(op, body, r.body, r.size, r.mtime, r.truncated, r.error);
+        return r;
+    });
     m_hub->setStateHandler([this]()
     {
         if (!m_hub)
@@ -962,6 +970,94 @@ void JZAgentCli::onHubReset(const std::string &scope)
         cancelTask("任务已被 server 重置");
     else
         resetHistory();
+}
+
+// ---------------------------------------------------------------------------
+// 远端文件操作(管理台的文件树/目录选择器)
+//   server 那边看到的是"这台 cli 上报的 rootDir", 但文件在 cli 所在的机器上,
+//   所以只能由 cli 在本机执行, 再把结果原样带回去。
+//   边界与 server 本机的 /api/fs 完全一致(见 JZFileOps.h): 读全盘, 写只能在 root 内。
+//   ⚠ 单包 256KB 上限: read 截到 160KB, truncated 让前端知道"只给了一段"。
+// ---------------------------------------------------------------------------
+bool JZAgentCli::onHubFs(const std::string &op, const std::string &bodyText, std::string &resBody,
+                         int64_t &size, int64_t &mtime, bool &truncated, std::string &error)
+{
+    resBody.clear();
+    size = 0;
+    mtime = 0;
+    truncated = false;
+    error.clear();
+
+    Json::Value body(Json::objectValue);
+    if (!bodyText.empty())
+    {
+        Json::Reader reader;
+        if (!reader.parse(bodyText, body) || !body.isObject())
+        {
+            error = "fsReq 的 body 不是 JSON 对象";
+            return false;
+        }
+    }
+
+    const std::string path = body.get("path", "").asString();
+
+    if (op == "list")
+    {
+        // defaultDir: 没给 path 时从哪开始(一般就是这台 cli 的工作区)
+        const std::string def = body.get("defaultDir", "").asString();
+        const Json::Value j = JZFileOps::list(path, def.empty() ? m_config.rootDir : def, error);
+        if (j.isNull())
+            return false;
+        resBody = Json::FastWriter().write(j);
+        return true;
+    }
+    if (op == "read")
+    {
+        int64_t maxBytes = body.get("maxBytes", (int64_t)(160 * 1024)).asInt64();
+        if (maxBytes <= 0 || maxBytes > 200 * 1024)
+            maxBytes = 200 * 1024;      // 包上限的硬顶
+        if (!JZFileOps::readFile(path, maxBytes, resBody, size, mtime, truncated, error))
+            return false;
+        return true;
+    }
+    if (op == "create")
+    {
+        const bool isDir = body.get("kind", "dir").asString() == "dir";
+        std::string outPath;
+        if (!JZFileOps::create(body.get("root", "").asString(), body.get("dir", "").asString(),
+                               body.get("name", "").asString(), isDir, outPath, error))
+            return false;
+        Json::Value j(Json::objectValue);
+        j["ok"] = true;
+        j["path"] = outPath;
+        j["kind"] = isDir ? "dir" : "file";
+        resBody = Json::FastWriter().write(j);
+        return true;
+    }
+    if (op == "rename")
+    {
+        std::string outPath;
+        if (!JZFileOps::renamePath(body.get("root", "").asString(), path,
+                                   body.get("name", "").asString(), outPath, error))
+            return false;
+        Json::Value j(Json::objectValue);
+        j["ok"] = true;
+        j["path"] = outPath;
+        resBody = Json::FastWriter().write(j);
+        return true;
+    }
+    if (op == "delete")
+    {
+        if (!JZFileOps::remove(body.get("root", "").asString(), path, error))
+            return false;
+        Json::Value j(Json::objectValue);
+        j["ok"] = true;
+        resBody = Json::FastWriter().write(j);
+        return true;
+    }
+
+    error = "不支持的文件操作: " + op;
+    return false;
 }
 
 Json::Value JZAgentCli::nodesJson() const

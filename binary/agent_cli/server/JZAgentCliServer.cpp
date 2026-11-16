@@ -15,6 +15,7 @@
 #include "JZLog.h"            // jzLogDirOf: /api/agents/logs 读 Agent.log 尾部
 #include "JZJson.h"              // Json::Value / FastWriter
 #include "JZCodeTools.h"         // codeNormalizePath(切换工作目录时规范化路径)
+#include "JZFileOps.h"           // 文件树/目录选择器: 本机执行(远端走控制面转发到 cli)
 #include "JZStd.h"               // str_trimmed(CSRF: Sec-Fetch-Site / Origin / Referer 判来源)
 
 #include <algorithm>
@@ -291,7 +292,18 @@ static void respondJson(JZHttpServerClient *client, const JZHttpRequest &req, in
 {
     JZHttpRespone resp;
     resp.setStatusCode(code);
-    resp.setJson(Json::FastWriter().write(v));
+
+    // 错误响应统一成 {"error": "..."}: 以前 4xx/5xx 有的回对象、有的回裸字符串
+    // (Json::Value("目录不存在: ...")), 而裸字符串在 JSON 里就是个 string ——
+    // 前端取 j.error 永远是 undefined, 网页上只剩一句"HTTP 404", 现场根本不知道
+    // 缺的是哪个路径/哪个参数。在这里收口, 所有接口一次性统一。
+    Json::Value body = v;
+    if (code >= 400 && v.isString())
+    {
+        body = Json::Value(Json::objectValue);
+        body["error"] = v;
+    }
+    resp.setJson(Json::FastWriter().write(body));
     if (cookie)
         resp.setCookie(*cookie);
     client->response(resp, req);
@@ -897,6 +909,7 @@ bool JZAgentCliServer::startHub(std::string &error)
     {
         reapDeadAgents();     // 心跳超时的 agent
         reapStuckTasks();     // 长时间没有任何事件的任务
+        reapStuckFs();        // 远端文件操作卡住(agent 掉线/正在跑任务)不能把 HTTP 挂死
         pruneAuthFails();     // 鉴权失败记录(过期就丢, 别被扫描器撑大)
         // 顺便当 SSE 心跳: 网页靠"20s 收不到任何帧"判断下行断了(前端 EVT_LAST)
         broadcastAgentEvent();
@@ -1051,6 +1064,153 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
         jzInfo().noquote().nospace() << "任务完成: " << end->taskId << "  agent=" << pt.agentId
                                      << "  state=" << (rec ? rec->state : string(kStateUnknown));
         return;
+    }
+
+    // 远端文件操作的回包: 找到挂起中的 HTTP 请求, 把结果写回去
+    if (type == HubPack_fsRes)
+    {
+        JZHubPackFsRes *res = (JZHubPackFsRes *)pack.get();
+        onHubFsRes(*res);
+        return;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 远端文件操作: 把 op 转给 cli, 等它回包(fsRes)再回 HTTP
+// ---------------------------------------------------------------------------
+bool JZAgentCliServer::fsForward(const string &agentId, const string &op, const Json::Value &body,
+                                 JZHttpServerClient *client, const string &kind, string &error)
+{
+    error.clear();
+
+    auto ai = m_connByAgent.find(agentId);
+    if (ai == m_connByAgent.end() || !m_hub)
+    {
+        error = "没有在线的 agent: " + agentId;
+        return false;
+    }
+    JZHubPackFsReq req;
+    req.reqId = "fs" + to_string(++m_fsSeq) + "-" + to_string(JZPlatform::getTickCountMs());
+    req.op = op;
+    req.body = Json::FastWriter().write(body);
+
+    PendingFs p;
+    p.agentId = agentId;
+    p.client = client;
+    p.kind = kind;
+    p.deadline = JZPlatform::getTickCountMs() + 8000;   // 远端 cli 可能正在跑任务, 给 8s
+    m_pendingFs[req.reqId] = p;
+
+    // 提交方提前断开: 只丢回包通道, 别把悬空指针留到回包那一刻
+    if (client)
+    {
+        connect(static_cast<JZSignal<JZObject*>*>(&client->sigDestroyed), this, [this](JZObject *obj)
+        {
+            for (auto &kv : m_pendingFs)
+                if (kv.second.client == static_cast<JZHttpServerClient *>(obj))
+                    kv.second.client = nullptr;
+        });
+    }
+
+    jzInfo().noquote().nospace() << "远端文件操作: " << op << " -> " << agentId
+                                 << "  req=" << req.reqId;
+    m_hub->sendPacket(ai->second, &req);
+    return true;
+}
+
+int JZAgentCliServer::fsRoute(JZHttpServerClient *client, const JZHttpRequest &req,
+                              const string &agentId, const string &op, const Json::Value &body,
+                              const string &kind)
+{
+    // 没指定 agent / 内置 agent: 文件就在本进程这台机器上, 直接读盘
+    if (agentId.empty() || isSelfAgentId(agentId))
+        return 0;
+
+    // 指定了 agent 就必须在**它那台机器**上执行: 离线不能悄悄回落到 server 本机的同名路径
+    if (m_connByAgent.count(agentId) == 0)
+    {
+        respondJson(client, req, 503, Json::Value("agent 不在线: " + agentId));
+        return 2;
+    }
+
+    string error;
+    if (!fsForward(agentId, op, body, client, kind, error))
+    {
+        respondJson(client, req, 503, Json::Value(error));
+        return 2;
+    }
+    return 1;                        // 已转发, 等 fsRes 回包
+}
+
+void JZAgentCliServer::onHubFsRes(const JZHubPackFsRes &res)
+{
+    auto it = m_pendingFs.find(res.reqId);
+    if (it == m_pendingFs.end())
+        return;                     // 已经超时回过 504, 或提交方断了
+    PendingFs p = it->second;
+    m_pendingFs.erase(it);
+    if (!p.client)
+        return;
+
+    if (!res.ok)
+    {
+        Json::Value e(Json::objectValue);
+        e["error"] = res.error.empty() ? string("远端文件操作失败") : res.error;
+        respondJsonAsync(p.client, 404, e);
+        return;
+    }
+
+    if (p.kind == "raw")
+    {
+        // 与本地 /api/fs/raw 完全一样的响应形状(前端按 X-File-Size 判断截断)
+        JZHttpRespone resp;
+        resp.setStatusCode(200);
+        resp.setContentType("application/octet-stream");
+        resp.setHeader("Cache-Control", "no-store");
+        resp.setHeader("X-File-Size", to_string((long long)res.size));
+        resp.setHeader("X-File-Mtime", to_string((long long)res.mtime));
+        if (res.truncated)
+            resp.setHeader("X-File-Truncated", "1");
+        resp.setBody(res.body);
+        p.client->response(resp.toByteArray());
+        return;
+    }
+
+    Json::Value j;
+    if (!parseJsonText(res.body, j))
+    {
+        Json::Value e(Json::objectValue);
+        e["error"] = "cli 返回的文件结果不是合法 JSON";
+        respondJsonAsync(p.client, 502, e);
+        return;
+    }
+    respondJsonAsync(p.client, 200, j);
+}
+
+// 超时清扫(由 5s 巡检调用): 远端 cli 掉线/卡住时不能把 HTTP 请求一直挂着
+void JZAgentCliServer::reapStuckFs()
+{
+    if (m_pendingFs.empty())
+        return;
+
+    const int64_t now = JZPlatform::getTickCountMs();
+    vector<string> dead;
+    for (auto &kv : m_pendingFs)
+        if (kv.second.deadline > 0 && now > kv.second.deadline)
+            dead.push_back(kv.first);
+
+    for (const auto &id : dead)
+    {
+        auto it = m_pendingFs.find(id);
+        if (it == m_pendingFs.end())
+            continue;
+        JZHttpServerClient *c = it->second.client;
+        m_pendingFs.erase(it);
+        if (!c)
+            continue;
+        Json::Value e(Json::objectValue);
+        e["error"] = "远端 agent 响应超时(可能正在跑任务或已掉线)";
+        respondJsonAsync(c, 504, e);
     }
 }
 
@@ -2419,164 +2579,74 @@ void JZAgentCliServer::onApiAgentCard(JZHttpServerClient *client, const JZHttpRe
 void JZAgentCliServer::onApiFs(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     SlowReqGuard slow("api/fs");
-    string path = req.queryParam("path");
-    if (path.empty())
-    {
-        path = m_selfAgent ? m_selfAgent->config().rootDir : string();
-        if (path.empty())
-            path = JZDir::currentPath();
-    }
-    path = codeNormalizePath(path);
 
-    JZFileInfo info(path);
-    if (!info.exists() || !info.isDir())
+    const string agentId = req.queryParam("agentId");
+    const string path = req.queryParam("path");
+
+    // 目标 agent 在别的机器上 => 让那台 cli 自己列(控制面转发)
     {
-        respondJson(client, req, 404, Json::Value("目录不存在: " + path));
+        Json::Value body(Json::objectValue);
+        body["path"] = path;
+        body["defaultDir"] = m_selfAgent ? m_selfAgent->config().rootDir : string();
+        if (fsRoute(client, req, agentId, "list", body, "json") != 0)
+            return;
+    }
+
+    // 本机(内置 agent / 没指定 agentId / agent 已离线): 直接读盘
+    const string def = m_selfAgent ? m_selfAgent->config().rootDir : string();
+    string error;
+    Json::Value j = JZFileOps::list(path, def, error);
+    if (j.isNull())
+    {
+        respondJson(client, req, 404, Json::Value(error));
         return;
     }
-
-    Json::Value out(Json::objectValue);
-    out["path"] = path;
-
-    // 父目录: 到盘符根("C:/")或 "/" 就没了
-    string parent = path;
-    while (parent.size() > 1 && parent.back() == '/')
-        parent.pop_back();
-    const size_t pos = parent.find_last_of('/');
-    if (pos == 0)
-        parent = "/";
-    else if (pos == 2 && parent.size() >= 3 && parent[1] == ':')
-        parent = parent.substr(0, 3);
-    else if (pos == string::npos && parent.size() == 2 && parent[1] == ':')
-        parent = string();                       // "C:" 就是 C 盘根, 没有上级
-    else if (pos != string::npos)
-        parent = parent.substr(0, pos);
-    out["parent"] = (parent == path) ? string() : parent;
-
-    vector<string> names = JZDir(path).entryList(vector<string>(), JZDir::Dirs | JZDir::NoDotAndDotDot);
-    std::sort(names.begin(), names.end());
-    Json::Value dirs(Json::arrayValue);
-    for (const string &n : names)
-    {
-        Json::Value d(Json::objectValue);
-        d["name"] = n;
-        d["path"] = path + "/" + n;
-        dirs.append(d);
-    }
-    out["dirs"] = dirs;
-
-    // 文件(文件树的只读浏览): 名字/大小/修改时间。内容不在这里, 走 /api/fs/raw。
-    vector<string> files = JZDir(path).entryList(vector<string>(), JZDir::Files | JZDir::NoDotAndDotDot);
-    std::sort(files.begin(), files.end());
-    Json::Value farr(Json::arrayValue);
-    for (const string &n : files)
-    {
-        const string fp = path + "/" + n;
-        JZFileInfo fi(fp);
-        Json::Value f(Json::objectValue);
-        f["name"] = n;
-        f["path"] = fp;
-        f["size"] = (Json::Int64)fi.size();
-        f["mtime"] = (Json::Int64)fi.lastModified();
-        farr.append(f);
-        if (farr.size() >= 3000)      // 超大目录截断, 免得一次回几十 MB JSON
-            break;
-    }
-    out["files"] = farr;
-
-    // 根(盘符)列表: 网页上像 VSCode 的"打开文件夹"那样, 可以从别的盘开始。
-    // 不引平台头文件, 直接试 A: .. Z: 是否存在(26 次 stat, 可忽略)。
-    Json::Value drives(Json::arrayValue);
-    for (char ch = 'A'; ch <= 'Z'; ++ch)
-    {
-        const string d = string(1, ch) + ":/";
-        if (JZFileInfo(d).exists() && JZFileInfo(d).isDir())
-            drives.append(d);
-    }
-    if (drives.empty())
-        drives.append("/");
-    out["drives"] = drives;
-
-    // 主目录: 界面上放个"快捷入口"
-    const char *home = getenv("USERPROFILE");
-    if (!home || !*home)
-        home = getenv("HOME");
-    if (home && *home)
-        out["home"] = codeNormalizePath(home);
-
-    respondJson(client, req, 200, out);
+    respondJson(client, req, 200, j);
 }
 
-// 文件内容(原始字节): GET /api/fs/raw?path=...
-// 故意**不解码**: 后端不猜编码, 原样给字节, 由前端 TextDecoder 先试 UTF-8 再退 GB18030。
-// 这样 Windows 上 GBK 的文件也不会被转坏, 也不需要引 iconv / MultiByteToWideChar。
 void JZAgentCliServer::onApiFsRaw(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     SlowReqGuard slow("api/fs/raw");
-    const string path = codeNormalizePath(req.queryParam("path"));
-    JZFileInfo info(path);
-    if (path.empty() || !info.exists() || info.isDir())
+
+    const string agentId = req.queryParam("agentId");
+    const string path = req.queryParam("path");
+
     {
-        respondJson(client, req, 404, Json::Value("文件不存在: " + path));
-        return;
+        Json::Value body(Json::objectValue);
+        body["path"] = path;
+        body["maxBytes"] = (Json::Int64)(160 * 1024);   // 控制面单包 256KB, 留余量
+        if (fsRoute(client, req, agentId, "read", body, "raw") != 0)
+            return;
     }
 
-    static const int kMax = 1024 * 1024;      // 最多给前端 1MB
-    JZFile file;
-    if (!file.open(path, "rb"))
+    static const int kMax = 1024 * 1024;      // 本机: 最多给前端 1MB
+    string data, error;
+    int64_t size = 0, mtime = 0;
+    bool truncated = false;
+    if (!JZFileOps::readFile(path, kMax, data, size, mtime, truncated, error))
     {
-        respondJson(client, req, 403, Json::Value("打不开(权限?): " + path));
+        respondJson(client, req, 404, Json::Value(error));
         return;
     }
-    JZByteArray data = file.read(kMax);
-    file.close();
 
     JZHttpRespone resp;
     resp.setStatusCode(200);
     resp.setContentType("application/octet-stream");
     resp.setHeader("Cache-Control", "no-store");
-    resp.setHeader("X-File-Size", std::to_string((long long)info.size()));
-    resp.setHeader("X-File-Mtime", std::to_string((long long)info.lastModified()));
-    resp.setBody(std::string(data.data(), (size_t)data.size()));
+    resp.setHeader("X-File-Size", to_string(size));
+    resp.setHeader("X-File-Mtime", to_string(mtime));
+    if (truncated)
+        resp.setHeader("X-File-Truncated", "1");
+    resp.setBody(data);
     client->response(resp, req);
 }
 
-// 工作区边界: p 落在 root 之内(root 本身也算)
-static bool pathInRoot(const string &root, const string &p)
-{
-    return !root.empty() && !p.empty() &&
-           (p == root ||
-            (p.size() > root.size() && p.compare(0, root.size(), root) == 0 && p[root.size()] == '/'));
-}
-
-// 名字必须是单层(不许 / \ . ..) —— 挡掉 "../x" 这类穿越
-static bool validEntryName(const string &name)
-{
-    return !name.empty() && name != "." && name != ".." &&
-           name.find('/') == string::npos && name.find('\\') == string::npos;
-}
-
-// 父目录: "C:/a/b" -> "C:/a"; "C:/a" -> "C:/"; "C:/" -> ""
-static string parentDirOf(const string &p)
-{
-    const size_t pos = p.find_last_of('/');
-    if (pos == string::npos)
-        return string();
-    if (pos == 0)
-        return "/";
-    if (pos == 2 && p.size() >= 3 && p[1] == ':')
-        return p.substr(0, 3);
-    return p.substr(0, pos);
-}
-
-// 新建: POST /api/fs/create {root, dir, name, kind: "dir"|"file"}
+// 新建: POST /api/fs/create {agentId?, root, dir, name, kind}
 //
-// 边界 = **工作区内**(与 cli 的区域模型一致: 全盘可读, 工作区可写, 授信目录只读) ——
-// 这个规则三档(strict/standard/loose)完全一样, 见 JZVirtualTerminalConfig::applyProfile,
-// 所以不需要把 cli 的 profile 传上来。
-//
-// root 为什么由前端带: 网页上切工作区只写浏览器的 localStorage, server 并不知道
-// "这个人现在看的是哪个目录"。root 只用来做前缀判定, 不参与别的逻辑。
+// 边界 = **工作区内**(与 cli 的区域模型一致: 全盘可读, 工作区可写, 授信目录只读)。
+// root 由前端带: 网页上切工作区只写浏览器的 localStorage, server 并不知道"这个人
+// 现在看的是哪个目录"。root 只用来做前缀判定, 不参与别的逻辑。
+// agentId 有值时转发给那台 cli 在本机执行(文件在它那台机器上); 否则 server 自己执行。
 void JZAgentCliServer::onApiFsCreate(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     SlowReqGuard slow("api/fs/create");
@@ -2588,73 +2658,25 @@ void JZAgentCliServer::onApiFsCreate(JZHttpServerClient *client, const JZHttpReq
         return;
     }
 
-    const string root = codeNormalizePath(body.get("root", "").asString());
-    const string dir  = codeNormalizePath(body.get("dir", "").asString());
-    const string name = body.get("name", "").asString();
-    const string kind = body.get("kind", "dir").asString();
-    if (root.empty() || dir.empty() || name.empty())
-    {
-        respondJson(client, req, 400, Json::Value("缺少 root / dir / name"));
+    const string agentId = body.get("agentId", "").asString();
+    if (fsRoute(client, req, agentId, "create", body, "json") != 0)
         return;
-    }
-    // 名字必须是单层: 不许带分隔符, 不许 . / ..(挡掉 ../ 这类穿越)
-    if (name.find('/') != string::npos || name.find('\\') != string::npos ||
-        name == "." || name == "..")
-    {
-        respondJson(client, req, 400, Json::Value("名字不能带路径分隔符, 也不能是 . 或 .."));
-        return;
-    }
-    // 边界: dir 必须在 root 之内(root 本身也算)
-    const bool inside = (dir == root) ||
-        (dir.size() > root.size() && dir.compare(0, root.size(), root) == 0 && dir[root.size()] == '/');
-    if (!inside)
-    {
-        respondJson(client, req, 403,
-                    Json::Value("只能在工作区内新建\n工作区: " + root + "\n目标: " + dir));
-        return;
-    }
 
-    JZFileInfo dirInfo(dir);
-    if (!dirInfo.exists() || !dirInfo.isDir())
+    const bool isDir = body.get("kind", "dir").asString() != "file";
+    string outPath, error;
+    if (!JZFileOps::create(body.get("root", "").asString(), body.get("dir", "").asString(),
+                           body.get("name", "").asString(), isDir, outPath, error))
     {
-        respondJson(client, req, 404, Json::Value("目录不存在: " + dir));
+        respondJson(client, req, 400, Json::Value(error));
         return;
     }
-
-    const string target = dir + "/" + name;
-    if (JZFileInfo(target).exists())
-    {
-        respondJson(client, req, 400, Json::Value("已存在: " + name));
-        return;
-    }
-
-    bool ok = false;
-    if (kind == "file")
-    {
-        JZFile f;                       // "wb" 就是"建一个空文件"
-        ok = f.open(target, "wb");
-        if (ok)
-            f.close();
-    }
-    else
-    {
-        ok = JZDir(dir).mkpath(target);
-    }
-    if (!ok)
-    {
-        respondJson(client, req, 500, Json::Value("创建失败(权限?): " + target));
-        return;
-    }
-
     Json::Value out(Json::objectValue);
     out["ok"] = true;
-    out["path"] = target;
-    out["kind"] = (kind == "file" ? "file" : "dir");
+    out["path"] = outPath;
+    out["kind"] = isDir ? "dir" : "file";
     respondJson(client, req, 200, out);
 }
 
-// 重命名: POST /api/fs/rename {root, path, name}
-// 只改名字, 不移动目录(新名字拼在同一个父目录下); 边界与新建一致。
 void JZAgentCliServer::onApiFsRename(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     SlowReqGuard slow("api/fs/rename");
@@ -2665,69 +2687,24 @@ void JZAgentCliServer::onApiFsRename(JZHttpServerClient *client, const JZHttpReq
         respondJson(client, req, 400, Json::Value("body 必须是 JSON 对象"));
         return;
     }
-    const string root = codeNormalizePath(body.get("root", "").asString());
-    const string path = codeNormalizePath(body.get("path", "").asString());
-    const string name = body.get("name", "").asString();
 
-    if (root.empty() || path.empty() || name.empty())
-    {
-        respondJson(client, req, 400, Json::Value("缺少 root / path / name"));
+    const string agentId = body.get("agentId", "").asString();
+    if (fsRoute(client, req, agentId, "rename", body, "json") != 0)
         return;
-    }
-    if (!pathInRoot(root, path))
-    {
-        respondJson(client, req, 403, Json::Value("只能改工作区内的东西\n工作区: " + root));
-        return;
-    }
-    if (path == root)
-    {
-        respondJson(client, req, 400, Json::Value("不能重命名工作区根目录"));
-        return;
-    }
-    if (!validEntryName(name))
-    {
-        respondJson(client, req, 400, Json::Value("名字不能带路径分隔符, 也不能是 . 或 .."));
-        return;
-    }
-    JZFileInfo info(path);
-    if (!info.exists())
-    {
-        respondJson(client, req, 404, Json::Value("不存在: " + path));
-        return;
-    }
-    const string parent = parentDirOf(path);
-    const string target = parent + "/" + name;
-    if (target == path)
-    {
-        Json::Value out(Json::objectValue);
-        out["ok"] = true;
-        out["path"] = target;
-        respondJson(client, req, 200, out);
-        return;
-    }
-    if (JZFileInfo(target).exists())
-    {
-        respondJson(client, req, 400, Json::Value("已存在: " + name));
-        return;
-    }
 
-    string err;
-    const bool ok = info.isDir() ? JZDir::rename(path, target, &err)
-                                 : JZFile::rename(path, target, &err);
-    if (!ok)
+    string outPath, error;
+    if (!JZFileOps::renamePath(body.get("root", "").asString(), body.get("path", "").asString(),
+                               body.get("name", "").asString(), outPath, error))
     {
-        respondJson(client, req, 500,
-                    Json::Value("重命名失败" + (err.empty() ? string() : (": " + err))));
+        respondJson(client, req, 400, Json::Value(error));
         return;
     }
     Json::Value out(Json::objectValue);
     out["ok"] = true;
-    out["path"] = target;
+    out["path"] = outPath;
     respondJson(client, req, 200, out);
 }
 
-// 删除: POST /api/fs/delete {root, path}
-// 目录**递归删除**(页面上会先确认); 工作区根目录不许删。
 void JZAgentCliServer::onApiFsDelete(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     SlowReqGuard slow("api/fs/delete");
@@ -2738,47 +2715,22 @@ void JZAgentCliServer::onApiFsDelete(JZHttpServerClient *client, const JZHttpReq
         respondJson(client, req, 400, Json::Value("body 必须是 JSON 对象"));
         return;
     }
-    const string root = codeNormalizePath(body.get("root", "").asString());
-    const string path = codeNormalizePath(body.get("path", "").asString());
 
-    if (root.empty() || path.empty())
-    {
-        respondJson(client, req, 400, Json::Value("缺少 root / path"));
+    const string agentId = body.get("agentId", "").asString();
+    if (fsRoute(client, req, agentId, "delete", body, "json") != 0)
         return;
-    }
-    if (!pathInRoot(root, path))
+
+    string error;
+    if (!JZFileOps::remove(body.get("root", "").asString(), body.get("path", "").asString(), error))
     {
-        respondJson(client, req, 403, Json::Value("只能删工作区内的东西\n工作区: " + root));
-        return;
-    }
-    if (path == root)
-    {
-        respondJson(client, req, 400, Json::Value("不能删除工作区根目录"));
-        return;
-    }
-    JZFileInfo info(path);
-    if (!info.exists())
-    {
-        respondJson(client, req, 404, Json::Value("不存在: " + path));
-        return;
-    }
-    const bool isDir = info.isDir();
-    const bool ok = isDir ? JZDir(path).removeRecursively() : JZFile::remove(path);
-    if (!ok)
-    {
-        respondJson(client, req, 500, Json::Value("删除失败(权限?): " + path));
+        respondJson(client, req, 400, Json::Value(error));
         return;
     }
     Json::Value out(Json::objectValue);
     out["ok"] = true;
-    out["path"] = path;
-    out["dir"] = isDir;
     respondJson(client, req, 200, out);
 }
 
-// 主机视图: GET /api/projects
-// 一次返回「每个 agent(在线与否 + 根目录) + 它用过的目录」。
-// 目录从任务记录里聚合(不再让前端拉 tasks 全量 —— 那玩意儿带 events, 500 条能有几 MB)。
 void JZAgentCliServer::onApiProjects(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     SlowReqGuard slow("api/projects");

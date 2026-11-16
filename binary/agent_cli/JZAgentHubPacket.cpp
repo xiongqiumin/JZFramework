@@ -148,6 +148,46 @@ void JZHubPackTaskEnd::loadFromStream(JZDataStream &s)
     s >> taskId >> result;
 }
 
+// ---- fsReq(server -> cli: 在 cli 本机做一次文件操作) ----
+int JZHubPackFsReq::packetType() const
+{
+    return HubPack_fsReq;
+}
+
+void JZHubPackFsReq::saveToStream(JZDataStream &s) const
+{
+    s << reqId << op << body;
+}
+
+void JZHubPackFsReq::loadFromStream(JZDataStream &s)
+{
+    s >> reqId >> op >> body;
+}
+
+// ---- fsRes ----
+JZHubPackFsRes::JZHubPackFsRes()
+{
+    ok = false;
+    size = 0;
+    mtime = 0;
+    truncated = false;
+}
+
+int JZHubPackFsRes::packetType() const
+{
+    return HubPack_fsRes;
+}
+
+void JZHubPackFsRes::saveToStream(JZDataStream &s) const
+{
+    s << reqId << ok << error << body << size << mtime << truncated;
+}
+
+void JZHubPackFsRes::loadFromStream(JZDataStream &s)
+{
+    s >> reqId >> ok >> error >> body >> size >> mtime >> truncated;
+}
+
 void JZAgentHubPacketInit()
 {
     // 幂等 + 线程安全(JZNetPackManager::registPack 重复注册会断言)
@@ -162,5 +202,7 @@ void JZAgentHubPacketInit()
         m->registPack<JZHubPackReset>(HubPack_reset);
         m->registPack<JZHubPackTaskEvent>(HubPack_taskEvent);
         m->registPack<JZHubPackTaskEnd>(HubPack_taskEnd);
+        m->registPack<JZHubPackFsReq>(HubPack_fsReq);
+        m->registPack<JZHubPackFsRes>(HubPack_fsRes);
     });
 }

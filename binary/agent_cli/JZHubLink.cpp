@@ -196,6 +196,36 @@ void JZHubLink::onPacket(JZNetPackPtr pack)
             m_onReset(in->scope);
         return;
     }
+
+    // 管理台的文件树: server 让这台 cli 在它自己的机器上做一次文件操作, 然后回包。
+    if (type == HubPack_fsReq)
+    {
+        JZHubPackFsReq *in = (JZHubPackFsReq *)pack.get();
+        if (!m_client)
+            return;
+
+        FsResult r;
+        if (!m_onFs)
+        {
+            r.ok = false;
+            r.error = "这台 cli 没有启用文件操作";
+        }
+        else
+        {
+            r = m_onFs(in->op, in->body);
+        }
+
+        JZHubPackFsRes res;
+        res.reqId = in->reqId;
+        res.ok = r.ok;
+        res.error = r.error;
+        res.body = r.body;
+        res.size = r.size;
+        res.mtime = r.mtime;
+        res.truncated = r.truncated;
+        m_client->sendPacket(&res);
+        return;
+    }
 }
 
 void JZHubLink::sendHello()

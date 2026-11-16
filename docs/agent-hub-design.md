@@ -181,6 +181,8 @@ enum {
     HubPack_reset,                       // server -> cli
     HubPack_taskEvent,                   // cli -> server
     HubPack_taskEnd,                     // cli -> server
+    HubPack_fsReq,                       // server -> cli: 文件操作(列/读/建/改名/删)
+    HubPack_fsRes,                       // cli -> server
 };
 void JZAgentHubPacketInit();   // 两边启动时各调一次（在 JZNetPackInit 之后）
 ```

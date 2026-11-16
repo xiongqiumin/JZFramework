@@ -345,7 +345,7 @@ static void printConfig(const string &configPath, const JZCliServerConfig &confi
         //   会统一成 std::string, 直接把 string 交给 %s 就是未定义行为(实测打出乱码)。
         const string auth = config.http.token.empty()
             ? string("无 token(仅限完全可信的隔离网络; 且只绑 127.0.0.1)")
-            : ("token(校验 /api/* 与 /app.js, 来源: cookie jz_token / ?token= / X-JZ-Token / Bearer; "
+            : ("token(校验 /api/* 与 /app.js, 来源: cookie jz_token / X-JZ-Token / Bearer; "
                "5 分钟内错 " + std::to_string(config.http.authMaxFails) + " 次封 " +
                std::to_string(config.http.authBanSeconds) + " 秒)");
         fprintf(stderr, "    鉴权     %s\n", auth.c_str());

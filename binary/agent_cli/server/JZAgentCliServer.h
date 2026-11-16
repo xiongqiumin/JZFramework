@@ -51,7 +51,9 @@ struct JZCliServerHttpConfig
     // 应用层鉴权口令。**sslEnabled=true 时必填**(否则启动失败): TLS 只加密, 不认证
     // 调用方 —— 端口一旦不可信网络可达, 谁都能起停 agent、下发任务。
     // 校验范围: /api/* (静态页/JS 不需要, 否则连登录入口都加载不出来)。
-    // 来源优先级: cookie "jz_token" > ?token= > X-JZ-Token > Authorization: Bearer。
+    // 来源优先级: cookie "jz_token" > X-JZ-Token > Authorization: Bearer。
+    // ⚠ 不支持 ?token=<...> —— URL 会进浏览器历史 / Referer / 反向代理 access log,
+    //   HTTPS 保护不了这些记录(脚本/调试请用上面两个头)。
     std::string token;
 
     // 失败封禁: 同一 IP 在 5 分钟窗口内**带错** authMaxFails 次 → 封 authBanSeconds 秒。

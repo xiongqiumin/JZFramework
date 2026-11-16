@@ -410,9 +410,10 @@ static void respondText(JZHttpServerClient *client, const JZHttpRequest &req, in
 //
 // token 来源优先级:
 //   1) cookie  jz_token=...   ← 网页把输入框里的值写进 cookie, 浏览器之后**每个请求**都带
-//   2) query   ?token=...     ← 兼容旧链接 / curl 调试
-//   3) header  X-JZ-Token: ...
-//   4) header  Authorization: Bearer ...
+//   2) header  X-JZ-Token: ...
+//   3) header  Authorization: Bearer ...
+// ⚠ **不支持** ?token=<...>: URL 会进浏览器历史 / Referer / 反向代理的 access log,
+//   HTTPS 只保护传输过程, 保护不了这些记录。脚本/调试请改用上面两个头。
 // ---------------------------------------------------------------------------
 static bool tokenEquals(const string &a, const string &b)
 {
@@ -429,8 +430,6 @@ static bool tokenEquals(const string &a, const string &b)
 static string tokenFromRequest(const JZHttpRequest &req)
 {
     string tk = req.cookie("jz_token");
-    if (tk.empty())
-        tk = req.queryParam("token");
     if (tk.empty())
         tk = req.header("X-JZ-Token");
     if (tk.empty())
@@ -487,8 +486,9 @@ static string clientIpOf(const JZHttpRequest &req, const string &peerIp, bool tr
 //   <meta http-equiv="refresh" content="0;url=https://admin:8088/api/agents/stop?name=a1">
 // 就能借受害者的登录态停 agent / 删任务 —— 攻击者全程不需要知道 token。
 // 前端 cookie 已改 SameSite=Strict, 这里再从服务端判一道, 因为:
-//   · Strict 是"浏览器愿意配合"才生效(旧浏览器不认识这个属性);
-//   · token 还有 ?token= 与 localStorage 两条来源, 不受 cookie 策略约束。
+//   · Strict 是"浏览器愿意配合"才生效(旧浏览器不认识这个属性, 会退回 None/Lax);
+//   · token 也可能走 X-JZ-Token / Authorization 头(脚本), 那条路径没有 cookie 策略 ——
+//     服务端统一判来源, 两种来源一个口径。
 //
 // 判定顺序:
 //   1) Sec-Fetch-Site —— 现代浏览器必发, 只有 "cross-site" 算攻击

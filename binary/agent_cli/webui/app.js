@@ -12,8 +12,9 @@
      - 管理台的"任务日志"只列 origin=user(人下发的); agent 内部派活不算一条用户任务。
      - 验证命令不常驻: 收进「⚙ 设置」, 存本机 localStorage。
      - token: server 的 http.token 校验 /api/*。网页把输入框的值写进 cookie `jz_token`,
-       浏览器之后**每个请求**(fetch / EventSource / 静态资源)都会自动带上; 没 cookie 时
-       退回 ?token=(兼容 cli 独立 http 与 curl)。401 会弹出输入框。
+       浏览器之后**每个请求**(fetch / EventSource / 静态资源)都会自动带上。401 会弹出输入框。
+       ⚠ 不支持 ?token=<...>: URL 会进浏览器历史 / Referer / 反向代理 access log, HTTPS 拦不住;
+         脚本请用 X-JZ-Token / Authorization: Bearer 头。
    ========================================================================== */
 
 const PAGE = document.body.dataset.page || 'agents';
@@ -83,25 +84,10 @@ function setAuthToken(t) {
   lsSet(TOKEN_KEY, t);
   cookieSet(TOKEN_COOKIE, t, t ? 30 : 0);   // 30 天; 空值 = 删除
 }
-(function rememberToken() {
-  const t = QS.get('token');
-  if (!t) return;
-  setAuthToken(t);
-  // 从地址栏抹掉: 带着 token 的链接会被复制/进历史记录, 没必要到处留
-  try {
-    QS.delete('token');
-    const q = QS.toString();
-    history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + location.hash);
-  } catch (e) {}
-})();
-function withToken(url) {
-  // cookie 有值就让浏览器自己带(每请求都有), 不再往 URL 里塞 token;
-  // 没 cookie(例如 cli 独立 http 且用户只用 URL 传参)才退回 query, 保持兼容。
-  if (cookieGet(TOKEN_COOKIE)) return url;
-  const t = lsGet(TOKEN_KEY);
-  if (!t) return url;
-  return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
-}
+/* token 只走 cookie(浏览器每请求自动带), **不再支持 ?token=<...>**:
+   token 一旦进 URL 就会落到浏览器历史、Referer, 以及反向代理的 access log 里 ——
+   HTTPS 只保证"路上"看不到, 拦不住这些记录。脚本请用 X-JZ-Token / Bearer 头。
+   EventSource 不能设请求头, 所以 SSE 靠同源 cookie(不受此影响)。 */
 
 /* token 输入浮层: 401 时出现; 保存后写 cookie 再 reload。
    为什么不放在设置弹窗里就完事: 设置入口本身就在页面上, 而没 token 时页面数据全是空的,
@@ -342,7 +328,7 @@ function netReason(e) {
 }
 async function getJson(url) {
   let r;
-  try { r = await fetchT(withToken(url), null, 10000); }
+  try { r = await fetchT(url, null, 10000); }
   catch (e) {
     // 超时不等于断线: 本地连接没有抖动, 超时只说明服务端这一刻忙。
     // 真正的连接状态交给 SSE 下行判断(见 openEvents 的 EVT_LAST)。
@@ -388,7 +374,7 @@ async function copyText(s) {
 async function postJson(url, body, timeoutMs) {
   let r;
   try {
-    r = await fetchT(withToken(url), {
+    r = await fetchT(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {})
     }, timeoutMs || 15000);
@@ -1319,7 +1305,7 @@ function startEvtWatch() {
 
 function openEvents() {
   if (typeof EventSource === 'undefined' || EVT) return;
-  EVT = new EventSource(withToken(api('events')));
+  EVT = new EventSource(api('events'));
   EVT.addEventListener('hello', (e) => {
     evtBeat();
     try { onAgentsFrame(JSON.parse(e.data)); } catch (_) { /* 忽略 */ }
@@ -1785,7 +1771,7 @@ async function openFileTab(path) {
 
   const show = () => { if (ED.act === id) paintFileTab(t); };
   let r = null;
-  try { r = await fetchT(withToken(api('fs/raw') + '?path=' + encodeURIComponent(path)), null, 15000); }
+  try { r = await fetchT(api('fs/raw') + '?path=' + encodeURIComponent(path), null, 15000); }
   catch (e) { t.note = '读取失败：' + netReason(e); show(); return; }
   if (!r || !r.ok) {
     let msg = 'HTTP ' + (r ? r.status : '?');
@@ -2443,7 +2429,7 @@ function flushDetail(id) {
 function openStream(id) {
   if (typeof EventSource === 'undefined') return;
   // slim=1: 网页只要信号帧, 首帧/终态帧不发完整 Task(长任务会是大包甚至撑爆连接)。
-  const es = new EventSource(withToken(api('tasks/subscribe?id=' + encodeURIComponent(id) + '&slim=1')));
+  const es = new EventSource(api('tasks/subscribe?id=' + encodeURIComponent(id) + '&slim=1'));
   ES = es;
   const onAny = () => { if (DETAIL_ID === id) scheduleDetail(id); };
   ['task', 'status_update', 'artifact_update'].forEach(n => es.addEventListener(n, onAny));

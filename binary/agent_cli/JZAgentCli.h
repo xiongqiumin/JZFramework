@@ -209,7 +209,7 @@ protected:
 
     void respondTask(const std::string &status, int rounds, const std::string &reply,
                     const std::string &verifyOut, const std::string &err);
-    bool checkToken(const JZHttpRequest &req) const;      // ?token= / Authorization: Bearer
+    bool checkToken(const JZHttpRequest &req) const;      // cookie jz_token / X-JZ-Token / Bearer
     void resetSession(bool cancelRunning);                // 重置会话(可选先中止在途任务)
     // master: 取消全部排队与在跑任务; worker: 只取消自己。单任务取消走 cancelLocalTask,
     // 避免 q0 的 taskCancel 误停其他队列。

@@ -1016,7 +1016,9 @@ function renderDirPickList() {
       const it = DIR_ITEMS[Number(b.dataset.i)];
       if (!it) return;
       if (it.up) { dirPickGoUp(it.path); return; }
-      useDirPick(it.path);
+      // 点目录行只"进入"(把列表切到它的子目录), 不直接选中 —— 桌面/手机一致。
+      // 确认只走顶部按钮(桌面「打开」/ 手机「进入」): 点一下就换工作区太难回退。
+      dirPickEnter(it.path);
     };
     b.onmouseenter = () => { DIR_SEL = Number(b.dataset.i); markDirSel(); };
   });
@@ -1032,14 +1034,18 @@ function markDirSel() {
   if (sel && sel.scrollIntoView) sel.scrollIntoView({ block: 'nearest' });
 }
 
-/* 点 "..": 把输入框改成上一级并刷新(相当于"进入上一级目录", 不是确认它) */
-function dirPickGoUp(parent) {
+/* 进入某个目录: 只把输入框指过去并刷新候选, **不确认**
+   (点目录行、点 ".."、回车都走这里; 确认只走顶部按钮) */
+function dirPickEnter(path) {
   const inp = document.getElementById('fDirPath');
   if (!inp) return;
-  inp.value = String(parent || '').replace(/[\/\\]+$/, '') + '/';
+  inp.value = String(path || '').replace(/[\/\\]+$/, '') + '/';
   DIR_SEL = 0;
   refreshDirPick();
 }
+
+/* 点 "..": 进入上一级(不是确认它) */
+function dirPickGoUp(parent) { dirPickEnter(parent); }
 
 function moveDirSel(d) {
   if (!DIR_ITEMS.length) return;
@@ -1154,10 +1160,10 @@ function useDirPick(path) {
   if (target === AG.id) {
     setWorkdir(path);
     if (window.JzUI) JzUI.toast('工作目录：' + path, 'ok');
-    if (IS_MOBILE) enterWorkspace(AG.id, path);
+    if (IS_MOBILE) enterWorkspace(AG.id, path, true);      // 换文件夹 = 新会话
     return;
   }
-  if (IS_MOBILE) { enterWorkspace(target, path); return; }
+  if (IS_MOBILE) { enterWorkspace(target, path, true); return; }
   location.href = '?id=' + encodeURIComponent(target) + '&dir=' + encodeURIComponent(path);
 }
 
@@ -1232,7 +1238,7 @@ async function loadInfo() {
 
 }
 
-async function loadTasks() {
+async function loadTasks(fresh) {
   const q = ['limit=50', 'origin=user'];
   if (AG.id) q.push('agentId=' + encodeURIComponent(AG.id));
   try {
@@ -1243,16 +1249,22 @@ async function loadTasks() {
     return;
   }
   AG.busy = AG.tasks.some(isRunning);
-  if (AG.sel && !AG.tasks.some(t => taskId(t) === AG.sel)) AG.sel = '';
+  if (fresh) {
+    // 切换工作区 = 新会话: 不把上一条任务捡回来(否则聊天区还是旧目录的对话)
+    AG.sel = '';
+    AG.sig = null;
+  } else if (AG.sel && !AG.tasks.some(t => taskId(t) === AG.sel)) {
+    AG.sel = '';
+  }
 
   let scrollMode = '';
-  const want = QS.get('task');       // 深链: ?id=..&task=..
+  const want = fresh ? '' : QS.get('task');   // 深链: ?id=..&task=..
   if (!AG.sel && want && AG.tasks.some(t => taskId(t) === want)) {
     AG.sel = want;
     AG.sig = null;
     scrollMode = 'top';
   }
-  if (!AG.sel && AG.tasks.length) {
+  if (!fresh && !AG.sel && AG.tasks.length) {
     // 默认选中: 有在跑的选它, 否则选最新的那条
     const newest = (a, b) => (meta(b).startMs || 0) - (meta(a).startMs || 0);
     const run = AG.tasks.filter(isRunning).sort(newest)[0];
@@ -1846,12 +1858,13 @@ function initChatPage() {
       if (e.key === 'ArrowUp') { e.preventDefault(); moveDirSel(-1); return; }
       if (e.key !== 'Enter') return;
       e.preventDefault();
+      // 回车 = 进入(与点击一致); 确认只走顶部按钮
       const it = DIR_ITEMS[DIR_SEL];
-      if (it) useDirPick(it.path);
-      else if (DIR_CUR) useDirPick(DIR_CUR);
+      dirPickEnter(it ? it.path : DIR_CUR);
     });
   }
   bindBackdropClose(document.getElementById('dlgDir'), closeDirDlg);
+  on('btnDirCancel', closeDirDlg);      // 全屏后点不到 backdrop, 需要显式取消
 
   // Activity Bar: 文件 / 主机 / 会话
   document.querySelectorAll('#rail .rail-btn[data-view]').forEach(b => {
@@ -2688,7 +2701,9 @@ function setWorkspaceView(view) {
 }
 
 /* 点工作区行 → 进工作区会话(压一层历史, 返回键回主机) */
-function enterWorkspace(agentId, dir) {
+// fresh = 新会话(打开另一个文件夹时用): 不要自动选中上一条任务。
+// 从主机列表进工作区仍传 false —— 那时用户想看的是这台 agent 最近的任务。
+function enterWorkspace(agentId, dir, fresh) {
   if (!IS_MOBILE) return;
   MOBILE.screen = 'workspace';
   MOBILE.agentId = agentId || AG.id;
@@ -2699,11 +2714,12 @@ function enterWorkspace(agentId, dir) {
   const u = new URL(location.href);
   u.searchParams.set('id', AG.id);
   u.searchParams.delete('dir');
+  u.searchParams.delete('task');    // 新会话: 别让 URL 里的旧任务把对话拉回来
   history.pushState({ ws: 1 }, '', u);
   const box = document.getElementById('hostsScreen');
   if (box) box.classList.add('hidden');
   loadInfo()
-    .then(() => loadTasks())
+    .then(() => loadTasks(!!fresh))
     .then(() => { syncComposer(); fsEnter(true); loadTerminal(); })
     .catch((e) => { if (window.JzUI) JzUI.toast('读取失败：' + e, 'fail'); });
   setWorkspaceView('chat');

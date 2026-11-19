@@ -1127,7 +1127,6 @@ async function refreshDirPick() {
     items.push({ path, name: nm || projName(path) });
   };
 
-  if (ok && DIR_CUR) push(DIR_CUR, projName(DIR_CUR));
   (ok ? (j.dirs || []) : []).forEach(d => push(d.path, d.name));
 
   if (!q.parent) {
@@ -1146,8 +1145,9 @@ async function refreshDirPick() {
   }
 
   DIR_ITEMS = items;
-  // 默认高亮第一个真实目录(不选 ".."), 免得一按回车就往上跳
-  DIR_SEL = Math.max(0, items.findIndex(x => !x.up));
+  // 列表只有 ".." + 子目录(当前目录不再占一行, 免得夹在中间):
+  // 初始不高亮任何一项, 按 ↓ / 鼠标移入才选中; 回车与顶部按钮都作用于"当前目录"。
+  DIR_SEL = -1;
   renderDirPickList();
 }
 
@@ -1167,7 +1167,10 @@ function useDirPick(path) {
   location.href = '?id=' + encodeURIComponent(target) + '&dir=' + encodeURIComponent(path);
 }
 
-function useDirDlg() { useDirPick(DIR_ITEMS[DIR_SEL] ? DIR_ITEMS[DIR_SEL].path : DIR_CUR); }
+/* 顶部按钮 = 进入输入框当前所在的目录(列表里的条目只负责导航) */
+function useDirDlg() {
+  useDirPick(DIR_CUR || (DIR_ITEMS[DIR_SEL] ? DIR_ITEMS[DIR_SEL].path : ''));
+}
 
 
 /* ---- 终端(仅 cli 后端有; server 返回 404 就整块隐藏) ---- */

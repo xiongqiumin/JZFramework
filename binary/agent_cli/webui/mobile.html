@@ -57,6 +57,10 @@
     <nav class="tabs ag-tabs" id="tabs"></nav>
 
     <section class="pane" data-pane="chat">
+      <div class="m-pane__bar">
+        <span class="m-pane__path" id="mChatHint">会话</span>
+        <button class="jz-btn jz-btn--sm jz-btn--primary ag-new" id="btnNewTask" type="button">＋ 新建</button>
+      </div>
       <div class="jz-chat cs-thread" id="thread"><div class="jz-empty">加载中…</div></div>
 
       <details class="ag-term hidden" id="termBox">
@@ -95,9 +99,6 @@
     </section>
 
     <section class="pane hidden" data-pane="history">
-      <div class="ag-side__new">
-        <button class="jz-btn jz-btn--primary ag-new" id="btnNewTask" type="button">＋ 新建任务</button>
-      </div>
       <div class="ag-side__scroll" id="taskList"><div class="jz-empty">加载中…</div></div>
     </section>
 

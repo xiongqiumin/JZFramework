@@ -193,7 +193,10 @@ body.is-mobile .pane[data-pane="history"] #taskList {
   flex: 1; min-height: 0; overflow-y: auto; padding: var(--jz-sp-2) var(--jz-sp-3);
   background: var(--jz-panel);
 }
-body.is-mobile .pane[data-pane="history"] .ag-side__new { padding: var(--jz-sp-2) var(--jz-sp-3) 0; }
+/* 会话页顶部 bar: 左边是标题(不是路径, 所以不用等宽字体), 右边「＋ 新建」 */
+body.is-mobile #mChatHint {
+  font-family: inherit; font-size: var(--m-fs-body); color: var(--jz-muted);
+}
 body.is-mobile .ag-item { min-height: 64px; padding: var(--jz-sp-2) var(--jz-sp-3); font-size: var(--m-fs-body); }
 body.is-mobile .ag-item__text { line-height: 1.45; }
 body.is-mobile .ag-del { min-width: var(--jz-tap); min-height: var(--jz-tap); }

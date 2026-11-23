@@ -1,17 +1,60 @@
 // agent_cli 配置解析 —— 从 main.cpp 抽出来给 inproc(源码引用)模式复用。
 #include "JZCliConfigIO.h"
 
+#include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
 
+#include "JZCodeTools.h"   // codeNormalizePath
 #include "JZDebug.h"
+#include "JZDir.h"
+#include "JZFileInfo.h"
 #include "JZJson.h"
 #include "JZString.h"
 #include "JZStd.h"
 
 using namespace std;
 
+// 记忆文件全路径: 统一放在 <rootDir>/.jzagent/memory/ 下面。
+//   memory.file 只取末段文件名(相对路径也一样), 空 = .agent_memory.md;
+//   绝对路径同样只取末段 —— 配到工作区外的路径不再生效, 免得记忆写散。
+string jzCliMemoryFilePath(const JZCliConfig &config)
+{
+    string root = codeNormalizePath(config.rootDir.empty() ? JZDir::currentPath() : config.rootDir);
+    string name = config.memoryFile.empty()
+        ? string(".agent_memory.md")
+        : JZFileInfo(config.memoryFile).fileName();
+    if (name.empty() || name == "." || name == "..")
+        name = ".agent_memory.md";
+    return codeNormalizePath(root + "/.jzagent/memory/" + name);
+}
+
+// 全局 skills 根: 归一到 <...>/.jzagent(配置给父目录就补 .jzagent)。
+//   空 = %USERPROFILE%; 最终读的是这个目录下的 skills/ 子目录。
+string jzCliGlobalSkillsDir(const JZCliConfig &config)
+{
+    string dir = config.skillsDir;
+    if (dir.empty())
+    {
+        const char *home = getenv("USERPROFILE");
+        if (home && *home)
+            dir = home;
+    }
+    dir = codeNormalizePath(dir);
+    if (dir.empty())
+        return string();
+    if (str_toLower(JZFileInfo(dir).fileName()) != ".jzagent")
+        dir = codeNormalizePath(dir + "/.jzagent");
+    return dir;
+}
+
+// 模型上下文窗口: llm.models 同名项 > llm.contextWindow(必配, 默认 160000)。
+int jzCliContextWindow(const JZCliConfig &config, const string &modelName)
+{
+    return config.model.windowFor(modelName);
+}
 
 // "D:/sdk:rw" -> {path:"D:/sdk", writable:true}(盘符冒号不能当分隔符, 只看末尾 ro/rw)
 static bool parseTrusted(const string &text, TrustedDir &out)
@@ -148,28 +191,11 @@ static const Json::Value *findConfigMember(const Json::Value &root, const string
     }
 }
 
-static bool loadConfig(const string &path, JZCliConfig &config, string &error)
+bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &error)
 {
-    ifstream ifs(path, ios::binary);
-    if (!ifs)
-    {
-        error = "配置文件不存在或无法打开: " + path;
-        return false;
-    }
-    stringstream ss;
-    ss << ifs.rdbuf();
-    string text = ss.str();
-
-    Json::Value root;
-    Json::Reader reader;
-    if (!reader.parse(text, root))
-    {
-        error = "配置文件 JSON 解析失败: " + reader.getFormattedErrorMessages();
-        return false;
-    }
     if (!root.isObject())
     {
-        error = "配置文件根必须是 JSON 对象";
+        error = "配置根必须是 JSON 对象";
         return false;
     }
 
@@ -178,13 +204,69 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     cfg.str("agentName", config.agentName);
     cfg.str("version", config.version);
 
-    // llm
-    cfg.str("llm.url", config.modelUrl);
-    cfg.str("llm.name", config.modelName);
-    cfg.str("llm.token", config.modelToken);
-    cfg.i32("llm.netTimeoutMs", config.netTimeout);
+    // llm.models 是唯一模型来源: 每项必须给 name + url, token 可空, contextWindow 可省。
+    // 默认模型 = 第一项; 网页只拿名字与窗口, 不输出 token。
+    {
+        const Json::Value *models = findConfigMember(root, "llm", "models");
+        if (!models || !models->isArray() || models->empty())
+        {
+            error = "llm.models 必须是非空数组, 每项至少含 name 和 url";
+            return false;
+        }
+        for (Json::ArrayIndex i = 0; i < models->size(); ++i)
+        {
+            const Json::Value &m = (*models)[i];
+            if (!m.isObject())
+            {
+                error = "llm.models[" + std::to_string((int)i) + "] 必须是 {name,url,token,contextWindow} 对象";
+                return false;
+            }
+            JZCliModelEntry entry;
+            entry.name = str_trimmed(m.get("name", "").asString());
+            entry.url = str_trimmed(m.get("url", "").asString());
+            if (m.isMember("token") && m["token"].isString())
+                entry.token = str_trimmed(m["token"].asString());
+            if (m.isMember("contextWindow"))
+            {
+                const Json::Value &cw = m["contextWindow"];
+                if (cw.isInt() && cw.asInt() > 0)
+                    entry.contextWindow = cw.asInt();
+                else
+                {
+                    error = "llm.models[" + std::to_string((int)i) + "].contextWindow 必须是正整数";
+                    return false;
+                }
+            }
+            if (entry.name.empty() || entry.url.empty())
+            {
+                error = "llm.models[" + std::to_string((int)i) + "] 的 name 和 url 都不能为空";
+                return false;
+            }
+            bool exists = false;
+            for (auto &old : config.model.models)
+            {
+                if (old.name != entry.name)
+                    continue;
+                exists = true;
+                old.url = entry.url;
+                old.token = entry.token;
+                if (entry.contextWindow > 0)
+                    old.contextWindow = entry.contextWindow;
+                break;
+            }
+            if (!exists)
+                config.model.models.push_back(entry);
+        }
+        config.selectedModel = config.model.models.front().name;
+    }
+    cfg.i32("llm.netTimeoutMs", config.model.netTimeout);
     cfg.i32("llm.maxRounds", config.maxRounds);
-    cfg.i32("llm.maxToken", config.maxToken);
+    cfg.i32("llm.contextWindow", config.model.contextWindow);
+    if (config.model.contextWindow <= 0)
+    {
+        error = "llm.contextWindow 必须是正整数";
+        return false;
+    }
     cfg.i32("llm.maxRetries", config.maxRetries);
     cfg.i32("llm.maxFixRetries", config.maxFixRetries);
     cfg.i32("llm.retryDelayMs", config.retryDelayMs);
@@ -196,16 +278,16 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
         if (think)
         {
             if (think->isBool())
-                config.thinkMode = think->asBool() ? ThinkMode::On : ThinkMode::Off;
+                config.model.thinkMode = think->asBool() ? ThinkMode::On : ThinkMode::Off;
             else if (think->isString())
             {
                 const string t = str_toLower(think->asString());
                 if (t == "on" || t == "true" || t == "1")
-                    config.thinkMode = ThinkMode::On;
+                    config.model.thinkMode = ThinkMode::On;
                 else if (t == "off" || t == "false" || t == "0")
-                    config.thinkMode = ThinkMode::Off;
+                    config.model.thinkMode = ThinkMode::Off;
                 else if (t == "auto" || t == "default")
-                    config.thinkMode = ThinkMode::Auto;
+                    config.model.thinkMode = ThinkMode::Auto;
                 else
                 {
                     error = "llm.thinking 只能是 auto / on / off(或 true/false): " + think->asString();
@@ -224,12 +306,12 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     // (如 repeat_penalty / dry_multiplier / dry_base / dry_allowed_length、chat_template_kwargs)。
     const Json::Value *body = findConfigMember(root, "llm", "body");
     if (body && body->isObject())
-        config.extraBody = *body;
-    // 模板里的 llm.maxTokens = OpenAI 输出 token 上限; 经既有 extraBody 通道发送, 不与
-    // llm.maxToken(整个上下文预算)混为一谈。llm.body.max_tokens 显式配置优先。
+        config.model.extraBody = *body;
+    // 模板里的 llm.maxTokens = OpenAI 输出 token 上限; 经 extraBody 通道发送, 与
+    // llm.contextWindow(整个上下文窗口)不是一回事。llm.body.max_tokens 显式配置优先。
     const Json::Value *maxTokens = findConfigMember(root, "llm", "maxTokens");
-    if (maxTokens && maxTokens->isInt() && !config.extraBody.isMember("max_tokens"))
-        config.extraBody["max_tokens"] = *maxTokens;
+    if (maxTokens && maxTokens->isInt() && !config.model.extraBody.isMember("max_tokens"))
+        config.model.extraBody["max_tokens"] = *maxTokens;
 
     // loop(循环检测: 工具重复调用 + 思考/回复原地打转 -> 直接中止本轮)
     //   工具侧: 结果也相同 = 证据更强, 阈值更低; 结果不同可能只是合法轮询(等编译/等运行)。
@@ -251,7 +333,7 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     cfg.i32("verify.maxRounds", config.verifyMaxRounds);
     cfg.i32("verify.timeoutMs", config.verifyTimeoutMs);
 
-    // memory(跨任务长期记忆: 开工注入 + memory 工具读写)
+    // memory(跨任务长期记忆: 开工注入 + memory 工具读写; 文件统一落 <rootDir>/.jzagent/memory/)
     cfg.flag("memory.enabled", config.memoryEnabled);
     cfg.str("memory.file", config.memoryFile);
     cfg.i32("memory.maxBytes", config.memoryMaxBytes);
@@ -264,7 +346,7 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
     // project 就是工作区根目录: `project.dir` 只是 `terminal.rootDir` 的别名,
     // 两个都没配 = 进程当前目录(见 JZAgentCli::init)。没有单独的"项目名"。
     cfg.str("project.dir", config.rootDir);
-    // 全局 .jzagent 目录(settings 那份): 里面的 skills 总是加载, 空 = %USERPROFILE%/.jzagent
+    // 全局 skills 根(.jzagent 或父目录, 归一后读 <...>/.jzagent/skills); 空 = %USERPROFILE%
     cfg.str("skillsDir", config.skillsDir);
 
     // terminal(工作区 / shell / 会话回收 / 工具与命令策略: 都是本地终端这一摊)
@@ -535,6 +617,26 @@ static bool loadConfig(const string &path, JZCliConfig &config, string &error)
         config.allowNetworkTools = (config.profile != PermissionProfile::Strict);
 
     return true;
+}
+
+static bool loadConfig(const string &path, JZCliConfig &config, string &error)
+{
+    ifstream ifs(path, ios::binary);
+    if (!ifs)
+    {
+        error = "配置文件不存在或无法打开: " + path;
+        return false;
+    }
+    stringstream ss;
+    ss << ifs.rdbuf();
+    Json::Value root;
+    Json::Reader reader;
+    if (!reader.parse(ss.str(), root))
+    {
+        error = "配置文件 JSON 解析失败: " + reader.getFormattedErrorMessages();
+        return false;
+    }
+    return jzCliParseConfig(root, config, error);
 }
 
 bool jzCliLoadConfig(const std::string &path, JZCliConfig &config, std::string &error)

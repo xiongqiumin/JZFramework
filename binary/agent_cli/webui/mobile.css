@@ -173,6 +173,8 @@ body.is-mobile #btnSettings { display: none; }         /* 设置移到顶部 ⋯
 body.is-mobile .cs-ta { font-size: var(--m-fs-input); min-height: 48px; max-height: 30vh; }
 body.is-mobile .jz-composer__actions .jz-btn { min-height: var(--jz-tap); }
 body.is-mobile .cs-kbd { display: none; }               /* Enter 不再发送 */
+body.is-mobile .model-chip { max-width: 42vw; min-height: 30px; }
+body.is-mobile .model-menu { min-width: min(210px, 80vw); }
 
 /* ---- 文件 / 历史 pane ---- */
 body.is-mobile .pane[data-pane="files"],

@@ -319,6 +319,11 @@ int test_loopdetect(int argc, char *argv[])
         for (int i = 0; i < 40; i++)
             varied += "第 " + to_string(i) + " 步的说明内容不一样。\n";
         check(!c.check(pad(varied), "回复").loop, "正常多行文本: 不判定");
+
+        // 单个 Unicode 块字符重复(字符画)不能按"3 字节周期 x8"误报
+        JZTextLoopDetector d;
+        check(!d.check(pad("字符画草稿: " + rep("█", 20)), "思考").loop,
+              "单个 Unicode 块字符重复(字符画): 不判定");
     }
 
     // ---- 11) 检查频率 + reset ----

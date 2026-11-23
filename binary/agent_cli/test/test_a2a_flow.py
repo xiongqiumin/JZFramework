@@ -142,8 +142,8 @@ def main(argv=None) -> int:
     cfg_cli, cfg_server = os.path.join(tmp, "cli.json"), os.path.join(tmp, "server.json")
     write_json(cfg_cli, {
         "agentName": "agent_cli", "logFile": fwd(os.path.join(logs_dir, "cli.log")),
-        "llm": {"url": model_url, "name": "fake", "maxRounds": 10,
-                "maxRetries": 0, "maxFixRetries": 0, "netTimeoutMs": 10000},
+        "llm": {"models": [{"name": "fake", "url": model_url}],
+                "maxRounds": 10, "maxRetries": 0, "maxFixRetries": 0, "netTimeoutMs": 10000},
         "task": {"queues": 1, "maxPending": 4},
         "terminal": {"rootDir": fwd(ws), "allowTerminal": True, "allowFileTools": True},
         "network": {"enabled": False},

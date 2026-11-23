@@ -1,14 +1,17 @@
 #include "JZServerAgent.h"
 
+#include <algorithm>
 #include <sstream>
 
 #include "JZAgent.h"
 #include "JZAgentCliServer.h"
+#include "JZCliConfigIO.h"
 #include "JZCodeTools.h"
 #include "JZDateTime.h"
 #include "JZFile.h"
 #include "JZFileInfo.h"
 #include "JZPlatform.h"
+#include "JZStd.h"           // str_trimmed
 #include "JZTerminalTools.h"
 #include "JZVirtualTerminal.h"
 
@@ -201,7 +204,7 @@ private:
 class JZServerAgentToolHost : public ICodeToolHost
 {
 public:
-    explicit JZServerAgentToolHost(const JZServerAgentConfig &cfg)
+    explicit JZServerAgentToolHost(const JZCliConfig &cfg)
     {
         m_config.zone.workspace = codeNormalizePath(cfg.rootDir);
         // 内置 agent 也是默认档: 未登记命令放行、允许联网、禁止装/卸依赖;
@@ -316,7 +319,53 @@ bool JZServerAgent::setRootDir(const string &dir, string &error)
     return build(error);
 }
 
-bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, string &error)
+bool JZServerAgent::setModel(const string &name, string &error)
+{
+    const string want = str_trimmed(name);
+    if (want.empty())
+    {
+        error = "模型名为空";
+        return false;
+    }
+    if (want == m_cfg.selectedModel)
+        return true;               // 没变
+    // 只认 selfAgent.models 里配过的名字; 不在这里覆盖 url/token
+    if (!m_cfg.model.models.empty())
+    {
+        bool inList = false;
+        for (const auto &m : m_cfg.model.models)
+        {
+            if (m.name == want) { inList = true; break; }
+        }
+        if (!inList)
+        {
+            error = "模型不在 selfAgent.models 配置中: " + want;
+            return false;
+        }
+    }
+    if (m_busy)
+    {
+        error = "内置 agent 正忙, 等任务结束再切换模型";
+        return false;
+    }
+
+    if (m_termPool)
+    {
+        delete m_termPool;
+        m_termPool = nullptr;
+    }
+    if (m_agent)
+    {
+        m_agent->deleteLater();
+        m_agent = nullptr;
+    }
+    m_toolHost.reset();
+    m_everRan = false;
+    m_cfg.selectedModel = want;
+    return build(error);
+}
+
+bool JZServerAgent::init(const JZCliConfig &cfg, JZAgentCliServer *srv, string &error)
 {
     m_cfg = cfg;
     m_srv = srv;
@@ -330,9 +379,9 @@ bool JZServerAgent::init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, 
 bool JZServerAgent::build(string &error)
 {
     m_toolHost.reset(new JZServerAgentToolHost(m_cfg));
-    if (m_cfg.modelUrl.empty())
+    if (m_cfg.model.urlFor(m_cfg.selectedModel).empty())
     {
-        error = "selfAgent.modelUrl 为空";
+        error = "selfAgent.models 里当前模型的 url 为空";
         return false;
     }
 
@@ -342,24 +391,18 @@ bool JZServerAgent::build(string &error)
 
     JZAgentConfig ac;
     ac.rootPath = m_cfg.rootDir;
-    // 全局 .jzagent(settings 那份) 的 skills: **总是加载**, 排在项目 skills 之后
+    // 全局 skills: 归一后一定读 <...>/.jzagent/skills, 排在项目 skills 之后
     {
-        string globalDir = m_cfg.skillsDir;
-        if (globalDir.empty())
-        {
-            const char *home = getenv("USERPROFILE");
-            if (home && *home)
-                globalDir = string(home) + "/.jzagent";
-        }
+        string globalDir = jzCliGlobalSkillsDir(m_cfg);
         if (!globalDir.empty())
-            ac.globalSkillsDirs.push_back(codeNormalizePath(globalDir) + "/skills");
+            ac.globalSkillsDirs.push_back(globalDir + "/skills");
     }
-    ac.modelUrl = m_cfg.modelUrl;
-    ac.modelName = m_cfg.modelName;
-    ac.modelToken = m_cfg.modelToken;
-    ac.netTimeout = m_cfg.netTimeout;
+    ac.modelUrl = m_cfg.model.urlFor(m_cfg.selectedModel);
+    ac.modelName = m_cfg.selectedModel;
+    ac.modelToken = m_cfg.model.tokenFor(m_cfg.selectedModel);
+    ac.netTimeout = m_cfg.model.netTimeout;
     ac.maxRounds = m_cfg.maxRounds;
-    ac.maxToken = m_cfg.maxToken;
+    ac.maxToken = jzCliContextWindow(m_cfg, m_cfg.selectedModel);
     ac.reuseConnection = false;
     ac.tokenStrategy = JZAgentConfig::TokenCompress;
     m_agent->init(ac);
@@ -513,12 +556,25 @@ void JZServerAgent::onFinished()
 
     Json::Value r(Json::objectValue);
     r["taskId"] = m_taskId;
-    r["agentId"] = m_cfg.agentId;
+    r["agentId"] = m_cfg.agentName;
+    r["modelName"] = m_cfg.selectedModel;   // 网页按这个模型的窗口画上下文圈
     r["status"] = m_cancelled ? "cancelled" : (m_failed ? "failed" : "success");
     r["agent_reply"] = m_reply;
     r["error"] = m_cancelled && m_error.empty() ? string("任务已取消") : m_error;
     r["verify_rounds"] = 0;      // server agent 不跑 verify 门控
     r["rounds"] = m_round;
+    // 与 cli 的 task_end 同一形状: 网页任务卡片据此显示 token / 缓存命中
+    if (m_agent && m_agent->context())
+    {
+        const auto &u = m_agent->context()->usage;
+        Json::Value usage(Json::objectValue);
+        usage["prompt_tokens"] = u.prompt_tokens;
+        usage["completion_tokens"] = u.completion_tokens;
+        usage["total_tokens"] = u.total_tokens;
+        usage["cached_tokens"] = u.cached_tokens;
+        usage["context_tokens"] = m_agent->windowTokens();
+        r["usage"] = usage;
+    }
 
     // 这一轮的对话快照交给 server 存进任务记录(和历史记录放一起), 本类不缓存、不淘汰。
     if (m_agent)

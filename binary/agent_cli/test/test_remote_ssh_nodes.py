@@ -410,7 +410,7 @@ def main(argv=None) -> int:
         "agentName": "agent_cli",
         "logFile": fwd(os.path.join(logs, "agent_cli.log")),
         "llm": {
-            "url": model_url, "name": model_name, "token": model_token,
+            "models": [{"name": model_name, "url": model_url, "token": model_token}],
             "maxRounds": 40, "netTimeoutMs": 300000,
         },
         "verify": {"maxRounds": 3, "timeoutMs": 120000},

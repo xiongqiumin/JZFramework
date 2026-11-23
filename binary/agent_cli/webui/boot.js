@@ -13,7 +13,7 @@
    交互逻辑就够了; 少一次整页跳转, 手机端返回键也不会回到登录页。
    ========================================================================== */
 (function () {
-  var APP_SRC = '/app.js?v=80';
+  var APP_SRC = '/app.js?v=90';
 
   function loadApp() {
     var s = document.createElement('script');

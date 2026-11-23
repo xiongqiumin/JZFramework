@@ -65,20 +65,62 @@ struct JZCliTaskConfig
     int idleRecycleSec = 60;
 };
 
+// 一个可选模型 = 名称 + 自己的端点 + 可选 token + 可选上下文窗口。
+struct JZCliModelEntry
+{
+    std::string name;
+    std::string url;
+    std::string token;
+    int contextWindow = 0;   // 0 = 用 model.contextWindow
+};
+
+// llm.* 里只留模型候选与共用请求参数; 默认模型 = models 第一项。
+// contextWindow 必配, 默认 160000; 不再有单独的"上下文预算"字段。
+struct JZCliModelConfig
+{
+    std::vector<JZCliModelEntry> models;
+    int contextWindow = 160000;
+    int netTimeout = 120 * 1000;
+    ThinkMode thinkMode = ThinkMode::Auto;
+    Json::Value extraBody;
+
+    const JZCliModelEntry *find(const std::string &modelName) const
+    {
+        for (const auto &m : models)
+        {
+            if (m.name == modelName)
+                return &m;
+        }
+        return nullptr;
+    }
+    const JZCliModelEntry *first() const { return models.empty() ? nullptr : &models.front(); }
+    std::string urlFor(const std::string &modelName) const
+    {
+        const JZCliModelEntry *m = find(modelName);
+        return m ? m->url : std::string();
+    }
+    std::string tokenFor(const std::string &modelName) const
+    {
+        const JZCliModelEntry *m = find(modelName);
+        return m ? m->token : std::string();
+    }
+    int windowFor(const std::string &modelName) const
+    {
+        const JZCliModelEntry *m = find(modelName);
+        return (m && m->contextWindow > 0) ? m->contextWindow : contextWindow;
+    }
+};
+
 struct JZCliConfig
 {
     std::string agentName = "agent_cli";
     std::string version = "1.0.0";
 
-    std::string modelUrl;
-    std::string modelName;
-    std::string modelToken;
-    int netTimeout = 120 * 1000;
+    // llm.*: 模型候选 / 上下文窗口 / 请求参数。端点全在 model.models[] 里。
+    JZCliModelConfig model;
+    // 当前任务选中的模型名; 默认 = model.models 第一项, 任务可用 modelName 临时覆盖。
+    std::string selectedModel;
     int maxRounds = 100;
-    int maxToken = 160000;
-    // 思考开关(llm.thinking): Auto = 不发字段(默认, 最兼容) / On / Off = 显式发 enable_thinking
-    ThinkMode thinkMode = ThinkMode::Auto;
-    Json::Value extraBody;
 
     int maxRetries = 10;
     int maxFixRetries = 2;
@@ -110,7 +152,7 @@ struct JZCliConfig
     // **project 就是 rootDir**: 一个 cli 一个工作区, 没有额外的"项目名"概念
     // (配置里的 `project.dir` 只是 `terminal.rootDir` 的别名, 两个都空 = 当前目录)。
     // 全局 `.jzagent`(settings 里的那份) 里的 skills 总是加载, 排在项目 skills 之后。
-    std::string skillsDir;      // 全局 .jzagent 目录; 空 = %USERPROFILE%/.jzagent
+    std::string skillsDir;      // 全局 skills 根(.jzagent 或父目录; 空 = %USERPROFILE%), 归一后读 <...>/.jzagent/skills
     std::vector<TrustedDir> trustedDirs;
     std::vector<JZCliNodeConfig> nodes;
 
@@ -197,6 +239,7 @@ struct JZCliHistoryItem
     int rounds = 0;
     int64_t startMs = 0;
     int64_t endMs = 0;
+    Json::Value usage;           // 本次任务的 token 用量(含 cached_tokens), 收尾时回填
 };
 
 // ---------------------------------------------------------------------------
@@ -258,6 +301,7 @@ public:
 protected:
     void setupAgent();
     std::string buildSystemPrompt() const;
+    // <rootDir>/.jzagent/memory/ 下: memory.file 只取末段文件名, 空 = .agent_memory.md
     std::string memoryFilePath() const;
     std::string buildMemoryBlock() const;
     std::string deriveVerifyCmd(const std::string &script, const std::string &explicitCmd) const;
@@ -282,7 +326,8 @@ protected:
     void resetHistory();
     void pushHistory(const std::string &prompt, const std::string &verifyCmd);
     void finishHistory(const std::string &status, int rounds, const std::string &reply,
-                       const std::string &verifyOut, const std::string &err);
+                       const std::string &verifyOut, const std::string &err,
+                       const Json::Value &usage = Json::Value());
     Json::Value recentJson() const;
     static int64_t nowMs();
     void onClientDestroyed(JZObject *obj);

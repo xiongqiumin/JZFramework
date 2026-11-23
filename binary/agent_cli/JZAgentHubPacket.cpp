@@ -16,11 +16,13 @@ int JZHubPackHello::packetType() const
 void JZHubPackHello::saveToStream(JZDataStream &s) const
 {
     s << agentId << name << version << rootDir << project << modelName << nodes;
+    s << contextWindow << modelWindows;
 }
 
 void JZHubPackHello::loadFromStream(JZDataStream &s)
 {
     s >> agentId >> name >> version >> rootDir >> project >> modelName >> nodes;
+    s >> contextWindow >> modelWindows;
 }
 
 // ---- helloAck ----

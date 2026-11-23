@@ -626,12 +626,39 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
 
 .cs-thread { flex: 1; min-height: 0; padding: var(--jz-sp-4) clamp(12px, 4vw, 48px); }
 
+/* 会话历史: 不在底部时给一个圆形向下箭头, 点一下跳到最新 */
+.thread-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.thread-latest {
+  position: absolute; right: 16px; bottom: 12px; z-index: 4;
+  width: 34px; height: 34px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--jz-border); border-radius: 50%;
+  background: var(--jz-panel); color: var(--jz-muted);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .12);
+  cursor: pointer;
+}
+.thread-latest:hover { color: var(--jz-accent); border-color: var(--jz-accent); }
+.thread-latest.hidden { display: none; }
+
 /* 一条任务 = 一个队列: 上面是用户指令, 中间是它自己的多轮对话, 下面是终态 */
 .cs-task { display: flex; flex-direction: column; gap: var(--jz-sp-3); }
 .cs-conv { display: flex; flex-direction: column; gap: var(--jz-sp-3); }
 .cs-task__meta {
   display: flex; align-items: center; gap: var(--jz-sp-2); flex-wrap: wrap;
   font-size: var(--jz-fs-1); color: var(--jz-muted);
+}
+/* 上下文占用圈: 灰底 + 主色进度, 悬停 title 显示"已用 / 窗口 / 百分比" */
+.ctx-ring {
+  --ctx-pct: 0;
+  width: 14px; height: 14px; flex: none;
+  display: inline-block; vertical-align: -2px;
+  border-radius: 50%;
+  background: conic-gradient(var(--jz-accent) calc(var(--ctx-pct) * 1%), var(--jz-border) 0);
+  position: relative;
+}
+.ctx-ring::after {
+  content: ''; position: absolute; inset: 3px;
+  border-radius: 50%; background: var(--jz-panel, #fff);
 }
 .cs-live { display: inline-flex; align-items: center; gap: var(--jz-sp-2); color: var(--jz-muted); }
 /* 失败提示是一行, 不要被 .jz-msg 的默认 stretch 拉成整行宽 */
@@ -740,6 +767,35 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
 }
 .cs-ta { min-height: 76px; max-height: 30vh; }
 .cs-kbd { font-size: var(--jz-fs-1); color: var(--jz-muted); }
+
+/* 输入框左下角的模型胶囊(仿 IDE 底部选择器): 菜单向上弹, 不挡发送按钮 */
+.model-pick {
+  position: absolute; left: var(--jz-sp-2); bottom: var(--jz-sp-2); z-index: 3;
+}
+.model-chip {
+  display: flex; align-items: center; gap: 6px; max-width: 210px;
+  padding: 4px 9px; border: 1px solid var(--jz-border); border-radius: 999px;
+  background: var(--jz-panel-2); color: var(--jz-text);
+  font: inherit; font-size: var(--jz-fs-1); cursor: pointer; white-space: nowrap;
+}
+.model-chip:hover { border-color: var(--jz-accent); }
+.model-chip__dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--jz-accent); }
+.model-chip__name { overflow: hidden; text-overflow: ellipsis; }
+.model-chip__caret { flex: none; color: var(--jz-muted); }
+.model-menu {
+  position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 20;
+  min-width: 210px; max-height: 260px; overflow: auto; padding: 4px;
+  background: var(--jz-panel); border: 1px solid var(--jz-border);
+  border-radius: var(--jz-r-2); box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.model-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%; padding: 6px 8px; border: 0; border-radius: 6px;
+  background: none; color: var(--jz-text); font: inherit; font-size: var(--jz-fs-1);
+  text-align: left; cursor: pointer;
+}
+.model-item:hover { background: var(--jz-panel-2); }
+.model-item.is-on, .model-item__on { color: var(--jz-accent); }
 .cs-note { margin-top: var(--jz-sp-3); font-size: var(--jz-fs-1); color: var(--jz-muted); line-height: 1.8; }
 
 /* 工作目录 chip(输入区上方) + 选择弹窗 */

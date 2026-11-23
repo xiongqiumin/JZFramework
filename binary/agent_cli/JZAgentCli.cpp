@@ -5,10 +5,12 @@
 #include "JZDir.h"
 #include "JZFile.h"
 #include "JZFileInfo.h"
+#include "JZCliConfigIO.h"            // jzCliGlobalSkillsDir
 #include "JZNetworkAccessManager.h"   // 联网工具共享的访问管理器(+ JZProxyConfig)
 #include "JZPlatform.h"
 #include "JZProcess.h"       // 验证命令的异步执行(超时/进程树收尾)
 #include "JZString.h"        // str_toLower
+#include "JZStd.h"           // str_trimmed
 #include "JZVirtualTerminal.h"
 #include "JZFileOps.h"          // 远端文件操作(管理台文件树): 与本机 /api/fs 同一份实现
 #include "json/json.h"
@@ -251,7 +253,7 @@ private:
 };
 
 // 路由处理器: 列出工作区内可当验证脚本的文件, 供网页下拉选择
-// 网页: / 直接给对话页(agent.html) —— 与 server 的 /agent 是同一份页面
+// 网页: / 直接给对话页(index.html) —— 与 server 的 /agent 是同一份页面
 class DashboardHandler : public JZHttpHandler
 {
 public:
@@ -437,14 +439,8 @@ bool JZAgentCli::init(const JZCliConfig &config, std::string &error)
         dir.path = codeNormalizePath(dir.path);
 
     // project = rootDir(上面已兜底), 不再有单独的名字; 网页显示时取末段目录名即可。
-    // 全局 .jzagent(settings 那份): 里面的 skills 总是加载; 默认 %USERPROFILE%/.jzagent
-    if (m_config.skillsDir.empty())
-    {
-        const char *home = getenv("USERPROFILE");
-        if (home && *home)
-            m_config.skillsDir = string(home) + "/.jzagent";
-    }
-    m_config.skillsDir = codeNormalizePath(m_config.skillsDir);
+    // 全局 skills 根: 归一到 <...>/.jzagent, 里面的 skills 总是加载; 空 = %USERPROFILE%
+    m_config.skillsDir = jzCliGlobalSkillsDir(m_config);
 
     // 任务池: 启动时一个 task 都不建, 第一次提交(HTTP / hub)时按需创建。
     m_tasks.clear();
@@ -472,7 +468,39 @@ std::string JZAgentCli::resolveRootDir(const Json::Value &req, std::string &erro
     return want;
 }
 
-JZAgentCliTask *JZAgentCli::acquireTask(const std::string &wantRoot, std::string &error)
+std::string JZAgentCli::resolveModelName(const Json::Value &req, std::string &error) const
+{
+    std::string want;
+    if (req.isObject())
+    {
+        // modelName 与网页 /api/agent 的字段同名; model 是给脚本用的短别名
+        if (req.isMember("modelName") && req["modelName"].isString())
+            want = req["modelName"].asString();
+        else if (req.isMember("model") && req["model"].isString())
+            want = req["model"].asString();
+    }
+    want = str_trimmed(want);
+    if (want.empty())
+        return m_config.selectedModel;
+    // 配了候选名单就只认名单内的模型; 没配则允许任务临时指定(例如网页设置里的自定义名字)。
+    if (!m_config.model.models.empty())
+    {
+        bool inList = false;
+        for (const auto &m : m_config.model.models)
+        {
+            if (m.name == want) { inList = true; break; }
+        }
+        if (!inList)
+        {
+            error = "模型不在 llm.models 配置中: " + want;
+            return std::string();
+        }
+    }
+    return want;
+}
+
+JZAgentCliTask *JZAgentCli::acquireTask(const std::string &wantRoot, const std::string &wantModel,
+                                        std::string &error)
 {
     const std::string root = wantRoot.empty() ? m_config.rootDir : wantRoot;
     // **不复用任务对象**: 一个任务 = 一个全新的 JZAgent + 终端 + 工具表 + 系统提示。
@@ -498,6 +526,8 @@ JZAgentCliTask *JZAgentCli::acquireTask(const std::string &wantRoot, std::string
     JZAgentCliTask *t = new JZAgentCliTask(this, this);
     JZCliConfig cfg = m_config;
     cfg.rootDir = root;
+    if (!wantModel.empty())
+        cfg.selectedModel = wantModel;   // 一次性的任务对象, 改这里不会串到别的任务
     if (!t->init(cfg, error))
     {
         t->deleteLater();
@@ -599,7 +629,7 @@ void JZAgentCli::pumpQueue()
     while (!m_pending.empty())
     {
         std::string error;
-        JZAgentCliTask *t = acquireTask(m_pending.front().rootDir, error);
+        JZAgentCliTask *t = acquireTask(m_pending.front().rootDir, m_pending.front().modelName, error);
         if (!t)
             break;
         QueuedTask q = m_pending.front();
@@ -622,10 +652,19 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
         if (respond) respond(e);
         return;
     }
+    std::string modelError;
+    const std::string model = resolveModelName(req, modelError);
+    if (model.empty())
+    {
+        Json::Value e;
+        e["error"] = modelError;
+        if (respond) respond(e);
+        return;
+    }
     if (m_pending.empty())
     {
         std::string error;
-        JZAgentCliTask *t = acquireTask(root, error);
+        JZAgentCliTask *t = acquireTask(root, model, error);
         if (t)
         {
             dispatchTo(t, req, taskId, respond);
@@ -655,6 +694,7 @@ void JZAgentCli::submitTask(const Json::Value &req, std::function<void(const Jso
     q.req = req;
     q.taskId = taskId;
     q.rootDir = root;
+    q.modelName = model;
     q.respond = respond;
     m_pending.push_back(q);
     jzInfo() << "任务排队: " << m_pending.size() << "/" << cap;
@@ -847,7 +887,11 @@ void JZAgentCli::startServerLink()
     cfg.version = m_config.version;
     cfg.rootDir = m_config.rootDir;
     cfg.project = m_config.rootDir;      // project 就是工作区根目录
-    cfg.modelName = m_config.modelName;
+    cfg.modelName = m_config.selectedModel;
+    cfg.contextWindow = jzCliContextWindow(m_config, m_config.selectedModel);
+    cfg.modelWindows = Json::FastWriter().write(modelWindowsJson());
+    while (!cfg.modelWindows.empty() && (cfg.modelWindows.back() == '\n' || cfg.modelWindows.back() == '\r'))
+        cfg.modelWindows.pop_back();
     cfg.host = m_config.server.host;
     cfg.port = m_config.server.port;
     cfg.token = m_config.server.token;
@@ -1104,8 +1148,8 @@ void JZAgentCli::startHttp()
 {
     m_http = new JZHttpServer(this);
 
-    // 网页控制台: / 直接是对话页(agent.html), 其余静态资源从 httpDir 取。
-    //   ⚠ 页面(app.js/app.css/agent.html)和 server 管理台是**同一份**, 不再各写一套。
+    // 网页控制台: / 直接是对话页(index.html), 其余静态资源从 httpDir 取。
+    //   ⚠ 页面(app.js/app.css/index.html)和 server 管理台是**同一份**, 不再各写一套。
     //   默认目录 <exeDir>/webui (源目录 binary/agent_cli/webui)。
     std::string httpDir = m_config.httpDir;
     if (httpDir.empty())
@@ -1312,13 +1356,35 @@ void JZAgentCli::finishMcpPending()
     }
 }
 
+Json::Value JZAgentCli::modelListJson() const
+{
+    Json::Value arr(Json::arrayValue);
+    for (const auto &m : m_config.model.models)
+        arr.append(m.name);
+    return arr;
+}
+
+Json::Value JZAgentCli::modelWindowsJson() const
+{
+    Json::Value obj(Json::objectValue);
+    for (const auto &m : m_config.model.models)
+    {
+        if (m.contextWindow > 0)
+            obj[m.name] = m.contextWindow;
+    }
+    return obj;
+}
+
 Json::Value JZAgentCli::makeInfo() const
 {
     Json::Value j;
     j["agent"] = m_config.agentName;
     j["version"] = m_config.version;
-    j["modelUrl"] = m_config.modelUrl;
-    j["modelName"] = m_config.modelName;
+    j["modelUrl"] = m_config.model.urlFor(m_config.selectedModel);
+    j["modelName"] = m_config.selectedModel;
+    j["modelList"] = modelListJson();
+    j["contextWindow"] = jzCliContextWindow(m_config, m_config.selectedModel);
+    j["modelWindows"] = modelWindowsJson();
     j["rootDir"] = m_config.rootDir;
     j["mcpInitDone"] = m_mcpInitDone;   // false = 还在连 MCP, 此时的 POST /task 会被拒绝
     // 任务队列: 每个队列的忙闲/轮次/当前任务(queues==1 时数组只有一项, 与旧版等价)
@@ -1707,6 +1773,8 @@ Json::Value JZAgentCli::a2aTaskJson(const A2aTask &t) const
     meta["startMs"] = (Json::Int64)t.startMs;
     meta["endMs"] = (Json::Int64)t.endMs;
     meta["costMs"] = (Json::Int64)((t.endMs > t.startMs) ? (t.endMs - t.startMs) : 0);
+    if (t.usage.isObject())
+        meta["usage"] = t.usage;
     j["metadata"] = meta;
     return j;
 }
@@ -1724,6 +1792,7 @@ JZAgentCli::A2aTask JZAgentCli::a2aTaskFromRecent(const Json::Value &it) const
     t.rounds = it.get("rounds", 0).asInt();
     t.startMs = it.get("start_ms", (Json::Int64)0).asInt64();
     t.endMs = it.get("end_ms", (Json::Int64)0).asInt64();
+    t.usage = it.get("usage", Json::Value());
     return t;
 }
 
@@ -1801,6 +1870,7 @@ void JZAgentCli::a2aFinish(const Json::Value &result)
     m_a2aLive.verifyOut = result.get("last_verify_output", "").asString();
     m_a2aLive.error = result.get("error", "").asString();
     m_a2aLive.rounds = result.get("verify_rounds", 0).asInt();
+    m_a2aLive.usage = result.get("usage", Json::Value());
     m_a2aLive.endMs = a2aNowMs();
 
     const std::string id = m_a2aLive.id;
@@ -2088,7 +2158,11 @@ void JZAgentCli::onApiAgent(JZHttpServerClient *client, const JZHttpRequest &req
     info["name"] = m_config.agentName;
     info["version"] = m_config.version;
     info["rootDir"] = m_config.rootDir;
-    info["modelName"] = m_config.modelName;
+    info["modelName"] = m_config.selectedModel;
+    info["modelUrl"] = m_config.model.urlFor(m_config.selectedModel);
+    info["modelList"] = modelListJson();
+    info["contextWindow"] = jzCliContextWindow(m_config, m_config.selectedModel);
+    info["modelWindows"] = modelWindowsJson();
     info["online"] = true;
     info["busy"] = anyBusy();
     info["taskId"] = m_a2aLiveActive ? m_a2aLive.id : std::string();
@@ -2110,7 +2184,10 @@ void JZAgentCli::onApiAgent(JZHttpServerClient *client, const JZHttpRequest &req
     card["skills"] = skills;
     Json::Value cm(Json::objectValue);
     cm["rootDir"] = m_config.rootDir;
-    cm["modelName"] = m_config.modelName;
+    cm["modelName"] = m_config.selectedModel;
+    cm["modelList"] = info["modelList"];
+    cm["contextWindow"] = info["contextWindow"];
+    cm["modelWindows"] = info["modelWindows"];
     cm["nodes"] = info["nodes"];
     cm["online"] = true;
     cm["busy"] = anyBusy();
@@ -2132,7 +2209,11 @@ void JZAgentCli::onApiStatus(JZHttpServerClient *client, const JZHttpRequest &re
     self["name"] = m_config.agentName;
     self["version"] = m_config.version;
     self["rootDir"] = m_config.rootDir;
-    self["modelName"] = m_config.modelName;
+    self["modelName"] = m_config.selectedModel;
+    self["modelUrl"] = m_config.model.urlFor(m_config.selectedModel);
+    self["modelList"] = modelListJson();
+    self["contextWindow"] = jzCliContextWindow(m_config, m_config.selectedModel);
+    self["modelWindows"] = modelWindowsJson();
     self["online"] = true;
     self["busy"] = anyBusy();
     self["taskId"] = m_a2aLiveActive ? m_a2aLive.id : std::string();
@@ -2158,13 +2239,14 @@ void JZAgentCli::onDashboard(JZHttpServerClient *client, const JZHttpRequest &re
     std::string dir = m_config.httpDir;
     if (dir.empty())
         dir = JZPlatform::applicationDirPath() + "/webui";
-    std::ifstream ifs(dir + "/agent.html", std::ios::binary);
+    std::string file = dir + "/index.html";
+    std::ifstream ifs(file, std::ios::binary);
     if (!ifs)
     {
         JZHttpRespone resp;
         resp.setStatusCode(404);
         resp.setContentType("text/plain; charset=utf-8");
-        resp.setBody("页面不存在: " + dir + "/agent.html");
+        resp.setBody("页面不存在: " + file);
         client->response(resp, req);
         return;
     }

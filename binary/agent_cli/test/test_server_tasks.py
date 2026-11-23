@@ -182,8 +182,8 @@ def main(argv=None) -> int:
     cfg_server = os.path.join(tmp, "server.json")
     write_json(cfg_cli, {
         "agentName": "agent_cli", "logFile": fwd(os.path.join(logs, "cli.log")),
-        "llm": {"url": model_url, "name": "mock", "maxRounds": 10,
-                "maxRetries": 0, "maxFixRetries": 0, "netTimeoutMs": 10000},
+        "llm": {"models": [{"name": "mock", "url": model_url}],
+                "maxRounds": 10, "maxRetries": 0, "maxFixRetries": 0, "netTimeoutMs": 10000},
         "task": {"queues": 2, "maxPending": 8},
         "terminal": {"rootDir": fwd(ws), "allowTerminal": True, "allowFileTools": True},
         "network": {"enabled": False},
@@ -195,7 +195,7 @@ def main(argv=None) -> int:
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": token},
         "agents": [],
         "selfAgent": {"enabled": True, "agentId": "server", "rootDir": fwd(ws),
-                      "modelUrl": model_url, "modelName": "mock"},
+                      "models": [{"name": "mock", "url": model_url}]},
     })
 
     procs = []

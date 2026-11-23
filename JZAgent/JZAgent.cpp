@@ -285,17 +285,16 @@ void JZAgent::init(JZAgentConfig config)
         m_systemPrompt = "你是一个人助理,请友好的回答问题,并协助用户完成任务.";
     }
 
-    // skills: 项目自己的 (`<root>/.jzagent/skills`) 先加载, 然后是旧的 `<root>/skills`
-    // (兼容), 最后是全局 `~/.jzagent/skills` —— 全局**总是加载**, 只补项目没有的。
+    // skills 只从 .jzagent 下读: 先项目 `<root>/.jzagent/skills`, 再全局 `<...>/.jzagent/skills`
+    // —— 全局**总是加载**, 只补项目没有的。旧的 `<root>/skills` 不再读。
     // ⚠ 以前这段在 system.md 存在时才跑: 没有 system.md 的项目会连 skill 一起丢掉。
     loadSkillsFromDir(m_config.rootPath + "/.jzagent/skills");
-    loadSkillsFromDir(m_config.rootPath + "/skills");
     for (const auto &dir : m_config.globalSkillsDirs)
         loadSkillsFromDir(dir);
 }
 
 // 加载一个 skills 目录(下一级每个子目录一个 skill, 入口 skill.md)。
-// 同名 skill 已存在就跳过 —— 调用顺序决定优先级: 项目 > 旧目录 > 全局。
+// 同名 skill 已存在就跳过 —— 调用顺序决定优先级: 项目 > 全局。
 void JZAgent::loadSkillsFromDir(const std::string &dir)
 {
     JZDir skills_dir(dir);
@@ -533,7 +532,7 @@ JZResult<SkillDefine> JZAgent::loadSkill(std::string skill_name, const std::stri
     };
 
     // 3. 技能文件统一采用标准格式：YAML front matter 包裹的 Markdown
-    //    （如 skill/*.skill.md）。首行与闭合行均为 "---"，
+    //    （如 .jzagent/skills/<name>/skill.md）。首行与闭合行均为 "---"，
     //    name / description 取自头部，闭合 "---" 之后的正文整体作为 usage。
     int first_line_end = str_indexOf(context, "\n", 0);
     std::string first_line = str_trimmed(first_line_end == -1 ? context : context.substr(0, first_line_end));

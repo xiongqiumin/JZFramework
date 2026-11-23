@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 
+#include "JZAgentCliTask.h"   // JZCliConfig: 内置 agent 与 agent_cli 共用同一份配置解析
 #include "JZObject.h"
 #include "JZSignal.h"
 #include "json/json.h"
@@ -28,22 +29,6 @@ class JZVirtualTerminal;
 class JZTerminalPool;
 class JZAgentCliServer;
 class JZServerAgentToolHost;
-
-struct JZServerAgentConfig
-{
-    bool enabled = false;                 // 要不要起(配置 selfAgent.enabled)
-    std::string agentId = "server";       // 网页/API 里的 id
-    std::string name = "server(内置)";
-    std::string rootDir;                  // 本机工作区(空 = server 同目录)
-    std::string modelUrl;
-    std::string modelName;
-    std::string modelToken;
-    int netTimeout = 120000;
-    int maxRounds = 40;
-    int maxToken = 100000;
-    std::string systemExtra;              // 宿主追加说明(可选)
-    std::string skillsDir;                // 全局 .jzagent 目录(空 = %USERPROFILE%/.jzagent)
-};
 
 // 一条事件: type = reply / tool_call / tool_result / done / error
 struct JZServerAgentEvent
@@ -59,12 +44,14 @@ public:
     explicit JZServerAgent(JZObject *parent = nullptr);
     ~JZServerAgent() override;
 
-    bool init(const JZServerAgentConfig &cfg, JZAgentCliServer *srv, std::string &error);
+    bool init(const JZCliConfig &cfg, JZAgentCliServer *srv, std::string &error);
 
-    const JZServerAgentConfig &config() const { return m_cfg; }
+    const JZCliConfig &config() const { return m_cfg; }
     // 网页上切换工作目录: 终端/工具/系统提示都绑在目录上, 只能整体重建。
     // 正忙时拒绝(等任务结束再切)。目录不变则直接成功。
     bool setRootDir(const std::string &dir, std::string &error);
+    // 网页「模型」选择: 只切已配置的模型名, 不改 url/token; 忙时拒绝
+    bool setModel(const std::string &name, std::string &error);
     bool busy() const { return m_busy; }
     int round() const { return m_round; }
     const std::string &taskId() const { return m_taskId; }
@@ -97,7 +84,7 @@ private:
     // 按当前 m_cfg 建 agent/终端/工具/提示词(init 与切换目录共用)
     bool build(std::string &error);
 
-    JZServerAgentConfig m_cfg;
+    JZCliConfig m_cfg;
     JZAgentCliServer *m_srv = nullptr;
     JZAgent *m_agent = nullptr;
     JZTerminalPool *m_termPool = nullptr;   // 终端池: 并发调用各占一台

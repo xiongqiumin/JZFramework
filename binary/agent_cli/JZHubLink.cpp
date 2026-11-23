@@ -240,6 +240,8 @@ void JZHubLink::sendHello()
     hello.rootDir = m_config.rootDir;
     hello.project = m_config.project;
     hello.modelName = m_config.modelName;
+    hello.contextWindow = m_config.contextWindow;
+    hello.modelWindows = m_config.modelWindows;
     hello.nodes = nodesJson();
     m_client->sendPacket(&hello);
 }

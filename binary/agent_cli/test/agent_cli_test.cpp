@@ -1558,18 +1558,21 @@ static void loadLlmConfigFile(JZCliConfig &cfg, const std::string &path, bool &f
     const std::string url = str("url");
     const std::string name = str("name");
     const std::string token = str("token");
-    if (!url.empty())   cfg.modelUrl = url;
-    if (!name.empty())  cfg.modelName = name;
-    if (!token.empty()) cfg.modelToken = token;
-    cfg.netTimeout = num("netTimeoutMs", cfg.netTimeout);
+    JZCliModelEntry entry;
+    entry.name = name;
+    entry.url = url;
+    entry.token = token;
+    if (!entry.name.empty() || !entry.url.empty())
+        cfg.model.models.push_back(entry);
+    if (const JZCliModelEntry *first = cfg.model.first())
+        cfg.selectedModel = first->name;
+    cfg.model.netTimeout = num("netTimeoutMs", cfg.model.netTimeout);
     cfg.maxRounds = num("maxRounds", cfg.maxRounds);
 }
 
-// ⚠ 必须"填调用方的对象"(传引用进来), 不能自己建局部 cfg 再按值返回:
-//   parser.addOption 存的是**指针**, 局部对象在函数返回后已析构, 调用方 parse() 时
-//   会写进已经销毁的内存 —— 传 --modelUrl/--modelName 就 0xC0000005(实测)。
-//   所以这个对象要活到 parse() 之后。
-static void loadCliConfig(JZCommandLineParser &parser, JZCliConfig &cfg)
+// ⚠ 命令行选项要写到调用方活着的字符串里, parse() 之后再由 applyCliModelOverrides 落进配置。
+static void loadCliConfig(JZCommandLineParser &parser, JZCliConfig &cfg,
+                          std::string &optUrl, std::string &optName, std::string &optToken)
 {
     cfg.maxRounds = 100;
 
@@ -1578,12 +1581,26 @@ static void loadCliConfig(JZCommandLineParser &parser, JZCliConfig &cfg)
     loadLlmConfigFile(cfg, llmConfigPath(), haveJson);
     if (haveJson)
         jzInfo().nospace() << "[agent_cli_test] 模型配置: " << llmConfigPath()
-                           << " (" << (cfg.modelName.empty() ? "?" : cfg.modelName.c_str()) << ")";
+                           << " (" << (cfg.selectedModel.empty() ? "?" : cfg.selectedModel.c_str()) << ")";
 
     // ② 命令行最后落 (临时试另一台机器用, 不必改文件; 优先级最高)
-    parser.addOption("--modelUrl", &cfg.modelUrl);
-    parser.addOption("--modelName", &cfg.modelName);
-    parser.addOption("--modelToken", &cfg.modelToken);
+    parser.addOption("--modelUrl", &optUrl);
+    parser.addOption("--modelName", &optName);
+    parser.addOption("--modelToken", &optToken);
+}
+
+static void applyCliModelOverrides(JZCliConfig &cfg, const std::string &url,
+                                   const std::string &name, const std::string &token)
+{
+    if (url.empty() && name.empty() && token.empty())
+        return;
+    JZCliModelEntry entry = cfg.model.first() ? *cfg.model.first() : JZCliModelEntry();
+    if (!url.empty())   entry.url = url;
+    if (!name.empty())  entry.name = name;
+    if (!token.empty()) entry.token = token;
+    cfg.model.models.clear();
+    cfg.model.models.push_back(entry);
+    cfg.selectedModel = entry.name;
 }
 
 } // namespace
@@ -1603,8 +1620,9 @@ int main(int argc, char *argv[])
 
     JZCommandLineParser parser;
     parser.setDescription("agent_cli 用例评测(复用 code_agent/benchmark 用例)");
-    JZCliConfig cfg;                 // 生命周期必须覆盖 parse(): parser 里存的是它的成员地址
-    loadCliConfig(parser, cfg);
+    JZCliConfig cfg;
+    std::string optModelUrl, optModelName, optModelToken;  // 生命周期覆盖 parse()
+    loadCliConfig(parser, cfg, optModelUrl, optModelName, optModelToken);
     parser.addOption("--data", &dataDir);
     parser.addOption("--cases", &casesFilter);
     parser.addOption("--http-port", &httpPort);
@@ -1616,13 +1634,16 @@ int main(int argc, char *argv[])
         return 2;
     }
 
+    applyCliModelOverrides(cfg, optModelUrl, optModelName, optModelToken);
     g_colorEnabled = !noColor && enableConsoleColor();
 
-    if (cfg.modelUrl.empty() || cfg.modelName.empty())
+    const JZCliModelEntry *entry = cfg.model.find(cfg.selectedModel);
+    if (!entry || entry->url.empty() || entry->name.empty())
     {
         jzError().nospace()
             << "未配置模型。请在 " << llmConfigPath()
-            << " 里写 {\"llm\":{\"url\":\"http://主机:端口/v1/chat/completions\",\"name\":\"模型名\"}}"
+            << " 里写 {\"llm\":{\"models\":[{\"name\":\"模型名\","
+               "\"url\":\"http://主机:端口/v1/chat/completions\"}]}}"
                " (也可用 --modelUrl/--modelName 临时覆盖)";
         return 2;
     }

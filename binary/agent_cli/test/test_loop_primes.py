@@ -146,7 +146,7 @@ def read_llm_config(exe_dir: str) -> dict:
     """读 <exe 目录>/test_llm.json —— 模型接入的**唯一来源**(脚本里不写死端点)。
 
     形状(只看 llm.<key>; agent_cli 自己的 config.json 也是只认分组格式, 不回落顶层):
-        {"llm": {"url": "http://主机:端口/v1/chat/completions", "name": "模型名", "token": ""}}
+        {"llm": {"models": [{"name": "模型名", "url": "http://主机:端口/v1/chat/completions"}]}}
     找不到/读不动就返回空串项(调用方据此报"没配置模型"并给出该文件的完整路径)。
     """
     path = os.path.join(exe_dir, LLM_JSON)
@@ -204,12 +204,10 @@ def write_config(path: str, ws: str, python_exe: str, url: str, name: str, token
         "agentName": "agent_cli_loop_test",
         "logFile": "",
         "llm": {
-            "url": url,
-            "name": name,
-            "token": token,
+            "models": [{"name": name, "url": url, "token": token}],
             "netTimeoutMs": 120000,
             "maxRounds": 40,
-            "maxToken": 160000,
+            "contextWindow": 160000,
             "maxTokens": 4096,
             "maxRetries": 3,
             "maxFixRetries": 2,

@@ -47,6 +47,8 @@ public:
     std::string rootDir;      // 工作区(管理台展示/排障)
     std::string project;      // 项目名(一个 cli 一个 project, 网页按它筛选)
     std::string modelName;    // 当前模型(不传 token)
+    int contextWindow = 160000;  // 当前模型上下文窗口
+    std::string modelWindows;    // 各模型窗口 JSON 对象字符串
     std::string nodes;        // 节点清单 JSON 数组: [{name,target,online,busy,nodeName,rootDir,shell,error}]
 };
 

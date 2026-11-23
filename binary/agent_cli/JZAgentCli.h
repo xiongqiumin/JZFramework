@@ -81,6 +81,10 @@ public:
     //   mcp[] = 每个配置的 MCP 服务器当前状态(挂上了没有/几个工具/什么错), 没网页面板时
     //   可以用它自检(curl /info)。
     Json::Value makeInfo() const;
+    // 网页「模型」下拉的候选名单(不含 token); /info 与 /api/agent|status 共用同一形状
+    Json::Value modelListJson() const;
+    // 每个模型的上下文窗口(name -> token 数), 网页换模型时据此显示/核对预算
+    Json::Value modelWindowsJson() const;
     void onInfo(JZHttpServerClient *client, const JZHttpRequest &req);
 
     // 网页控制台: 重置(POST /reset)。body: {"scope":"task"|"history"}
@@ -121,7 +125,7 @@ public:
     void onApiTaskSubscribe(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiAgent(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiStatus(JZHttpServerClient *client, const JZHttpRequest &req);
-    // 网页: <httpDir>/agent.html(单 agent 的对话页; 与 server 的 /agent 是同一份)
+    // 网页: <httpDir>/index.html(单 agent 的对话页; 与 server 的 /agent 是同一份)
     void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
     // 网页"后台任务"面板(给人看的, 不占模型的上下文):
@@ -138,13 +142,17 @@ public:
     // ---- 任务池(动态创建 + 空闲回收) ----
     //   HTTP / hub 提交时才创建 task; 任务结束标记空闲; 超过 keepAlive 且空闲超过
     //   idleRecycleSec 的 task 由定时扫描回收。queues 是同时活动任务数的上限。
-    // 新建一个任务对象(不复用); wantRoot 是这条任务的工作目录(空 = m_config.rootDir)。
+    // 新建一个任务对象(不复用); wantRoot 是这条任务的工作目录(空 = m_config.rootDir),
+    // wantModel 是这条任务选的模型(空 = m_config.model.name)。
     // 到 task.queues 上限时先丢掉已结束的对象; 还满就返回 nullptr 让调用方排队。
-    JZAgentCliTask *acquireTask(const std::string &wantRoot, std::string &error);
+    JZAgentCliTask *acquireTask(const std::string &wantRoot, const std::string &wantModel,
+                                std::string &error);
     // 任务结束: 从池里摘掉并 deleteLater(一次性对象)
     void releaseTask(JZAgentCliTask *task);
     // 任务请求里的 rootDir(网页上切换目录): 空 = 用配置; 不是目录则返回空并给 error
     std::string resolveRootDir(const Json::Value &req, std::string &error) const;
+    // 任务请求里的 modelName(网页「模型」下拉): 空 = 用配置; 配了 llm.models 时只认名单内的名字
+    std::string resolveModelName(const Json::Value &req, std::string &error) const;
     void recycleIdleTasks();
 
     // ---- 任务队列(task.queues) ----
@@ -188,7 +196,8 @@ protected:
     void finishMcpPending();
 
     // ---- 长期记忆(跨任务) ----
-    // 记忆文件全路径: 配置 memory.file 优先(相对路径按 rootDir 解析), 空则 <rootDir>/.agent_memory.md
+    // 记忆文件全路径: 统一放在 <rootDir>/.jzagent/memory/ 下面;
+    //   memory.file 只取末段文件名(空 = .agent_memory.md), 绝对路径也不再写到工作区外。
     std::string memoryFilePath() const;
     // 开工时注入任务消息的记忆头部(未启用/还没有记忆时返回空串)。注入与 memory read 同一份逻辑。
     std::string buildMemoryBlock() const;
@@ -257,6 +266,7 @@ protected:
         Json::Value req;
         std::string taskId;
         std::string rootDir;      // 这条任务的工作目录(入队时已解析校验)
+        std::string modelName;    // 这条任务选的模型(入队时已解析校验)
         std::function<void(const Json::Value &)> respond;
     };
     // 任务对象是**一次性**的: 派发时新建, 回完包就销毁。m_tasks 里只有"正在跑"的。
@@ -312,6 +322,7 @@ protected:
         std::string id, prompt, verifyCmd, state, reply, verifyOut, error;
         long long startMs = 0, endMs = 0;
         int rounds = 0, eventSeq = 0;
+        Json::Value usage;                    // 任务结束后的 token 用量(给网页卡片显示)
         std::vector<Json::Value> events;      // 有界状态事件(只在本次运行期间留存)
     };
     A2aTask m_a2aLive;                        // 当前这条任务(active 时有效)

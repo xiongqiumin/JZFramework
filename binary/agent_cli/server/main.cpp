@@ -17,6 +17,7 @@
 
 #include "JZAgentCliServer.h"
 #include "JZApplication.h"
+#include "JZCliConfigIO.h"   // 内置 agent 与 agent_cli 共用配置解析
 #include "JZCommandLineParser.h"
 #include "JZDir.h"
 #include "JZFileInfo.h"
@@ -295,29 +296,44 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
 
     // selfAgent: server 进程自己跑的那个 JZAgent(内置 agent, agentId 默认 "server")
     //   与远端 cli 平级出现在 agent 列表里; 它多了几个"控制面"工具(见 JZServerAgent.cpp)。
+    //   运行参数与 agent_cli 共用 JZCliConfigIO 解析: 老配置里的平铺字段在这里映射成分组格式。
     const Json::Value *self = findMember(root, "", "selfAgent", "selfAgent");
     if (self && self->isObject())
     {
         JZJsonStream as(self);
-        as.readMemberDefault("enabled", config.selfAgent.enabled, false);
-        as.readMemberDefault("agentId", config.selfAgent.agentId, string("server"));
-        as.readMemberDefault("name", config.selfAgent.name, string("server(内置)"));
-        as.readMemberDefault("rootDir", config.selfAgent.rootDir, string());
-        as.readMemberDefault("modelUrl", config.selfAgent.modelUrl, string());
-        as.readMemberDefault("modelName", config.selfAgent.modelName, string());
-        as.readMemberDefault("modelToken", config.selfAgent.modelToken, string());
-        as.readMemberDefault("netTimeout", config.selfAgent.netTimeout, 120000);
-        as.readMemberDefault("maxRounds", config.selfAgent.maxRounds, 40);
-        as.readMemberDefault("maxToken", config.selfAgent.maxToken, 100000);
-        as.readMemberDefault("systemExtra", config.selfAgent.systemExtra, string());
+        as.readMemberDefault("enabled", config.selfAgentEnabled, false);
+        as.readMemberDefault("agentId", config.selfAgentId, string("server"));
+        as.readMemberDefault("name", config.selfAgentName, string("server(内置)"));
 
-        if (config.selfAgent.enabled && config.selfAgent.modelUrl.empty())
+        // 保留内置 agent 原来的缺省值(与独立 cli 的 JZCliConfig 默认值不同)
+        config.selfAgent.model.netTimeout = 120000;
+        config.selfAgent.maxRounds = 40;
+        config.selfAgent.model.contextWindow = 100000;
+
+        Json::Value cliRoot(Json::objectValue);
+        if (self->isMember("models"))      cliRoot["llm"]["models"] = (*self)["models"];
+        if (self->isMember("netTimeout"))  cliRoot["llm"]["netTimeoutMs"] = (*self)["netTimeout"];
+        if (self->isMember("maxRounds"))   cliRoot["llm"]["maxRounds"] = (*self)["maxRounds"];
+        if (self->isMember("contextWindow")) cliRoot["llm"]["contextWindow"] = (*self)["contextWindow"];
+        if (self->isMember("rootDir"))     cliRoot["terminal"]["rootDir"] = (*self)["rootDir"];
+        if (self->isMember("systemExtra")) cliRoot["system"]["extra"] = (*self)["systemExtra"];
+        if (self->isMember("skillsDir"))   cliRoot["skillsDir"] = (*self)["skillsDir"];
+
+        string cliError;
+        if (!jzCliParseConfig(cliRoot, config.selfAgent, cliError))
         {
-            error = "selfAgent.enabled=true 但没配 selfAgent.modelUrl";
+            error = "selfAgent 配置错误: " + cliError;
             return false;
         }
-        if (config.selfAgent.enabled && config.selfAgent.agentId.empty())
-            config.selfAgent.agentId = "server";
+        if (config.selfAgentEnabled && config.selfAgentId.empty())
+            config.selfAgentId = "server";
+        config.selfAgent.agentName = config.selfAgentId;
+
+        if (config.selfAgentEnabled && config.selfAgent.model.models.empty())
+        {
+            error = "selfAgent.enabled=true 但没配 selfAgent.models[]";
+            return false;
+        }
     }
     return true;
 }

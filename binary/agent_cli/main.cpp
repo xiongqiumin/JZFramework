@@ -59,12 +59,10 @@ static const char *kDefaultConfigJson = R"json({
     "logRotateDaily":       false,
 
     "llm": {
-        "url":              "",
-        "name":             "",
-        "token":            "",
+        "models":           [],
         "netTimeoutMs":     120000,
         "maxRounds":        100,
-        "maxToken":         160000,
+        "contextWindow":    160000,
         "maxTokens":        8192,
         "maxRetries":       10,
         "maxFixRetries":    2,
@@ -196,12 +194,16 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
     // 打到 stderr: stdout 是 ACP 通道, 不能污染
     fprintf(stderr, "配置文件: %s\n", configPath.c_str());
     fprintf(stderr, "  代理名    %s v%s\n", config.agentName.c_str(), config.version.c_str());
+    const string modelUrl = config.model.urlFor(config.selectedModel);
     fprintf(stderr, "  模型      %s @ %s\n",
-            config.modelName.empty() ? "(未配置)" : config.modelName.c_str(),
-            config.modelUrl.empty() ? "(未配置)" : config.modelUrl.c_str());
+            config.selectedModel.empty() ? "(未配置)" : config.selectedModel.c_str(),
+            modelUrl.empty() ? "(未配置)" : modelUrl.c_str());
+    fprintf(stderr, "  上下文窗口  %d (模型 %s)\n",
+            jzCliContextWindow(config, config.selectedModel),
+            config.selectedModel.empty() ? "默认" : config.selectedModel.c_str());
     fprintf(stderr, "  思考      %s\n",
-            config.thinkMode == ThinkMode::On ? "on(显式发 enable_thinking=true)" :
-            config.thinkMode == ThinkMode::Off ? "off(显式发 false)" :
+            config.model.thinkMode == ThinkMode::On ? "on(显式发 enable_thinking=true)" :
+            config.model.thinkMode == ThinkMode::Off ? "off(显式发 false)" :
                                                  "auto(不发字段, 端点默认值说了算)");
 
     // 运行模式: server.host 非空 = managed。两种模式**互斥**, 不是叠加
@@ -218,15 +220,15 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
         fprintf(stderr, "  任务队列  %d 个(每队列一个 JZAgent, 队列内串行/队列间并发; 排队上限 %d)\n",
                 config.task.queues, config.task.maxPending);
 
-    if (config.extraBody.isObject() && config.extraBody.size() > 0)
+    if (config.model.extraBody.isObject() && config.model.extraBody.size() > 0)
     {
         string extra;
         Json::FastWriter writer;
-        for (const string &key : config.extraBody.getMemberNames())
+        for (const string &key : config.model.extraBody.getMemberNames())
         {
             if (!extra.empty())
                 extra += ", ";
-            string value = writer.write(config.extraBody[key]);
+            string value = writer.write(config.model.extraBody[key]);
             while (!value.empty() && (value[value.size() - 1] == '\n' || value[value.size() - 1] == '\r'))
                 value.erase(value.size() - 1);
             extra += key + "=" + value;
@@ -254,11 +256,13 @@ static void printConfig(const string &configPath, const JZCliConfig &config)
         fprintf(stderr, "  长期记忆  关\n");
     else
         fprintf(stderr, "  长期记忆  %s  (注入上限 %d 字节)\n",
-                config.memoryFile.empty()
-                    ? (config.rootDir.empty() ? string("<工作区>/.agent_memory.md")
-                                              : config.rootDir + "/.agent_memory.md").c_str()
-                    : config.memoryFile.c_str(),
+                jzCliMemoryFilePath(config).c_str(),
                 config.memoryMaxBytes);
+    {
+        string globalSkills = jzCliGlobalSkillsDir(config);
+        fprintf(stderr, "  全局技能  %s\n",
+                globalSkills.empty() ? "(无)" : (globalSkills + "/skills").c_str());
+    }
     fprintf(stderr, "  工作区    %s\n",
             (config.rootDir.empty() ? string(JZDir::currentPath() + "  (配置为空, 取进程目录)") : config.rootDir).c_str());
     fprintf(stderr, "  授信目录  %s\n", trusted.empty() ? "(无)" : trusted.c_str());

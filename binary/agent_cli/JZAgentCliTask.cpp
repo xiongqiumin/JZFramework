@@ -1,6 +1,7 @@
 #include "JZAgentCli.h"
 
 #include "JZByteArray.h"
+#include "JZCliConfigIO.h"   // jzCliMemoryFilePath(与启动打印同一套规则)
 #include "JZDebug.h"
 #include "JZDir.h"
 #include "JZFile.h"
@@ -252,20 +253,21 @@ bool JZAgentCliTask::init(const JZCliConfig &config, std::string &error)
     m_agent = new JZAgent(this);
     m_agent->setStreamEnabled(true);
     // 思考开关来自配置(llm.thinking): auto(默认, 不发字段) / on / off
-    m_agent->setThinkMode(m_config.thinkMode);
+    m_agent->setThinkMode(m_config.model.thinkMode);
 
     JZAgentConfig ac;
     ac.rootPath = m_config.rootDir;
-    // 全局 .jzagent 的 skills: **总是加载**, 排在项目 skills 之后(同名不覆盖项目的)
-    if (!m_config.skillsDir.empty())
-        ac.globalSkillsDirs.push_back(m_config.skillsDir + "/skills");
-    ac.modelUrl = m_config.modelUrl;
-    ac.modelName = m_config.modelName;
-    ac.modelToken = m_config.modelToken;
-    ac.netTimeout = m_config.netTimeout;
+    // 全局 skills: 归一后一定读 <...>/.jzagent/skills, 排在项目 skills 之后(同名不覆盖项目的)
+    string globalSkills = jzCliGlobalSkillsDir(m_config);
+    if (!globalSkills.empty())
+        ac.globalSkillsDirs.push_back(globalSkills + "/skills");
+    ac.modelUrl = m_config.model.urlFor(m_config.selectedModel);
+    ac.modelName = m_config.selectedModel;
+    ac.modelToken = m_config.model.tokenFor(m_config.selectedModel);
+    ac.netTimeout = m_config.model.netTimeout;
     ac.maxRounds = m_config.maxRounds;
-    ac.maxToken = m_config.maxToken;
-    ac.extraBody = m_config.extraBody;
+    ac.maxToken = jzCliContextWindow(m_config, m_config.selectedModel);
+    ac.extraBody = m_config.model.extraBody;
     ac.reuseConnection = false;
     ac.tokenStrategy = JZAgentConfig::TokenCompress;
     ac.loopDetect.enabled = m_config.loopDetect;
@@ -1214,15 +1216,13 @@ string JZAgentCliTask::buildSystemPrompt() const
 // ---------------------------------------------------------------------------
 // 长期记忆
 //   记忆是"跨任务"的: 进程内每个任务都会 reset 会话(提交前 m_agent->reset()),
-//   所以结论必须落成文件才有意义 —— 落在工作区根目录, 换个人/换个 CLI 也能接着用。
+//   所以结论必须落成文件才有意义 —— 统一落在 <工作区>/.jzagent/memory/ 下,
+//   不散在工作区根目录; 换个人/换个 CLI 也能接着用。
 // ---------------------------------------------------------------------------
 
 string JZAgentCliTask::memoryFilePath() const
 {
-    string path = m_config.memoryFile.empty() ? string(".agent_memory.md") : m_config.memoryFile;
-    if (!JZDir::isAbsolutePath(path))
-        path = m_config.rootDir + "/" + path;
-    return codeNormalizePath(path);
+    return jzCliMemoryFilePath(m_config);
 }
 
 string JZAgentCliTask::buildMemoryBlock() const
@@ -1406,7 +1406,8 @@ void JZAgentCliTask::pushHistory(const std::string &prompt, const std::string &v
 }
 
 void JZAgentCliTask::finishHistory(const std::string &status, int rounds, const std::string &reply,
-                               const std::string &verifyOut, const std::string &err)
+                               const std::string &verifyOut, const std::string &err,
+                               const Json::Value &usage)
 {
     if (m_dropHistorySeq)   // 这条记录已被网页删掉: 收尾不再补写
     {
@@ -1426,6 +1427,8 @@ void JZAgentCliTask::finishHistory(const std::string &status, int rounds, const 
         it.verifyOut = verifyOut;
         it.error = err;
         it.endMs = nowMs();
+        if (usage.isObject())
+            it.usage = usage;
         return;
     }
 
@@ -1436,6 +1439,8 @@ void JZAgentCliTask::finishHistory(const std::string &status, int rounds, const 
     m_history.back().verifyOut = verifyOut;
     m_history.back().error = err;
     m_history.back().endMs = nowMs();
+    if (usage.isObject())
+        m_history.back().usage = usage;
 }
 
 bool JZAgentCliTask::removeHistory(int seq)
@@ -1476,6 +1481,8 @@ Json::Value JZAgentCliTask::recentJson() const
         j["rounds"] = it->rounds;
         j["start_ms"] = (Json::Int64)it->startMs;
         j["end_ms"] = (Json::Int64)it->endMs;
+        if (it->usage.isObject())
+            j["usage"] = it->usage;
         arr.append(j);
     }
     return arr;
@@ -1492,6 +1499,7 @@ void JZAgentCliTask::respondTask(const std::string &status, int rounds, const st
     r["retries_fix"] = m_fixRetries;                // 其中"改一版"档
     r["agent_reply"] = reply;
     r["last_verify_output"] = verifyOut;
+    r["modelName"] = m_config.selectedModel;   // 网页按这个模型的窗口画上下文圈
     // 本任务累计 token 用量随包带出: 任务对象是一次性的, 结束后 agent 就没了 ——
     // 统计方(评测/网页)读这个字段即可。agent 走本类已有的 agent() 访问器。
     JZAgent *a = agent();
@@ -1518,7 +1526,7 @@ void JZAgentCliTask::respondTask(const std::string &status, int rounds, const st
     pushEvent("task_end", r);
     m_lastResult = r;              // 留一份: 断连期间跑完的任务, 重连时靠 hello 帧补给界面
     m_hasLastResult = true;
-    finishHistory(status, rounds, reply, verifyOut, err);   // 归档进"最近任务"
+    finishHistory(status, rounds, reply, verifyOut, err, r["usage"]);   // 归档进"最近任务"
 
     // 回包带上这一轮的对话快照: 只走回包, **不进 task_end 事件流** ——
     // 事件会被记进 tasks.jsonl(有 200 条上限), 塞快照就把过程挤没了。

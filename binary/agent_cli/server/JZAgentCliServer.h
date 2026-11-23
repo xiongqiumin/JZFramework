@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "JZAgentCliTask.h"      // JZCliConfig: 内置 agent 与 cli 共用配置
 #include "JZJson.h"
 #include "JZNet/JZNetPacket.h"   // JZNetPackPtr(onHubPacket 的入参)
 #include "JZObject.h"
@@ -106,6 +107,8 @@ struct JZCliServerOnlineAgent
     std::string rootDir;
     std::string project;       // 项目名(cli 上报): 一个 cli 一个 project
     std::string modelName;
+    int contextWindow = 160000;   // 当前模型上下文窗口(cli 上报)
+    std::string modelWindows;     // 各模型窗口 JSON 对象字符串(cli 上报)
     std::string nodes;         // 节点清单 JSON 数组字符串(cli 上报)
     bool busy = false;
     int round = 0;
@@ -134,7 +137,11 @@ struct JZCliServerConfig
     std::vector<JZCliServerAgentConfig> agents;
 
     // server 自己那个 JZAgent(内置 agent, 跑在 server 进程内, agentId 默认 "server")
-    JZServerAgentConfig selfAgent;
+    // 运行参数与 agent_cli 共用 JZCliConfig, 只是在这里多记一个是否启用与展示用 id/name。
+    bool selfAgentEnabled = false;
+    std::string selfAgentId = "server";
+    std::string selfAgentName = "server(builtin)";
+    JZCliConfig selfAgent;
 };
 
 // 单个被管理 agent 的运行实例(实现细节, 见 cpp)
@@ -226,6 +233,7 @@ private:
     JZTimer *m_reapTimer = nullptr;
     void failPendingTasksOf(const std::string &agentId, const std::string &error);
     Json::Value onlineAgentsJson() const;
+    Json::Value selfModelListJson() const;   // selfAgent.models: 只给名字, 不含 token
     std::string resolveProgram(const JZCliServerAgentConfig &cfg) const;
     void appendLog(JZCliServerAgentInstance *inst, const std::string &chunk);
     // 管理台网页的落盘目录(<exeDir>/server_web); 页面 CSS/JS 也从这里读
@@ -343,6 +351,7 @@ private:
         int rounds = 0, round = 0;
         long long startMs = 0, endMs = 0, statusMs = 0;
         int eventSeq = 0;                          // 事件序号(断线重连可据此去重)
+        Json::Value usage;                         // 任务结束回包里的 token 用量(含缓存命中)
         std::vector<std::string> events;           // 状态事件(JSON 字符串, 放 metadata.events), 全量不裁剪
         // ---- 流式分片合并(落盘前) ----
         // reply/thinking 是逐 token 推送的, 一条一条写会把 events 撑成几万个碎片。

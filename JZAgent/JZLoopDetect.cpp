@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "json/json.h"
@@ -163,24 +164,61 @@ std::vector<std::string> splitBlocks(const std::vector<std::string> &lines)
     return blocks;
 }
 
-// 不同**非空白**字符数: `-----` / `=====` / "===\n" 这类分隔线的判据 ——
-// 只有一种非空白字符的重复不算"内容在打转"(模型画分隔线是正常排版)。
-int distinctBytes(const std::string &text)
+// UTF-8 码点切分: 判定"字符"一律按码点, 不按字节 —— 一个 CJK/块字符是 3 字节,
+// 用字节当周期会把"████..."/"我我我..."误判成 3 字节周期串。
+// 非法字节序列退化为单字节码点, 保证任意输入都能安全遍历。
+std::vector<std::string> splitUtf8(const std::string &text)
 {
-    bool seen[256] = { false };
-    int n = 0;
-    for (size_t i = 0; i < text.size(); i++)
+    std::vector<std::string> out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); )
     {
         unsigned char c = (unsigned char)text[i];
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
-            continue;
-        if (!seen[c])
+        size_t len = 1;
+        if ((c & 0x80) == 0)          len = 1;
+        else if ((c & 0xE0) == 0xC0)  len = 2;
+        else if ((c & 0xF0) == 0xE0)  len = 3;
+        else if ((c & 0xF8) == 0xF0)  len = 4;
+        if (i + len > text.size())
+            len = 1;
+        for (size_t j = 1; j < len; j++)
         {
-            seen[c] = true;
-            n++;
+            if (((unsigned char)text[i + j] & 0xC0) != 0x80)
+            {
+                len = 1;
+                break;
+            }
         }
+        out.push_back(text.substr(i, len));
+        i += len;
     }
-    return n;
+    return out;
+}
+
+int utf8CharCount(const std::string &text)
+{
+    return (int)splitUtf8(text).size();
+}
+
+std::string joinChars(const std::vector<std::string> &chars, size_t pos, size_t len)
+{
+    std::string out;
+    for (size_t i = 0; i < len && pos + i < chars.size(); i++)
+        out += chars[pos + i];
+    return out;
+}
+
+// 不同**非空白**码点数: `-----` / `=====` / 单个 `█` 重复这类分隔线/字符画不算循环。
+int distinctChars(const std::string &text)
+{
+    std::unordered_set<std::string> seen;
+    for (const std::string &c : splitUtf8(text))
+    {
+        if (c == " " || c == "\t" || c == "\r" || c == "\n")
+            continue;
+        seen.insert(c);
+    }
+    return (int)seen.size();
 }
 
 // 结果摘要: 前 N 字节参与哈希, 再把**总长度**也混进去 ——
@@ -206,16 +244,29 @@ uint64_t resultDigest(const std::string &result, int compareBytes)
     return hash;
 }
 
-// 给一段子串算指纹(同一套 FNV-1a, 但不混长度) —— 文本重复率统计用
-uint64_t textHash(const std::string &text, size_t pos, size_t len)
+// 按码点给一段子串算指纹(同一套 FNV-1a, 但不混长度) —— 文本重复率统计用
+uint64_t textHashChars(const std::vector<std::string> &chars, size_t pos, size_t len)
 {
     uint64_t hash = 1469598103934665603ULL;
-    for (size_t i = 0; i < len; i++)
+    for (size_t i = 0; i < len && pos + i < chars.size(); i++)
     {
-        hash ^= (unsigned char)text[pos + i];
-        hash *= 1099511628211ULL;
+        for (char c : chars[pos + i])
+        {
+            hash ^= (unsigned char)c;
+            hash *= 1099511628211ULL;
+        }
     }
     return hash;
+}
+
+std::string truncateChars(const std::string &text, int maxLen)
+{
+    if (maxLen <= 0)
+        return std::string();
+    std::vector<std::string> chars = splitUtf8(text);
+    if ((int)chars.size() <= maxLen)
+        return text;
+    return joinChars(chars, 0, (size_t)maxLen) + "…";
 }
 
 }   // namespace
@@ -356,7 +407,7 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
         if (last >= 0)
         {
             std::string line = trimLine(lines[last]);
-            if (distinctBytes(line) >= 2)
+            if (distinctChars(line) >= 2)
             {
                 int n = 0;
                 for (int i = last; i >= 0; i--)
@@ -368,9 +419,9 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
                 if (n >= m_config.textLineRepeat)
                 {
                     ev.loop = true;
-                    ev.period = (int)line.size();
+                    ev.period = utf8CharCount(line);
                     ev.repeat = n;
-                    ev.sample = truncateText(line, 80);
+                    ev.sample = truncateChars(line, 80);
                 }
             }
         }
@@ -394,54 +445,68 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
             if (n >= (int)need)
             {
                 ev.loop = true;
-                ev.period = (int)last.size();
+                ev.period = utf8CharCount(last);
                 ev.repeat = n;
-                ev.sample = truncateText(collapseSpaces(last), 80);
+                ev.sample = truncateChars(collapseSpaces(last), 80);
             }
         }
     }
 
     // ③ 周期串重复(尾部从最短周期开始找): 挡"同一句话/同一串 token 反复吐"
+    //    周期按 UTF-8 码点算: 一个 `█`/汉字是 1 字符, 不是 3 字节 ——
+    //    否则字符画里连画几个 `█` 会被当成"3 字节单元重复 8 次"误报。
     if (!ev.loop && m_config.textPeriodRepeat > 1 && m_config.textPeriodMax >= 3)
     {
-        int span = m_config.textPeriodRepeat;
-        int maxP = m_config.textPeriodMax;
-        if (maxP > (int)(norm.size() / (size_t)span))
-            maxP = (int)(norm.size() / (size_t)span);
+        std::vector<std::string> chars = splitUtf8(norm);
+        size_t span = (size_t)m_config.textPeriodRepeat;
+        size_t maxP = (size_t)m_config.textPeriodMax;
+        if (maxP > chars.size() / span)
+            maxP = chars.size() / span;
 
-        for (int p = 3; p <= maxP; p++)
+        for (size_t p = 3; p <= maxP; p++)
         {
-            std::string unit = norm.substr(norm.size() - p);
-            if (distinctBytes(unit) < 2)   // `-----` / `=====` 这类分隔线不算循环
+            std::string unit = joinChars(chars, chars.size() - p, p);
+            if (distinctChars(unit) < 2)   // `-----` / `=====` / 单个 `█` 刷屏都不算循环
                 continue;
 
-            int n = 1;
-            size_t pos = norm.size() - (size_t)p;
-            while (n < span && pos >= (size_t)p && norm.compare(pos - (size_t)p, (size_t)p, unit) == 0)
+            size_t n = 1;
+            size_t pos = chars.size() - p;
+            while (n < span && pos >= p)
             {
-                pos -= (size_t)p;
+                bool same = true;
+                for (size_t k = 0; k < p; k++)
+                {
+                    if (chars[pos - p + k] != chars[pos + k])
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+                if (!same)
+                    break;
+                pos -= p;
                 n++;
             }
             if (n >= span)
             {
                 ev.loop = true;
-                ev.period = p;
-                ev.repeat = n;
-                ev.sample = truncateText(collapseSpaces(unit), 80);
+                ev.period = (int)p;
+                ev.repeat = (int)n;
+                ev.sample = truncateChars(collapseSpaces(unit), 80);
                 break;
             }
         }
     }
 
-    // ④ 后缀重复率(n-gram): 补 ①②③ 的漏洞 —— 那三条都要求**逐字节完全相等**,
+    // ④ 后缀重复率(n-gram): 补 ①②③ 的漏洞 —— 那三条都要求**逐码点完全相等**,
     //    对"长单元少次重复"(超过 ③ 的周期上限、又没有空行分隔)和"改写型重复"都认不出来。
-    //    这里统计尾部里"重复出现过的 n 字片语"占比:
+    //    这里统计尾部里"重复出现过的 n 字片语"占比(n 也是码点数):
     //      单元重复 k 遍 => 占比 ≈ 1-1/k(3 遍 0.67 / 4 遍 0.75); 正常文本各句不同, 远低于阈值。
     //    先折叠空白再切 n-gram(换行/缩进差异不该把"同一段"拆散), 且只用尾部窗口。
     if (!ev.loop && m_config.textGramN >= 4 && m_config.textGramMin > 0
         && m_config.textGramRepeat > 0.0)
     {
-        std::string flat = collapseSpaces(norm);
+        std::vector<std::string> flat = splitUtf8(collapseSpaces(norm));
         const size_t n = (size_t)m_config.textGramN;
         if (flat.size() >= n + 1)
         {
@@ -449,7 +514,7 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
             int total = 0;
             for (size_t i = 0; i + n <= flat.size(); i++)
             {
-                counts[textHash(flat, i, n)]++;
+                counts[textHashChars(flat, i, n)]++;
                 total++;
             }
 
@@ -472,9 +537,9 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
                 std::string sample;
                 for (size_t i = 0; i + n <= flat.size(); i++)
                 {
-                    if (textHash(flat, i, n) == bestHash)
+                    if (textHashChars(flat, i, n) == bestHash)
                     {
-                        sample = flat.substr(i, n);
+                        sample = joinChars(flat, i, n);
                         break;
                     }
                 }
@@ -484,7 +549,7 @@ JZTextLoopEvent JZTextLoopDetector::check(const std::string &text, const std::st
                 ev.repeat = 0;
                 ev.detail = std::to_string((int)n) + " 字片语重复率 "
                             + std::to_string((int)(rate * 100.0 + 0.5)) + "%";
-                ev.sample = truncateText(sample, 80);
+                ev.sample = truncateChars(sample, 80);
             }
         }
     }

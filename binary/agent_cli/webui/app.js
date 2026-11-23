@@ -58,6 +58,7 @@ const WORKING = [S.SUBMITTED, S.WORKING, S.INPUT_REQUIRED, S.AUTH_REQUIRED];
 const TOKEN_KEY = 'jz.http.token';
 const TOKEN_COOKIE = 'jz_token';          // 与服务端 checkHttpToken 约定的 cookie 名
 const VERIFY_KEY = 'jz.http.verifyCmd';
+const MODEL_KEY = 'jz.http.modelName';    // 本次任务选的模型; 空 = 跟随 agent 配置
 function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
 function lsSet(k, v) { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) {} }
 function cookieGet(name) {
@@ -247,7 +248,61 @@ function taskCostLast(t) {
   if (start && m.endMs && m.endMs >= start) return ((m.endMs - start) / 1000).toFixed(1) + 's';
   return taskCost(t);            // 老记录没有 user_msg 事件: 退回总耗时
 }
-/* 卡片底部那行。两个信息都只在"有内容"时才出现:
+/* 任务结束回包里的 token 用量: total 是这次提交的总消耗, cached/prompt 算缓存命中率。
+   老任务没有 usage 字段 -> 返回空串, 不显示占位。 */
+function taskUsage(t) {
+  const u = (meta(t) || {}).usage || {};
+  const num = k => Number(u[k]) || 0;
+  return { prompt: num('prompt_tokens'), completion: num('completion_tokens'),
+           total: num('total_tokens'), cached: num('cached_tokens'),
+           context: num('context_tokens') };   // 最后一轮实际上下文(windowTokens), 与计费总量不同口径
+}
+function fmtCount(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 10000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+function taskUsageText(t) {
+  const u = taskUsage(t);
+  const total = u.total || u.prompt + u.completion;
+  if (!total) return '';
+  const hit = u.prompt > 0 ? Math.round(u.cached * 100 / u.prompt) : 0;
+  return fmtCount(total) + ' tok · 缓存 ' + hit + '%';
+}
+function taskUsageTip(t) {
+  const u = taskUsage(t);
+  const total = u.total || u.prompt + u.completion;
+  if (!total) return '';
+  const win = taskContextWindow(t);
+  return '输入 ' + u.prompt + ' / 输出 ' + u.completion + ' / 缓存命中 ' + u.cached
+    + ' tok（命中率 = 缓存命中 / 输入）'
+    + (u.context ? ' · 上下文 ' + fmtCount(u.context) + (win ? ' / ' + fmtCount(win) : '') : '');
+}
+/* 这条任务用的模型: 结果里带 modelName 就用它, 否则退回当前选择/默认模型。 */
+function taskModel(t) {
+  return (meta(t) || {}).modelName || selectedModel() || (AG.info && AG.info.modelName) || '';
+}
+function taskContextWindow(t) { return modelContextWindow(taskModel(t)); }
+function taskRingTip(t) {
+  const u = taskUsage(t);
+  const win = taskContextWindow(t);
+  const ctx = u.context || 0;
+  if (!win) return '当前上下文 ' + fmtCount(ctx) + ' / 最大值 未配置';
+  return '当前上下文 ' + fmtCount(ctx) + ' / 最大值 ' + fmtCount(win)
+    + '（' + Math.round(ctx * 100 / win) + '%）';
+}
+/* 上下文占用圈: 只在任务完成后画, 灰底 + 主色进度; 悬停给"当前上下文 / 最大值 / 百分比"。 */
+function taskContextRing(t) {
+  if (isRunning(t)) return '';
+  const u = taskUsage(t);
+  const win = taskContextWindow(t);
+  const ctx = u.context || 0;
+  const pct = win > 0 ? Math.min(100, Math.round(ctx * 100 / win)) : 0;
+  const tips = [taskRingTip(t), taskUsageTip(t)].filter(Boolean);
+  return '<span class="ctx-ring" style="--ctx-pct:' + pct + '" title="'
+    + esc(tips.join('\n')) + '"></span>';
+}
+/* 卡片底部那行只留耗时/验证轮次; token 与缓存挪到上下文圈的悬停提示里。
    - rounds 是**验证循环**的轮次(verify_rounds), 不是对话轮数: 不配验证脚本恒为 0,
      配了也要失败重试才涨 —— 写个 "0 轮" 等于占位, 还容易被当成"我说了几次话";
      涨起来了才值得说, 所以只在 >0 时显示成 "验证 N 轮"(说明模型返工了几次)。
@@ -393,7 +448,7 @@ async function postJson(url, body, timeoutMs) {
   if (!r.ok) authDenied(r.status, j);
   return { ok: r.ok, json: j };
 }
-async function sendMessage({ agentId, prompt, verifyCmd, contextId, taskId, rootDir, images }) {
+async function sendMessage({ agentId, prompt, verifyCmd, contextId, taskId, rootDir, images, modelName }) {
   const body = {
     agentId,
     message: { role: 'ROLE_USER', parts: [{ text: prompt }] },
@@ -402,6 +457,8 @@ async function sendMessage({ agentId, prompt, verifyCmd, contextId, taskId, root
   // 图片附件(多模态): data URL 数组, 后端 JZAgentCli::extractImages 直接认这个字段
   if (images && images.length) body.images = images;
   if (verifyCmd) body.verifyCmd = verifyCmd;
+  // 模型选择: 空 = 用 agent 配置里的默认模型; cli/hub 按这一条任务生效
+  if (modelName) body.modelName = modelName;
   if (contextId) body.contextId = contextId;
   // 工作目录(网页上切换): 服务端记成这条任务的 project, cli 按它挑执行环境
   if (rootDir) { body.rootDir = rootDir; body.project = rootDir; }
@@ -666,7 +723,8 @@ function convHtml(t) {
     ${err ? `<div class="jz-msg jz-msg--error"><div class="jz-bubble">${esc(err)}</div></div>` : ''}
     <div class="jz-msg__meta cs-task__meta">
       <span class="jz-badge ${BADGE[stateOf(t)] || ''}">${esc(stateText(t))}</span>
-      ${metaTxt ? `<span>${esc(metaTxt)}</span>` : ''}
+      ${metaTxt ? `<span title="${esc(taskUsageTip(t))}">${esc(metaTxt)}</span>` : ''}
+      ${taskContextRing(t)}
     </div>
   </div>`;
 }
@@ -717,6 +775,7 @@ function sideItemHtml(t) {
   const cost = isRunning(t) ? '' : taskCost(t);
   const tip = prompt + '\n' + stateText(t)
     + (rounds ? ' · 验证 ' + rounds + ' 轮' : '') + (cost && cost !== '-' ? ' · ' + cost : '')
+    + (isRunning(t) ? '' : (taskUsageText(t) ? ' · ' + taskUsageText(t) : ''))
     + ' · ' + fmtTime(lastMs(t));
   const del = `<button class="ag-del" type="button" data-del="${esc(taskId(t))}"
       title="${isRunning(t) ? '取消并删除这条任务' : '删除这条记录'}" aria-label="删除">×</button>`;
@@ -768,12 +827,11 @@ function renderSide() {
 }
 /* 点左栏某条: 右栏切成那个任务队列(它自己的多轮对话) */
 function selectTask(id, scroll) {
-  const t = AG.tasks.filter(x => taskId(x) === id)[0];
   AG.sel = id;
   AG.sig = null;
   adoptContext(id);      // 选中哪条, 下一条就接它的会话
   renderSide();
-  renderTask(true, scroll ? (t && isRunning(t) ? 'bottom' : 'top') : '');
+  renderTask(true, scroll ? 'bottom' : '');
   if (scroll) activateTab('chat');
   // 地址栏同步, 刷新/分享能回到同一个任务
   const url = new URL(location.href);
@@ -784,6 +842,23 @@ function selectTask(id, scroll) {
 // 抽屉只属于桌面/平板侧栏; 手机端是 L1/L2 两级页面, 不用 is-nav
 function openNav() { const el = document.getElementById('app'); if (el) el.classList.add('is-nav'); }
 function closeNav() { const el = document.getElementById('app'); if (el) el.classList.remove('is-nav'); }
+
+/* 会话历史滚动: 离底部远了就给圆形向下箭头, 点一下跳到最新。 */
+function threadAtBottom(box) {
+  return !box || box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+}
+function updateJumpLatest() {
+  const box = document.getElementById('thread');
+  const btn = document.getElementById('btnJumpLatest');
+  if (!box || !btn) return;
+  btn.classList.toggle('hidden', threadAtBottom(box));
+}
+function jumpToLatest() {
+  const box = document.getElementById('thread');
+  if (!box) return;
+  box.scrollTop = box.scrollHeight;
+  updateJumpLatest();
+}
 
 /* 右栏: 只渲染选中的那条任务(一条 = 一个队列), 没有选中就显示欢迎 */
 function renderTask(force, scrollMode) {
@@ -796,7 +871,7 @@ function renderTask(force, scrollMode) {
   if (!force && sig === AG.sig) return;
   AG.sig = sig;
 
-  if (!t) { box.innerHTML = welcomeHtml(); return; }
+  if (!t) { box.innerHTML = welcomeHtml(); updateJumpLatest(); return; }
   const prevTop = box.scrollTop;
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
   box.innerHTML = convHtml(t);
@@ -831,6 +906,7 @@ function renderTask(force, scrollMode) {
   if (scrollMode === 'top') box.scrollTop = 0;
   else if (scrollMode === 'bottom') box.scrollTop = box.scrollHeight;
   else box.scrollTop = atBottom ? box.scrollHeight : prevTop;
+  updateJumpLatest();
 }
 
 /* 往前翻一页事件, 拼到已加载的前面 */
@@ -888,6 +964,7 @@ function renderHead() {
     document.body.dataset.state = !online ? 'offline'
       : (AG.busy || AG.tasks.some(isRunning)) ? 'busy' : 'idle';
   }
+  renderModel();   // 输入框左下角的胶囊要跟着当前 agent 的默认模型走
 }
 
 function syncComposer() {
@@ -1235,8 +1312,8 @@ async function loadInfo() {
     lsSet(WD_KEY + AG.id, dq);
     u0.searchParams.delete('dir');
     history.replaceState(null, '', u0);
-    // 桌面: 打开某个目录的动作落地到文件树; 手机: 只记住工作区, 落地仍是主机页
-    if (!IS_MOBILE) setSideView('files');
+    // 打开链接就落在会话页(任务页); 目录只记下来, 不把桌面切到文件 tab
+    // (手机本来就只记住工作区, 落地仍是主机页)
   }
 
 }
@@ -1265,7 +1342,7 @@ async function loadTasks(fresh) {
   if (!AG.sel && want && AG.tasks.some(t => taskId(t) === want)) {
     AG.sel = want;
     AG.sig = null;
-    scrollMode = 'top';
+    scrollMode = 'bottom';
   }
   if (!fresh && !AG.sel && AG.tasks.length) {
     // 默认选中: 有在跑的选它, 否则选最新的那条
@@ -1275,7 +1352,7 @@ async function loadTasks(fresh) {
     AG.sel = taskId(pick);
     AG.sig = null;
     adoptContext(AG.sel);
-    scrollMode = isRunning(pick) ? 'bottom' : 'top';
+    scrollMode = 'bottom';
   }
 
   renderHead(); renderTask(false, scrollMode); renderSide(); syncComposer();
@@ -1481,6 +1558,7 @@ async function doSend() {
       prompt: text,
       images: imgs,
       verifyCmd: lsGet(VERIFY_KEY),
+      modelName: selectedModel(),
       // 选中了哪条任务, 这一轮就追加到那条任务里(同一个 taskId, 聊天区连续);
       // 没选(=新建)就照旧开一条新任务, 沿用本机记着的上次会话。
       taskId: AG.sel || '',
@@ -1520,11 +1598,86 @@ async function doSend() {
   ta.focus();
 }
 
+/* ---- 模型选择 ----
+   默认模型来自 /api/agent 的 info.modelName; 候选来自 info.modelList(llm.models)。
+   选中的名字只存本机并发在每条任务上, 不改 agent 进程配置, 也不传 token。
+   上下文窗口: info.modelWindows 按模型名给, 没给就用 info.contextWindow。 */
+function modelContextWindow(name) {
+  const info = AG.info || {};
+  const byModel = Number((info.modelWindows || {})[name || ''] || 0) || 0;
+  return byModel || Number(info.contextWindow) || 0;
+}
+function selectedModel() { return lsGet(MODEL_KEY).trim(); }
+function modelOptions() {
+  const info = AG.info || {};
+  const opts = [];
+  if (info.modelName) opts.push(String(info.modelName));
+  const list = Array.isArray(info.modelList) ? info.modelList : [];
+  list.forEach((n) => {
+    n = String(n || '').trim();
+    if (n && opts.indexOf(n) < 0) opts.push(n);
+  });
+  const saved = selectedModel();
+  if (saved && opts.indexOf(saved) < 0) opts.push(saved);   // 自定义模型(没配 llm.models 时也能填)
+  return opts;
+}
+function closeModelMenu() {
+  const menu = document.getElementById('modelMenu');
+  const btn = document.getElementById('btnModel');
+  if (menu) menu.classList.add('hidden');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+function renderModel() {
+  const label = document.getElementById('modelLabel');
+  if (!label) return;
+  const saved = selectedModel();
+  const def = (AG.info && AG.info.modelName) || '';
+  const picked = saved || def;
+  const win = modelContextWindow(picked);
+  label.textContent = (picked || '默认模型') + (win ? ' · ' + fmtCount(win) : '');
+  label.title = (saved ? ('本次任务: ' + saved) : (def ? ('默认: ' + def) : '未配置模型'))
+    + (win ? ' · 上下文窗口 ' + win + ' tok' : '');
+  const menu = document.getElementById('modelMenu');
+  if (!menu) return;
+  const item = (name, text) => '<button type="button" class="model-item'
+    + (name === saved ? ' is-on' : '') + '" data-model="' + esc(name) + '" role="menuitem">'
+    + esc(text) + (name === saved ? '<span class="model-item__on">✓</span>' : '') + '</button>';
+  const withWin = n => n + (modelContextWindow(n) ? ' · ' + fmtCount(modelContextWindow(n)) : '');
+  const defWin = modelContextWindow(def);
+  menu.innerHTML = item('', '默认（跟随配置）' + (defWin ? ' · ' + fmtCount(defWin) : ''))
+    + modelOptions().map(n => item(n, withWin(n))).join('');
+  menu.querySelectorAll('.model-item').forEach((b) => {
+    b.onclick = () => chooseModel(b.dataset.model || '');
+  });
+}
+function chooseModel(name) {
+  lsSet(MODEL_KEY, (name || '').trim());
+  const f = document.getElementById('fModel');
+  if (f) f.value = selectedModel();
+  closeModelMenu();
+  renderModel();
+}
+function toggleModelMenu(e) {
+  if (e && e.stopPropagation) e.stopPropagation();
+  const menu = document.getElementById('modelMenu');
+  const btn = document.getElementById('btnModel');
+  if (!menu || !btn) return;
+  const open = menu.classList.contains('hidden');
+  menu.classList.toggle('hidden', !open);
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
 /* ---- 设置弹窗 ---- */
 function openSettings() {
   const dlg = document.getElementById('dlgSettings');
   document.getElementById('fVerify').value = lsGet(VERIFY_KEY);
   document.getElementById('fToken').value = authToken();
+  const fModel = document.getElementById('fModel');
+  if (fModel) {
+    fModel.value = selectedModel();
+    const choices = document.getElementById('modelChoices');
+    if (choices) choices.innerHTML = modelOptions().map(n => '<option value="' + esc(n) + '"></option>').join('');
+  }
   if (typeof dlg.showModal === 'function') { if (!dlg.open) dlg.showModal(); }
   else dlg.setAttribute('open', '');
 }
@@ -1535,8 +1688,11 @@ function closeSettings() {
 function saveSettings() {
   lsSet(VERIFY_KEY, document.getElementById('fVerify').value.trim());
   setAuthToken(document.getElementById('fToken').value);
+  const fModel = document.getElementById('fModel');
+  if (fModel) lsSet(MODEL_KEY, fModel.value.trim());
   closeSettings();
   syncComposer();
+  renderModel();
   if (window.JzUI) JzUI.toast('设置已保存', 'ok');
 }
 
@@ -1841,6 +1997,15 @@ function on(id, fn) {
 
 function initChatPage() {
   on('btnSend', doSend);
+  on('btnJumpLatest', jumpToLatest);
+  const threadBox = document.getElementById('thread');
+  if (threadBox) threadBox.addEventListener('scroll', updateJumpLatest, { passive: true });
+  on('btnModel', toggleModelMenu);
+  document.addEventListener('click', (e) => {
+    const pick = document.getElementById('modelPick');
+    if (pick && !pick.contains(e.target)) closeModelMenu();
+  });
+  renderModel();
   on('btnSettings', openSettings);
   on('btnVerify', openSettings);
   on('btnSetSave', saveSettings);
@@ -2025,9 +2190,10 @@ function initChatPage() {
   const termBox = document.getElementById('termBox');
   if (termBox) termBox.addEventListener('toggle', () => { if (termBox.open) loadTerminal(); });
 
-  // 桌面默认进侧栏「会话」; 手机落地是 L1 主机页, 先渲染主机/工作区列表
+  // 桌面打开页面一律落在侧栏「会话」(任务页), 不沿用上次的文件 tab;
+  // 手机落地是 L1 主机页, 进工作区后已是 chat 视图。
   if (IS_MOBILE) loadHosts(true);
-  else setSideView(lsGet(SIDE_KEY) || 'chats');
+  else setSideView('chats');
 
   loadInfo()
     .then(() => {
@@ -2408,7 +2574,7 @@ function renderHosts() {
       renderHosts();
     };
   });
-  // 点行只选中; 只有点行尾的 → 才真的打开(当前 agent = 切工作区+去文件树, 别的 = 跳过去)
+  // 点行只选中; 只有点行尾的 → 才真的打开(一律落到会话/任务页, 和直接打开网页一致)
   box.querySelectorAll('.dir-row[data-dir]').forEach(b => {
     b.onclick = (ev) => {
       const a = b.dataset.agent, d = b.dataset.dir;
@@ -2419,7 +2585,7 @@ function renderHosts() {
         renderHosts();
         return;
       }
-      if (a === AG.id) { if (d !== workdir()) setWorkdir(d); setSideView('files'); }
+      if (a === AG.id) { if (d !== workdir()) setWorkdir(d); setSideView('chats'); }
       else location.href = '?id=' + encodeURIComponent(a) + '&dir=' + encodeURIComponent(d);
     };
   });
@@ -2466,13 +2632,14 @@ function openStream(id) {
   ['task', 'status_update', 'artifact_update'].forEach(n => es.addEventListener(n, onAny));
 }
 function taskRows(list) {
-  if (!list.length) return `<tr><td colspan="8" style="color:var(--jz-muted)">没有符合条件的 Task</td></tr>`;
+  if (!list.length) return `<tr><td colspan="9" style="color:var(--jz-muted)">没有符合条件的 Task</td></tr>`;
   return list.map(t => `<tr data-task="${esc(taskId(t))}" style="cursor:pointer">
       <td data-label="Task">${esc(taskId(t))}</td>
       <td data-label="agent">${esc(taskAgent(t))}</td>
       <td data-label="状态">${badge(t)}${taskOrigin(t) !== 'user' ? ' <span class="jz-badge">agent 内部</span>' : ''}</td>
       <td data-label="最近事件" class="hide-sm">${esc(meta(t).lastEventType || '-')}</td>
       <td data-label="耗时" class="hide-sm">${taskCost(t)}</td>
+      <td data-label="Token / 缓存" class="hide-sm">${esc(taskUsageText(t))}</td>
       <td data-label="提交时间" class="hide-sm">${fmtTime(meta(t).startMs)}</td>
       <td data-label="指令" style="color:var(--jz-muted);font-size:var(--jz-fs-1)">${esc(taskPrompt(t).slice(0, 60))}</td>
       <td data-label="操作"><button class="jz-btn jz-btn--sm jz-btn--ghost" type="button" data-del="${esc(taskId(t))}"
@@ -2511,7 +2678,7 @@ function renderDetail(t) {
   document.getElementById('detailHead').innerHTML = `<div class="task-head">
       <div><span class="task-head__id">${esc(taskId(t))}</span> ${badge(t)}
         ${taskOrigin(t) !== 'user' ? '<span class="jz-badge">agent 内部</span>' : ''}</div>
-      <div class="muted">${esc(taskAgent(t))} · ${taskCost(t)} · ${taskRounds(t)} 轮 · ${fmtTime(meta(t).startMs)} → ${fmtTime(meta(t).endMs)}</div>
+      <div class="muted">${esc(taskAgent(t))} · ${taskCost(t)} · ${taskRounds(t)} 轮 · ${fmtTime(meta(t).startMs)} → ${fmtTime(meta(t).endMs)} ${taskContextRing(t)}</div>
       <div class="muted">contextId: <code>${esc(t.contextId || '-')}</code>
         ${meta(t).parentTaskId ? ' · 父任务 <code>' + esc(meta(t).parentTaskId) + '</code>' : ''}</div>
     </div>`;

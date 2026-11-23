@@ -5,6 +5,7 @@
 #include "JZHttpServer.h"        // 后台网页 / 管理 API
 #include "JZHttpStaticFiles.h"
 #include "JZInprocCli.h"          // inproc 模式: cli 跑在同进程的独立线程里(源码引用)
+#include "JZCliConfigIO.h"        // jzCliContextWindow(内置 agent 的上下文窗口)
 #include "JZDir.h"               // mkpath(data 目录)
 #include "JZPlatform.h"          // applicationDirPath
 #include "JZFileInfo.h"          // exists
@@ -838,11 +839,13 @@ bool JZAgentCliServer::start(std::string &error)
     m_startTime = JZDateTime::currentMSecsSinceEpoch();
 
     // 内置 agent: server 自己那个 JZAgent(可选)。先起它, 后面的工具才拿得到集群视图
-    if (m_config.selfAgent.enabled)
+    if (m_config.selfAgentEnabled)
     {
         m_selfAgent = new JZServerAgent(this);
+        JZCliConfig selfCfg = m_config.selfAgent;
+        selfCfg.agentName = m_config.selfAgentId;   // 通用配置里用 agentName 承载内置 agent 的 id
         string err;
-        if (!m_selfAgent->init(m_config.selfAgent, this, err))
+        if (!m_selfAgent->init(selfCfg, this, err))
         {
             jzWarning() << "内置 agent 启动失败:" << err;
             m_selfAgent->deleteLater();
@@ -851,8 +854,8 @@ bool JZAgentCliServer::start(std::string &error)
         else
         {
             connect(&m_selfAgent->sigEvent, this, &JZAgentCliServer::onSelfAgentEvent);
-            jzInfo() << "内置 agent 已就绪: id=" << m_config.selfAgent.agentId
-                     << "  model=" << m_config.selfAgent.modelName
+            jzInfo() << "内置 agent 已就绪: id=" << m_config.selfAgentId
+                     << "  model=" << m_config.selfAgent.selectedModel
                      << "  root=" << m_config.selfAgent.rootDir;
         }
     }
@@ -968,6 +971,8 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
         agent.rootDir = hello->rootDir;
         agent.project = hello->project;
         agent.modelName = hello->modelName;
+        agent.contextWindow = hello->contextWindow;
+        agent.modelWindows = hello->modelWindows;
         agent.nodes = hello->nodes;
         agent.lastSeen = now;
         m_onlineByConn[conn] = agent;
@@ -1336,6 +1341,14 @@ void JZAgentCliServer::failPendingTasksOf(const string &agentId, const string &e
     }
 }
 
+Json::Value JZAgentCliServer::selfModelListJson() const
+{
+    Json::Value arr(Json::arrayValue);
+    for (const auto &m : m_config.selfAgent.model.models)
+        arr.append(m.name);
+    return arr;
+}
+
 Json::Value JZAgentCliServer::onlineAgentsJson() const
 {
     Json::Value arr(Json::arrayValue);
@@ -1349,6 +1362,14 @@ Json::Value JZAgentCliServer::onlineAgentsJson() const
         j["rootDir"] = a.rootDir;
         j["project"] = a.project;
         j["modelName"] = a.modelName;
+        j["contextWindow"] = a.contextWindow;
+        {
+            Json::Value mw;
+            if (parseJsonText(a.modelWindows, mw) && mw.isObject())
+                j["modelWindows"] = mw;
+            else
+                j["modelWindows"] = Json::Value(Json::objectValue);
+        }
         j["busy"] = a.busy;
         j["round"] = a.round;
         j["taskId"] = a.taskId;
@@ -1368,12 +1389,23 @@ Json::Value JZAgentCliServer::onlineAgentsJson() const
     if (m_selfAgent)
     {
         Json::Value j(Json::objectValue);
-        j["agentId"] = m_config.selfAgent.agentId;
-        j["name"] = m_config.selfAgent.name;
+        j["agentId"] = m_config.selfAgentId;
+        j["name"] = m_config.selfAgentName;
         j["version"] = "builtin";
         j["rootDir"] = m_selfAgent->config().rootDir;
         j["project"] = m_selfAgent->config().rootDir;   // project 就是工作区根目录
-        j["modelName"] = m_config.selfAgent.modelName;
+        j["modelName"] = m_config.selfAgent.selectedModel;
+        j["modelList"] = selfModelListJson();
+        j["contextWindow"] = jzCliContextWindow(m_config.selfAgent, m_config.selfAgent.selectedModel);
+        {
+            Json::Value mw(Json::objectValue);
+            for (const auto &m : m_config.selfAgent.model.models)
+            {
+                if (m.contextWindow > 0)
+                    mw[m.name] = m.contextWindow;
+            }
+            j["modelWindows"] = mw;
+        }
         j["busy"] = m_selfAgent->busy();
         j["round"] = m_selfAgent->round();
         j["taskId"] = m_selfAgent->taskId();
@@ -1438,6 +1470,7 @@ void JZAgentCliServer::loadTaskStore()
         r.lastEventType = meta.get("lastEventType", "").asString();
         r.rounds = meta.get("rounds", 0).asInt();
         r.round = meta.get("round", 0).asInt();
+        r.usage = meta.get("usage", Json::Value());
         r.startMs = (long long)meta.get("startMs", 0).asInt64();
         r.endMs = (long long)meta.get("endMs", 0).asInt64();
         r.contextId = j.get("contextId", "").asString();
@@ -1724,12 +1757,13 @@ Json::Value JZAgentCliServer::knownAgentsJson() const
     if (m_selfAgent)
     {
         Json::Value j(Json::objectValue);
-        j["agentId"] = m_config.selfAgent.agentId;
-        j["name"] = m_config.selfAgent.name;
+        j["agentId"] = m_config.selfAgentId;
+        j["name"] = m_config.selfAgentName;
         j["version"] = "builtin";
         j["rootDir"] = m_selfAgent->config().rootDir;
         j["project"] = m_selfAgent->config().rootDir;   // project 就是工作区根目录
-        j["modelName"] = m_config.selfAgent.modelName;
+        j["modelName"] = m_config.selfAgent.selectedModel;
+        j["modelList"] = selfModelListJson();
         j["firstSeen"] = (Json::Int64)m_startTime;
         j["connects"] = 1;
         j["builtin"] = true;
@@ -1885,6 +1919,7 @@ void JZAgentCliServer::recordEnd(const string &taskId, const Json::Value &result
     r->state = stateFromResult(result.get("status", "").asString());
     r->rounds = result.get("verify_rounds", 0).asInt();
     r->error = result.get("error", "").asString();
+    r->usage = result.get("usage", Json::Value());
     r->endMs = r->statusMs = (long long)JZDateTime::currentMSecsSinceEpoch();
 
     // A2A: 结果放 Artifact, 不要用 Message 传输出
@@ -2253,6 +2288,8 @@ Json::Value JZAgentCliServer::taskJson(const TaskRecord &r, int evLimit) const
     meta["parentTaskId"] = r.parentTaskId;
     meta["rounds"] = r.rounds;
     meta["round"] = r.round;
+    if (r.usage.isObject())
+        meta["usage"] = r.usage;
     meta["lastEventType"] = r.lastEventType;
     // 事件**全量落盘**, 但对外一次只回一页(默认最近 200 条, 起点对齐到 user_msg)。
     // 前端拿 eventsOffset > 0 就显示"加载更多", 走 /api/tasks/events 往前翻。
@@ -2469,7 +2506,7 @@ Json::Value JZAgentCliServer::agentCardJson(const string &id) const
         round = m_selfAgent->round();
         version = "builtin";
         rootDir = m_selfAgent->config().rootDir;
-        modelName = m_config.selfAgent.modelName;
+        modelName = m_config.selfAgent.selectedModel;
         description = "server 进程内置 agent(可管理集群)";
         lastSeen = JZDateTime::currentMSecsSinceEpoch();
     }
@@ -2545,6 +2582,8 @@ Json::Value JZAgentCliServer::agentCardJson(const string &id) const
     meta["round"] = round;
     meta["rootDir"] = rootDir;
     meta["modelName"] = modelName;
+    if (builtin)
+        meta["modelList"] = selfModelListJson();
     meta["firstSeen"] = (Json::Int64)firstSeen;
     meta["lastSeen"] = (Json::Int64)lastSeen;
     meta["connects"] = connects;
@@ -2751,7 +2790,7 @@ void JZAgentCliServer::onApiProjects(JZHttpServerClient *client, const JZHttpReq
     }
     if (m_selfAgent)
     {
-        Agg &g = aggs[m_config.selfAgent.agentId];
+        Agg &g = aggs[m_config.selfAgentId];
         g.online = true;
         g.rootDir = m_selfAgent->config().rootDir;
     }
@@ -3014,7 +3053,7 @@ void JZAgentCliServer::servePage(JZHttpServerClient *client, const JZHttpRequest
 // ---------------------------------------------------------------------------
 bool JZAgentCliServer::isSelfAgentId(const string &id) const
 {
-    return m_selfAgent && !m_config.selfAgent.agentId.empty() && id == m_config.selfAgent.agentId;
+    return m_selfAgent && !m_config.selfAgentId.empty() && id == m_config.selfAgentId;
 }
 
 int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *waiter,
@@ -3044,6 +3083,11 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         return 400;
     }
 
+    // 网页「模型」选择: 只对这一条任务生效(cli/内置 agent 都只认各自配置里已有的名字)
+    string wantModel;
+    if (body.isMember("modelName") && body["modelName"].isString())
+        wantModel = body["modelName"].asString();
+
     Json::Value cliBody(Json::objectValue);
     cliBody["prompt"] = prompt;
     // ⚠ 以前这里只搬了 prompt/verify_cmd 等字段, images 被**静默丢掉** —— 网页传了图、cli 也支持,
@@ -3051,6 +3095,8 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
     if (!images.isNull())
         cliBody["images"] = images;
     cliBody["verify_cmd"] = body.get("verifyCmd", "").asString();
+    if (!wantModel.empty())
+        cliBody["modelName"] = wantModel;
     cliBody["use_memory"] = false;
     if (body.isMember("verifyTimeout"))   cliBody["verify_timeout"] = body["verifyTimeout"];
     if (body.isMember("maxVerifyRounds")) cliBody["max_verify_rounds"] = body["maxVerifyRounds"];
@@ -3132,6 +3178,19 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
                 ack["error"] = error;
                 return 409;
             }
+        }
+
+        // 模型切换同理: 只认 selfAgent.models 里配过的名字, 不改 url/token
+        if (!wantModel.empty())
+        {
+            string modelError;
+            if (!m_selfAgent->setModel(wantModel, modelError))
+            {
+                error = modelError;
+                ack["error"] = error;
+                return 400;
+            }
+            m_config.selfAgent.selectedModel = wantModel;   // 信息面板显示当前生效的模型
         }
 
         if (contRec)

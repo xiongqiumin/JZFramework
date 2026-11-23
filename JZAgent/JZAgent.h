@@ -343,7 +343,7 @@ public:
 
     void addSkill(const SkillDefine& tool);
     const SkillDefine* skill(const std::string& name);
-    // 已加载的 skill 名(项目 .jzagent/skills + 旧 skills/ + 全局), 供卡片/排障展示
+    // 已加载的 skill 名(项目 .jzagent/skills + 全局 .jzagent/skills), 供卡片/排障展示
     std::vector<std::string> skillNames() const;
     JZResult<SkillDefine> loadSkill(std::string skill_name, const std::string& skill_path);
 

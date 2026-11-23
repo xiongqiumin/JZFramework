@@ -395,26 +395,33 @@ void JZVirtualTerminalConfig::applyProfile(PermissionProfile p)
     switch (p)
     {
     case PermissionProfile::Strict:
-        // 白名单口径: 只有登记过的程序能跑; 不联网、不装依赖
-        allowUnknownPrograms = false;
-        allowPackageManager  = false;
-        allowNetwork         = false;
+        // 白名单口径: 只有登记过的程序能跑; 不联网、不装依赖;
+        // 程序名/区外路径必须静态可审, 审不出或区外一律拒。
+        allowUnknownPrograms   = false;
+        allowPackageManager    = false;
+        allowNetwork           = false;
+        denyUnresolvedProgram  = true;
+        denyOutsideProgram     = true;
         break;
 
     case PermissionProfile::Loose:
         // 默认口径 + 允许装/卸依赖; 授信目录也可写
-        trustedAccess        = FileAccess::All;
-        allowUnknownPrograms = true;
-        allowPackageManager  = true;
-        allowNetwork         = true;
+        trustedAccess         = FileAccess::All;
+        allowUnknownPrograms  = true;
+        allowPackageManager   = true;
+        allowNetwork          = true;
+        denyUnresolvedProgram = false;
+        denyOutsideProgram    = false;
         break;
 
     case PermissionProfile::Standard:
     default:
         // 黑名单口径: 未登记命令放行; 联网放行; 装/卸依赖仍拒
-        allowUnknownPrograms = true;
-        allowPackageManager  = false;
-        allowNetwork         = true;
+        allowUnknownPrograms  = true;
+        allowPackageManager   = false;
+        allowNetwork          = true;
+        denyUnresolvedProgram = false;
+        denyOutsideProgram    = false;
         break;
     }
 }

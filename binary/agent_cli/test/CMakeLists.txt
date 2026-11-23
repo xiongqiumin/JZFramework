@@ -74,6 +74,17 @@ add_test(NAME agent_cli.task_cancel
 set_tests_properties(agent_cli.task_cancel PROPERTIES
                      TIMEOUT 120 LABELS "agent_cli" RUN_SERIAL TRUE)
 
+#   test_task_event_refresh.py —— fake LLM 连续发 60 轮 terminal_run, 让任务在 WORKING 态
+#       产生 >90 条事件, 列表页 30 条封顶后旧前端签名(events.length)会卡住。
+#       断言 eventSeq 继续增长而旧签名不变, 防止把 eventSeq 从 renderTask 签名里删掉。
+#           ctest -C Release -R agent_cli.task_event_refresh --output-on-failure
+add_test(NAME agent_cli.task_event_refresh
+         COMMAND ${JZ_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_task_event_refresh.py
+                 --agent-cli $<TARGET_FILE:agent_cli>
+                 --agent-server $<TARGET_FILE:agent_cli_server>)
+set_tests_properties(agent_cli.task_event_refresh PROPERTIES
+                     TIMEOUT 180 LABELS "agent_cli" RUN_SERIAL TRUE)
+
 # ⛔ 2026-11-13 移除两个 ctest 用例(脚本保留, 可手动跑): 断言停在旧模型, 全量重构后一直红。
 #   test_a2a_flow.py    —— 断言旧 webui 文案("Agent 台账")和已删除的 /new 页;
 #   test_server_tasks.py —— 断言 managed 任务"异步超时 -> FAILED", 现在 mock 会正常 COMPLETED。

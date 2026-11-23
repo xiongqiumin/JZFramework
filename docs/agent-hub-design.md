@@ -202,7 +202,7 @@ void JZAgentHubPacketInit();   // 两边启动时各调一次（在 JZNetPackIni
 | server→cli | `taskSubmit` | `taskId` + `/task` 的全部字段（JSON 字符串） | 语义与 `POST /task` **完全一致**，cli 直接复用 `submitTask()` |
 | server→cli | `taskCancel` | `taskId` | 只取消**指定**任务（排队或在跑）；取消全部用 `reset{scope:"task"}` |
 | server→cli | `reset` | `scope`（`task` / `history`） | `task` = 取消全部任务；`history` = 只清对话历史 |
-| cli→server | `taskEvent` | `taskId, type, data` | **`type` 直接复用现有 SSE 的取值**：`thinking/reply/tool_call/tool_result/verify/error/task_start/task_end` |
+| cli→server | `taskEvent` | `taskId, type, data` | **`type` 直接复用现有 SSE 的取值**：`thinking/reply/tool_call/tool_result/verify/error/context_compress/context_history/task_start/task_end` |
 | cli→server | `taskEnd` | `taskId, result`（JSON） | 一次任务一次，务必送达（见 §5.3） |
 
 **不做第二套事件语义**：模型在干什么（think / tool_call / verify）这套词已经在 SSE 里定死了，

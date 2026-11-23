@@ -1023,6 +1023,14 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
     if (type == HubPack_taskEvent)
     {
         JZHubPackTaskEvent *ev = (JZHubPackTaskEvent *)pack.get();
+        if (ev->type == "context_history")
+        {
+            // 模型上下文增量: 只更新 ctx 文件, 不进 Task.events/SSE 过程流。
+            Json::Value msg;
+            if (parseJsonText(ev->data, msg))
+                applyContextMessage(ev->taskId, msg);
+            return;
+        }
         agent.lastEventType = ev->type;
         agent.lastEventData = ev->data;
         recordEvent(ev->taskId, ev->type, ev->data);   // A2A: 事件进 Task.events + SSE 广播
@@ -1042,16 +1050,9 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
             result["status"] = "failed";
             result["error"] = "cli 返回的任务结果不是合法 JSON";
         }
-        // 先落记录: 即使提交方早就断了(超时/异步模式), 历史也要留全
+        // 先落记录: 即使提交方早就断了(超时/异步模式), 历史也要留全。
+        // 上下文已由 context_history 增量落盘, task_end 不再带全量 context。
         recordEnd(end->taskId, result);
-
-        // 续会话: cli 把这一轮的对话快照带回来了, 按会话存一份(同一 contextId 覆盖)
-        if (result.isMember("context"))
-        {
-            TaskRecord *rr = findTask(end->taskId);
-            if (rr)
-                saveContextFile(rr->contextId, result["context"]);
-        }
 
         auto pit = m_pendingTasks.find(end->taskId);
         if (pit == m_pendingTasks.end())
@@ -1483,9 +1484,48 @@ void JZAgentCliServer::loadTaskStore()
         r.artifacts = stringsFromJson(j.get("artifacts", Json::Value(Json::arrayValue)));
         r.history = stringsFromJson(j.get("history", Json::Value(Json::arrayValue)));
         r.eventSeq = meta.get("eventSeq", (int)r.events.size()).asInt();
+
+        const bool wasWorking = isWorkingState(r.state);
+        // 服务重启会丢掉在途工具回包: 只修复仍在工作态的任务, 给未配对的 tool_call
+        // 在内存里补一个明确的中断结果(不回写 tasks.jsonl, 避免加载时 O(n^2) 膨胀)。
+        if (wasWorking)
+        {
+            vector<string> snapshot = r.events, doneIds;
+            for (const string &es : snapshot)
+            {
+                Json::Value ev;
+                if (!parseJsonText(es, ev) || ev.get("type", "").asString() != "tool_result")
+                    continue;
+                Json::Value d = ev.get("data", Json::Value(Json::objectValue));
+                const string id = d.isObject() ? d.get("id", "").asString() : string();
+                if (!id.empty())
+                    doneIds.push_back(id);
+            }
+            for (const string &es : snapshot)
+            {
+                Json::Value ev;
+                if (!parseJsonText(es, ev) || ev.get("type", "").asString() != "tool_call")
+                    continue;
+                Json::Value d = ev.get("data", Json::Value(Json::objectValue));
+                const string id = d.isObject() ? d.get("id", "").asString() : string();
+                if (!id.empty() && std::find(doneIds.begin(), doneIds.end(), id) != doneIds.end())
+                    continue;
+                Json::Value result(Json::objectValue);
+                if (!id.empty())
+                    result["id"] = id;
+                result["ok"] = false;
+                result["result"] = "中断：服务重启，工具结果未知";
+                result["interrupted"] = true;
+                result["reason"] = "server_restart";
+                appendTaskEvent(&r, "tool_result", result);
+                if (!id.empty())
+                    doneIds.push_back(id);
+            }
+        }
+
         if (m_tasks.find(r.taskId) == m_tasks.end())
             m_taskOrder.push_back(r.taskId);
-        if (isWorkingState(r.state))
+        if (wasWorking)
         {
             // 上次进程没等到回包就退出了: 结果不可知(不能假装还在跑)
             r.state = kStateUnknown;
@@ -1555,6 +1595,42 @@ Json::Value JZAgentCliServer::loadContextFile(const string &contextId) const
     return j;
 }
 
+void JZAgentCliServer::applyContextMessage(const string &taskId, const Json::Value &msg)
+{
+    TaskRecord *r = findTask(taskId);
+    if (!r || r->contextId.empty() || !msg.isObject() || m_ctxDir.empty())
+        return;
+
+    const string &id = r->contextId;
+    Json::Value ctx;
+    auto it = m_contextCache.find(id);
+    if (it != m_contextCache.end())
+        ctx = it->second;
+    else
+        ctx = loadContextFile(id);
+    if (!ctx.isObject())
+        ctx = Json::Value(Json::objectValue);
+    if (!ctx.isMember("history") || !ctx["history"].isArray())
+        ctx["history"] = Json::Value(Json::arrayValue);
+    if (!ctx.isMember("usage") || !ctx["usage"].isObject())
+    {
+        ctx["usage"] = Json::Value(Json::objectValue);
+        ctx["usage"]["prompt_tokens"] = 0;
+        ctx["usage"]["completion_tokens"] = 0;
+        ctx["usage"]["total_tokens"] = 0;
+        ctx["usage"]["cached_tokens"] = 0;
+    }
+
+    // 压缩摘要 = 清空旧历史后只剩这一条; 其余消息按序 append。
+    Json::Value &hist = ctx["history"];
+    if (msg.get("kind", "").asString() == "summary")
+        hist = Json::Value(Json::arrayValue);
+    hist.append(msg);
+
+    saveContextFile(id, ctx);
+    m_contextCache[id] = ctx;
+}
+
 void JZAgentCliServer::dropContextIfUnused(const string &contextId)
 {
     if (contextId.empty())
@@ -1562,6 +1638,7 @@ void JZAgentCliServer::dropContextIfUnused(const string &contextId)
     for (const auto &kv : m_tasks)
         if (kv.second.contextId == contextId)
             return;      // 这条会话还有任务, 上下文留着
+    m_contextCache.erase(contextId);
     JZDir().remove(contextFile(contextId));
 }
 
@@ -3127,9 +3204,18 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
             return 400;
         }
         if (isWorkingState(contRec->state) ||
+            contRec->state == kStateUnknown ||
             m_pendingTasks.find(contId) != m_pendingTasks.end())
         {
-            error = "任务 " + contId + " 还在执行, 等它结束再接着说";
+            error = "任务 " + contId + " 还在执行或结果未知, 不能接着说";
+            ack["error"] = error;
+            return 409;
+        }
+        // 续聊上下文以 ctx 文件为准: 没有就没法真正接着聊, 不要静默当新会话跑。
+        Json::Value savedCtx = loadContextFile(contRec->contextId);
+        if (!savedCtx.isObject() || !savedCtx["history"].isArray() || savedCtx["history"].empty())
+        {
+            error = "任务 " + contId + " 没有可继续的上下文";
             ack["error"] = error;
             return 409;
         }
@@ -3286,6 +3372,14 @@ int JZAgentCliServer::submitTaskForTool(const Json::Value &body, Json::Value &ac
 // 内置 agent 的事件流: done = 收口(落记录 + 回等待方), 其余只更新"最近事件"
 void JZAgentCliServer::onSelfAgentEvent(const JZServerAgentEvent &ev)
 {
+    if (ev.type == "context_history")
+    {
+        Json::Value msg;
+        if (parseJsonText(ev.data, msg))
+            applyContextMessage(ev.taskId, msg);
+        return;
+    }
+
     if (ev.type == "done")
     {
         Json::Value result;
@@ -3296,13 +3390,7 @@ void JZAgentCliServer::onSelfAgentEvent(const JZServerAgentEvent &ev)
             result["error"] = "内置 agent 的结果不是合法 JSON";
         }
         result["taskId"] = Json::Value(ev.taskId);
-        // 这一轮的对话快照覆盖写进 ctx/<contextId>.json: 同一会话的下一条任务据此续聊。
-        // (只留最新一份, 所以不会随任务数膨胀)
-        if (m_selfAgent)
-        {
-            if (TaskRecord *tr = findTask(ev.taskId))
-                saveContextFile(tr->contextId, m_selfAgent->lastContextJson());
-        }
+        // 上下文已由 context_history 增量落盘; done 只负责收尾。
         recordEnd(ev.taskId, result);
 
         auto pit = m_pendingTasks.find(ev.taskId);

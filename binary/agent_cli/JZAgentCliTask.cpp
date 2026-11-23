@@ -288,6 +288,8 @@ bool JZAgentCliTask::init(const JZCliConfig &config, std::string &error)
     connect(&m_agent->sigToolResult, this, &JZAgentCliTask::onToolResult);
     connect(&m_agent->sigError, this, &JZAgentCliTask::onError);
     connect(&m_agent->sigFinished, this, &JZAgentCliTask::onFinished);
+    connect(&m_agent->sigContextCompress, this, &JZAgentCliTask::onContextCompress);
+    connect(&m_agent->sigLLMHistory, this, &JZAgentCliTask::onLLMHistory);
 
     setupAgent();
     const std::string sysPrompt = buildSystemPrompt();
@@ -1505,16 +1507,8 @@ void JZAgentCliTask::respondTask(const std::string &status, int rounds, const st
     JZAgent *a = agent();
     if (a && a->context())
     {
-        const auto &u = a->context()->usage;
-        Json::Value usage(Json::objectValue);
-        usage["prompt_tokens"] = u.prompt_tokens;
-        usage["completion_tokens"] = u.completion_tokens;
-        usage["total_tokens"] = u.total_tokens;
-        usage["cached_tokens"] = u.cached_tokens;
-        usage["prompt_ms"] = u.prompt_ms;
-        usage["pred_ms"] = u.predicted_ms;
-        usage["draft_tokens"] = u.draft_tokens;
-        usage["draft_accepted_tokens"] = u.draft_accepted_tokens;
+        // 最后一次压缩之后的快照；压缩前用量已在 context_compress 事件里落盘。
+        Json::Value usage = a->context()->usage.toJson();
         // 与"计费总量"不同口径: windowTokens() = 最后一轮实际会发出的上下文
         usage["context_tokens"] = a->windowTokens();
         r["usage"] = usage;
@@ -1528,14 +1522,7 @@ void JZAgentCliTask::respondTask(const std::string &status, int rounds, const st
     m_hasLastResult = true;
     finishHistory(status, rounds, reply, verifyOut, err, r["usage"]);   // 归档进"最近任务"
 
-    // 回包带上这一轮的对话快照: 只走回包, **不进 task_end 事件流** ——
-    // 事件会被记进 tasks.jsonl(有 200 条上限), 塞快照就把过程挤没了。
-    if (m_agent)
-    {
-        LLMContext ctx = m_agent->saveContext();
-        if (!ctx.history.empty())
-            r["context"] = ctx.toJson();
-    }
+    // 对话快照不再走 task_end: 已由 sigLLMHistory 的 context_history 增量交给 server。
 
     if (!m_respond)   // 客户端已断开 / 不应回包
         return;
@@ -1747,6 +1734,20 @@ void JZAgentCliTask::onError(const std::string &err)
     d["retry_mode"] = (mode == RetryFix) ? "fix" : (mode == RetryTransient ? "continue" : "none");
     d["retryable"] = retryable;          // 还会自动重试吗(网页据此提示"将自动重试")
     pushEvent("error", d);
+}
+
+void JZAgentCliTask::onContextCompress(const JZAgentTokenUsage &u)
+{
+    // 压缩前用量单独落一条事件；task_end 的 usage 只记压缩后的那一段。
+    pushEvent("context_compress", u.toJson());
+}
+
+void JZAgentCliTask::onLLMHistory(std::shared_ptr<LLMHistory> h)
+{
+    if (!h)
+        return;
+    // 只推给 server 维护 ctx 文件, 不进网页过程流(由 onHubPackTaskEvent 分流)。
+    pushEvent("context_history", h->toJson());
 }
 
 void JZAgentCliTask::onFinished()

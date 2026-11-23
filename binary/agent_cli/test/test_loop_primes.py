@@ -204,10 +204,9 @@ def write_config(path: str, ws: str, python_exe: str, url: str, name: str, token
         "agentName": "agent_cli_loop_test",
         "logFile": "",
         "llm": {
-            "models": [{"name": name, "url": url, "token": token}],
+            "models": [{"name": name, "url": url, "token": token, "contextWindow": 160000}],
             "netTimeoutMs": 120000,
             "maxRounds": 40,
-            "contextWindow": 160000,
             "maxTokens": 4096,
             "maxRetries": 3,
             "maxFixRetries": 2,

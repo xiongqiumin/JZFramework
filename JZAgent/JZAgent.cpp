@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <algorithm>
+#include <set>
 #include <sstream>
 
 #include "JZApplication.h"
@@ -129,7 +130,7 @@ static std::string makeImageDataUrl(const JZByteArray &image_base64)
 JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
     sigReply(this), sigThinking(this), sigToolCall(this), sigToolResult(this)
     , sigFinished(this), sigError(this)
-    , sigLLMHistory(this)
+    , sigLLMHistory(this), sigContextCompress(this)
 {
     m_net = new JZNetworkAccessManager(this);
     m_llmReply = nullptr;
@@ -869,6 +870,21 @@ void LLMHistory::parseKind(const Json::Value& root)
     kind = root.get("auto_added", false).asBool() ? Summary : Message;
 }
 
+Json::Value JZAgentTokenUsage::toJson() const
+{
+    Json::Value u(Json::objectValue);
+    u["prompt_tokens"] = prompt_tokens;
+    u["completion_tokens"] = completion_tokens;
+    u["total_tokens"] = total_tokens;
+    u["cached_tokens"] = cached_tokens;
+    u["prompt_ms"] = prompt_ms;
+    u["predicted_ms"] = predicted_ms;
+    u["pred_ms"] = predicted_ms;          // 兼容已有的 task_end 字段名
+    u["draft_tokens"] = draft_tokens;
+    u["draft_accepted_tokens"] = draft_accepted_tokens;
+    return u;
+}
+
 Json::Value LLMHistory::toJson() const
 {
     Json::Value history_msg;
@@ -952,10 +968,14 @@ bool LLMHistory::fromJson(const Json::Value& root)
         }
     }
 
-    if (root.isMember("tool_response_id"))
+    // 与 toJson() 对齐: 历史存档写的是 tool_call_id / tool_calls;
+    // 老字段 tool_response_id / tool_request 仍兼容读入。
+    if (root.isMember("tool_call_id"))
+        toolResponseId = root["tool_call_id"].asString();
+    else if (root.isMember("tool_response_id"))
         toolResponseId = root["tool_response_id"].asString();
 
-    const Json::Value& tools = root["tool_request"];
+    const Json::Value &tools = root.isMember("tool_calls") ? root["tool_calls"] : root["tool_request"];
     if (tools.isArray())
     {
         for (const auto& t : tools)
@@ -1231,11 +1251,32 @@ void JZAgent::onToolCallResult(const ToolCallResult &response)
     // 这个结果是上一轮的尾巴(工具晚回来/被 cancel 时的回调), 丢弃 —— 入队会驱动
     // llmLoop 把已经结束的对话重新跑起来。
     if (m_errorCode != AgentError::None)
+    {
+        m_pendingToolRound.reset();
         return;
+    }
 
     // 循环检测: 命中即 llmError 中止本轮, 不把结果再喂回去(否则又驱动下一轮)
     if (checkToolLoop(response.id, response.result))
+    {
+        m_pendingToolRound.reset();
         return;
+    }
+
+    // 暂存为历史消息, 等这一轮所有工具结果到齐后和 assistant 一起入 history。
+    auto toolMsg = std::make_shared<LLMHistory>();
+    toolMsg->role = LLMHistory::Tool;
+    toolMsg->content = response.result;
+    toolMsg->toolResponseId = response.id;
+    if (m_pendingToolRound)
+    {
+        auto it = m_pendingToolRound->indexById.find(response.id);
+        if (it == m_pendingToolRound->indexById.end() && response.id.empty()
+                && m_pendingToolRound->results.size() == 1)
+            it = m_pendingToolRound->indexById.begin();
+        if (it != m_pendingToolRound->indexById.end() && it->second < m_pendingToolRound->results.size())
+            m_pendingToolRound->results[it->second] = toolMsg;
+    }
 
     JZAgentRequestPtr req = makeAgentParam(JZAgentRequest::ToolCallResultPrompt);
     req->toolCallResult = response;
@@ -1297,6 +1338,7 @@ void JZAgent::llmError(AgentError error, std::string error_string)
         m_error = error_string;
         sigError.emit(error_string);
 
+        m_pendingToolRound.reset();          // assistant 还没入 history, 整批丢弃即可
         trimIncompleteHistory(m_context);   // 出错后裁掉不自洽的末尾, 避免下次把坏历史发出去
         llmEnd();
     }
@@ -1338,6 +1380,7 @@ void JZAgent::llmEnd()
     m_loopDetector.reset();
     m_textLoop.reset();
     m_pendingCalls.clear();
+    m_pendingToolRound.reset();
 
     m_state = State::Idle;
     sigFinished.emit();
@@ -1435,12 +1478,22 @@ void JZAgent::finalizeResponse()
     auto reply = m_replyHistory;
     if (!reply->toolRequest.empty())
     {
-        // assistant 消息只入历史一次，所有 tool_calls 复用同一条
-        m_context.history.push_back(reply);
-        m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
-        sigLLMHistory.emit(reply);   // 增量通知(先于 processToolCall, 与历史顺序一致)
+        // assistant 先暂存, 不进 history: 带 tool_calls 的 assistant 必须和它的
+        // tool result 一起成为一条完整对话, 不能留下"工具还没跑完"的中间态。
+        auto batch = std::make_shared<PendingToolRound>();
+        batch->assistant = reply;
+        batch->results.resize(reply->toolRequest.size());
+        for (size_t i = 0; i < reply->toolRequest.size(); ++i)
+        {
+            if (reply->toolRequest[i].id.empty())
+                reply->toolRequest[i].id = "#" + std::to_string(i);
+            batch->indexById[reply->toolRequest[i].id] = i;
+        }
+        m_pendingToolRound = batch;
         for (auto& call : reply->toolRequest)
             processToolCall(call);
+        // 工具可能全部同步失败/返回; 交给 llmLoop 统一 flush, 避免重入。
+        JZTimer::singleShot(0, this, [this]{ llmLoop(); });
     }
     else
     {
@@ -1545,6 +1598,11 @@ void JZAgent::onCompressFinished()
     sum->role = LLMHistory::User;
     sum->content = summary;
     sum->kind = LLMHistory::Summary;   // 内部摘要: 不进界面, 但同样是新的上下文起点
+
+    // 清空 history 前把压缩前用量快照发出去: task_end 里的 usage 只是压缩后的那一段,
+    // 计费侧把本事件与终态 usage 相加才是整任务用量。
+    sigContextCompress.emit(m_context.usage);
+
     hist.clear();
     hist.push_back(sum);    
 
@@ -1572,6 +1630,24 @@ void JZAgent::llmLoop()
     // 压缩请求在途，等 onCompressFinished 重新驱动 llmLoop，期间不重入
     if (m_compressReply)
         return;
+
+    // 上一轮 assistant(tool_calls) 的所有 tool result 已到齐: 整批入 history。
+    // 这样 history 里不会留下"工具还没跑完"的 assistant 中间态。
+    std::set<std::string> flushedToolIds;
+    if (m_pendingToolRound && m_pendingToolRound->complete())
+    {
+        auto batch = m_pendingToolRound;
+        m_context.history.push_back(batch->assistant);
+        sigLLMHistory.emit(batch->assistant);
+        for (const auto &r : batch->results)
+        {
+            m_context.history.push_back(r);
+            flushedToolIds.insert(r->toolResponseId);
+            sigLLMHistory.emit(r);
+        }
+        m_context.recalcUsage();
+        m_pendingToolRound.reset();
+    }
 
     // 预算按"实际发给模型"的活跃窗口(token 用量来自窗口内消息)判定,
     // 而非完整存档(完整存档含被压缩的旧消息, 不发给模型)。
@@ -1638,6 +1714,8 @@ void JZAgent::llmLoop()
             }
             else if (req->type == JZAgentRequest::ToolCallResultPrompt)
             {
+                if (flushedToolIds.count(req->toolCallResult.id))
+                    continue;   // 已随 assistant 整批入 history, 这里只用于驱动下一轮
                 chat->role = LLMHistory::Tool;
                 chat->content = req->toolCallResult.result;
                 chat->toolResponseId = req->toolCallResult.id;

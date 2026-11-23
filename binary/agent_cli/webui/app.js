@@ -20,6 +20,8 @@
 const PAGE = document.body.dataset.page || 'agents';
 const api = (p) => '/api/' + p;
 const QS = new URLSearchParams(location.search);
+// URL 里的这个哨兵表示"当前是新建任务态", 刷新/窗口隐藏恢复都不能被历史任务顶掉。
+const NEW_TASK_MARK = '__new__';
 // 手机壳 mobile.html 带 .is-mobile; 桌面 index.html / tasks.html 不带。
 // 手机分支只加行为, 数据与渲染函数仍是同一套。
 const IS_MOBILE = document.body.classList.contains('is-mobile');
@@ -38,7 +40,7 @@ const S = {
   UNSPECIFIED: 'TASK_STATE_UNSPECIFIED'
 };
 const STATE_LABEL = {
-  TASK_STATE_SUBMITTED: '已提交', TASK_STATE_WORKING: '执行中',
+  TASK_STATE_SUBMITTED: '排队中', TASK_STATE_WORKING: '执行中',
   TASK_STATE_COMPLETED: '已完成', TASK_STATE_FAILED: '失败',
   TASK_STATE_CANCELED: '已取消', TASK_STATE_REJECTED: '已拒绝',
   TASK_STATE_INPUT_REQUIRED: '需要补充输入', TASK_STATE_AUTH_REQUIRED: '需要认证',
@@ -221,6 +223,22 @@ const taskEvents = (t) => {
   const older = id ? AG_OLDER[id] : null;
   return older ? older.events.concat(base) : base;
 };
+/* 列表项标题用会话第一条用户指令: metadata.prompt 在续说时会被覆盖成最后一句。
+   history[0] 列表接口就带; events 只作旧数据兜底(列表只回最近 30 条)。 */
+function taskListPrompt(t) {
+  const history = (t && t.history) || [];
+  for (const m of history) {
+    if (!m || (m.role !== 'ROLE_USER' && m.role !== 'user')) continue;
+    const text = String(partText(m.parts) || '').trim();
+    if (text) return text;
+  }
+  for (const e of taskEvents(t)) {
+    if (!e || e.type !== 'user_msg') continue;
+    const text = String(stepText(e) || '').trim();
+    if (text) return text;
+  }
+  return taskPrompt(t);
+}
 /* 还有多少条更早的事件没加载(0 = 到头了) */
 function olderLeft(t) {
   const id = taskId(t);
@@ -253,8 +271,21 @@ function taskCostLast(t) {
 function taskUsage(t) {
   const u = (meta(t) || {}).usage || {};
   const num = k => Number(u[k]) || 0;
-  return { prompt: num('prompt_tokens'), completion: num('completion_tokens'),
-           total: num('total_tokens'), cached: num('cached_tokens'),
+  // 终态 usage 只是最后一次压缩之后的快照; 压缩前用量在 context_compress 事件里。
+  const parseEv = v => {
+    if (typeof v !== 'string') return v;
+    try { return JSON.parse(v); } catch (e) { return null; }
+  };
+  const compressed = k => (taskEvents(t) || []).reduce((sum, raw) => {
+    const e = parseEv(raw);
+    if (!e || e.type !== 'context_compress') return sum;
+    const d = parseEv(e.data) || {};
+    return sum + (Number(d[k]) || 0);
+  }, 0);
+  return { prompt: num('prompt_tokens') + compressed('prompt_tokens'),
+           completion: num('completion_tokens') + compressed('completion_tokens'),
+           total: num('total_tokens') + compressed('total_tokens'),
+           cached: num('cached_tokens') + compressed('cached_tokens'),
            context: num('context_tokens') };   // 最后一轮实际上下文(windowTokens), 与计费总量不同口径
 }
 function fmtCount(n) {
@@ -498,12 +529,9 @@ function dropTasks(ids) {
   const gone = {};
   ids.forEach(id => { gone[id] = 1; delete AG_OLDER[id]; });
   AG.tasks = AG.tasks.filter(t => !gone[taskId(t)]);
-  if (gone[AG.sel]) { AG.sel = ''; AG.sig = ''; }
+  if (gone[AG.sel]) { AG.sel = ''; AG.sig = ''; syncTaskUrl(NEW_TASK_MARK); }
   renderSide(); renderHead(); renderTask(true, 'top');
   if (document.getElementById('fPrompt')) syncComposer();   // 删的正是那条在跑的: 输入框要立刻解锁
-  const url = new URL(location.href);
-  if (!AG.sel) url.searchParams.delete('task');
-  history.replaceState(null, '', url);
 }
 
 /* ============================ /  Agent 列表 ============================ */
@@ -562,7 +590,8 @@ const AG = {
   id: '', kind: '', info: null, card: null, sel: '',
   tasks: [], es: null, watchId: '', poll: 0, sig: null, openMap: {},
   busy: false, termTimer: 0,
-  ctx: ''            // 当前要接续的会话 id(选中历史任务时从它身上取; '' = 新会话)
+  ctx: '',           // 当前要接续的会话 id(选中历史任务时从它身上取; '' = 新会话)
+  newTask: QS.get('task') === NEW_TASK_MARK  // 当前停留在"新建任务"态
 };
 
 const STEP_LABEL = {
@@ -770,7 +799,7 @@ function sideTime(t) {
 }
 function sideItemHtml(t) {
   const rounds = taskRounds(t);
-  const prompt = taskPrompt(t) || '（空指令）';
+  const prompt = taskListPrompt(t) || '（空指令）';
   // 条目只占一行: 状态看圆点, 细节放 tooltip(执行中不报耗时, 同卡片)
   const cost = isRunning(t) ? '' : taskCost(t);
   const tip = prompt + '\n' + stateText(t)
@@ -825,6 +854,38 @@ function renderSide() {
       : '还没有任务';
   }
 }
+/* URL 与 QS 同步: QS 是启动快照, history.replaceState 后必须手动跟。 */
+function syncTaskUrl(id) {
+  const url = new URL(location.href);
+  if (id === NEW_TASK_MARK) {
+    QS.set('task', NEW_TASK_MARK);
+    url.searchParams.set('task', NEW_TASK_MARK);
+    AG.newTask = true;
+  } else if (id) {
+    QS.set('task', id);
+    url.searchParams.set('task', id);
+    AG.newTask = false;
+  } else {
+    QS.delete('task');
+    url.searchParams.delete('task');
+    AG.newTask = false;
+  }
+  history.replaceState(null, '', url);
+}
+/* 新建任务态: 清选中 + 用哨兵占住 URL, 刷新/隐藏恢复都不会被历史任务顶掉。 */
+function startNewTask() {
+  AG.sel = '';
+  AG.sig = null;
+  adoptContext('');
+  renderSide();
+  renderTask(true, '');
+  syncTaskUrl(NEW_TASK_MARK);
+  const box = document.getElementById('thread');
+  if (box) box.scrollTop = box.scrollHeight;
+  const prompt = document.getElementById('fPrompt');
+  if (prompt) prompt.focus();
+  closeNav();
+}
 /* 点左栏某条: 右栏切成那个任务队列(它自己的多轮对话) */
 function selectTask(id, scroll) {
   AG.sel = id;
@@ -833,10 +894,7 @@ function selectTask(id, scroll) {
   renderSide();
   renderTask(true, scroll ? 'bottom' : '');
   if (scroll) activateTab('chat');
-  // 地址栏同步, 刷新/分享能回到同一个任务
-  const url = new URL(location.href);
-  if (id) url.searchParams.set('task', id); else url.searchParams.delete('task');
-  history.replaceState(null, '', url);
+  syncTaskUrl(id);
   closeNav();
 }
 // 抽屉只属于桌面/平板侧栏; 手机端是 L1/L2 两级页面, 不用 is-nav
@@ -866,7 +924,9 @@ function renderTask(force, scrollMode) {
   if (!box) return;
   const t = AG.tasks.filter(x => taskId(x) === AG.sel)[0];
   const sig = t
-    ? `${taskId(t)}:${stateOf(t)}:${taskEvents(t).length}:${replyText(t).length}:${verifyText(t).length}`
+    // eventSeq 必须进签名: 列表每任务只回最近 30 条, 事件变多后 length 会卡在 30,
+    // 但 seq 一直在涨 —— 不带它这里会一直 early-return, 页面看着像停止推送。
+    ? `${taskId(t)}:${stateOf(t)}:${meta(t).eventSeq || 0}:${taskEvents(t).length}:${replyText(t).length}:${verifyText(t).length}`
     : 'none';
   if (!force && sig === AG.sig) return;
   AG.sig = sig;
@@ -1333,26 +1393,33 @@ async function loadTasks(fresh) {
     // 切换工作区 = 新会话: 不把上一条任务捡回来(否则聊天区还是旧目录的对话)
     AG.sel = '';
     AG.sig = null;
+    syncTaskUrl(NEW_TASK_MARK);
   } else if (AG.sel && !AG.tasks.some(t => taskId(t) === AG.sel)) {
     AG.sel = '';
   }
 
   let scrollMode = '';
-  const want = fresh ? '' : QS.get('task');   // 深链: ?id=..&task=..
-  if (!AG.sel && want && AG.tasks.some(t => taskId(t) === want)) {
-    AG.sel = want;
+  // 新建任务态: 窗口隐藏恢复 / 定时刷新 / 刷新页面都不能把历史任务捡回来。
+  if (AG.newTask || QS.get('task') === NEW_TASK_MARK) {
+    AG.sel = '';
     AG.sig = null;
-    scrollMode = 'bottom';
-  }
-  if (!fresh && !AG.sel && AG.tasks.length) {
-    // 默认选中: 有在跑的选它, 否则选最新的那条
-    const newest = (a, b) => (meta(b).startMs || 0) - (meta(a).startMs || 0);
-    const run = AG.tasks.filter(isRunning).sort(newest)[0];
-    const pick = run || AG.tasks.slice().sort(newest)[0];
-    AG.sel = taskId(pick);
-    AG.sig = null;
-    adoptContext(AG.sel);
-    scrollMode = 'bottom';
+  } else {
+    const want = QS.get('task');   // 深链: ?id=..&task=..
+    if (!AG.sel && want && AG.tasks.some(t => taskId(t) === want)) {
+      AG.sel = want;
+      AG.sig = null;
+      scrollMode = 'bottom';
+    }
+    if (!AG.sel && AG.tasks.length) {
+      // 默认选中: 有在跑的选它, 否则选最新的那条
+      const newest = (a, b) => (meta(b).startMs || 0) - (meta(a).startMs || 0);
+      const run = AG.tasks.filter(isRunning).sort(newest)[0];
+      const pick = run || AG.tasks.slice().sort(newest)[0];
+      AG.sel = taskId(pick);
+      AG.sig = null;
+      adoptContext(AG.sel);
+      scrollMode = 'bottom';
+    }
   }
 
   renderHead(); renderTask(false, scrollMode); renderSide(); syncComposer();
@@ -1412,6 +1479,9 @@ function openEvents() {
   EVT.addEventListener('hello', (e) => {
     evtBeat();
     try { onAgentsFrame(JSON.parse(e.data)); } catch (_) { /* 忽略 */ }
+    // 重连后的 hello 只带 agent 快照; 顺手补一次任务拉取, 否则断线期间的事件
+    // 要等到下一次 task 帧或 5s 轮询才出现。
+    scheduleTasksRefresh();
   });
   EVT.addEventListener('agents', (e) => {
     evtBeat();
@@ -1547,7 +1617,7 @@ async function doSend() {
   if (SUBMIT_LOCK) return;
   SUBMIT_LOCK = true;
   ta.disabled = true; document.getElementById('btnSend').disabled = true;
-  msg.dataset.blocked = ''; msg.textContent = '已提交，等待 agent 接单…';
+  msg.dataset.blocked = ''; msg.textContent = '已排队，等待 agent 接单…';
 
   const ctxKey = 'jz.ctx.' + AG.id;
   // ⚠ 一定要 try/finally: 以前网络一抖(fetch 抛错), SUBMIT_LOCK 和"发送"按钮就永远回不来
@@ -1601,11 +1671,10 @@ async function doSend() {
 /* ---- 模型选择 ----
    默认模型来自 /api/agent 的 info.modelName; 候选来自 info.modelList(llm.models)。
    选中的名字只存本机并发在每条任务上, 不改 agent 进程配置, 也不传 token。
-   上下文窗口: info.modelWindows 按模型名给, 没给就用 info.contextWindow。 */
+   上下文窗口(info.modelWindows)只给任务卡片圆环用, 不在下拉里显示; 每个模型各自配, 无全局默认。 */
 function modelContextWindow(name) {
   const info = AG.info || {};
-  const byModel = Number((info.modelWindows || {})[name || ''] || 0) || 0;
-  return byModel || Number(info.contextWindow) || 0;
+  return Number((info.modelWindows || {})[name || ''] || 0) || 0;
 }
 function selectedModel() { return lsGet(MODEL_KEY).trim(); }
 function modelOptions() {
@@ -1633,19 +1702,15 @@ function renderModel() {
   const saved = selectedModel();
   const def = (AG.info && AG.info.modelName) || '';
   const picked = saved || def;
-  const win = modelContextWindow(picked);
-  label.textContent = (picked || '默认模型') + (win ? ' · ' + fmtCount(win) : '');
-  label.title = (saved ? ('本次任务: ' + saved) : (def ? ('默认: ' + def) : '未配置模型'))
-    + (win ? ' · 上下文窗口 ' + win + ' tok' : '');
+  label.textContent = picked || '默认模型';
+  label.title = saved ? ('本次任务: ' + saved) : (def ? ('默认: ' + def) : '未配置模型');
   const menu = document.getElementById('modelMenu');
   if (!menu) return;
   const item = (name, text) => '<button type="button" class="model-item'
     + (name === saved ? ' is-on' : '') + '" data-model="' + esc(name) + '" role="menuitem">'
     + esc(text) + (name === saved ? '<span class="model-item__on">✓</span>' : '') + '</button>';
-  const withWin = n => n + (modelContextWindow(n) ? ' · ' + fmtCount(modelContextWindow(n)) : '');
-  const defWin = modelContextWindow(def);
-  menu.innerHTML = item('', '默认（跟随配置）' + (defWin ? ' · ' + fmtCount(defWin) : ''))
-    + modelOptions().map(n => item(n, withWin(n))).join('');
+  menu.innerHTML = item('', '默认（跟随配置）')
+    + modelOptions().map(n => item(n, n)).join('');
   menu.querySelectorAll('.model-item').forEach((b) => {
     b.onclick = () => chooseModel(b.dataset.model || '');
   });
@@ -2109,12 +2174,7 @@ function initChatPage() {
     activateTab('chat');
     AG.ctx = '';                       // 新建 = 另起会话, 不接上一条
     lsSet('jz.ctx.' + AG.id, '');
-    selectTask('', false);
-    const box = document.getElementById('thread');
-    if (box) box.scrollTop = box.scrollHeight;
-    const t = document.getElementById('fPrompt');
-    if (t) t.focus();
-    closeNav();
+    startNewTask();
   };
   const btnSide = document.getElementById('btnSide');
   if (btnSide) btnSide.onclick = openNav;
@@ -2641,7 +2701,7 @@ function taskRows(list) {
       <td data-label="耗时" class="hide-sm">${taskCost(t)}</td>
       <td data-label="Token / 缓存" class="hide-sm">${esc(taskUsageText(t))}</td>
       <td data-label="提交时间" class="hide-sm">${fmtTime(meta(t).startMs)}</td>
-      <td data-label="指令" style="color:var(--jz-muted);font-size:var(--jz-fs-1)">${esc(taskPrompt(t).slice(0, 60))}</td>
+      <td data-label="指令" style="color:var(--jz-muted);font-size:var(--jz-fs-1)">${esc(taskListPrompt(t).slice(0, 60))}</td>
       <td data-label="操作"><button class="jz-btn jz-btn--sm jz-btn--ghost" type="button" data-del="${esc(taskId(t))}"
         title="${isRunning(t) ? '取消并删除' : '删除记录'}">删除</button></td>
     </tr>`).join('');

@@ -59,27 +59,26 @@ struct JZCliServerLinkConfig
 //   空闲超过这个秒数就回收(0 = 立即回收)。动态创建在 HTTP / hub 提交时进行。
 struct JZCliTaskConfig
 {
-    int queues = 1;
+    int queues = 4;
     int maxPending = 32;
     int keepAlive = 1;
     int idleRecycleSec = 60;
 };
 
-// 一个可选模型 = 名称 + 自己的端点 + 可选 token + 可选上下文窗口。
+// 一个可选模型 = 名称 + 自己的端点 + 可选 token + 必填上下文窗口。
 struct JZCliModelEntry
 {
     std::string name;
     std::string url;
     std::string token;
-    int contextWindow = 0;   // 0 = 用 model.contextWindow
+    int contextWindow = 0;   // 必填正整数, 不提供全局默认值
 };
 
 // llm.* 里只留模型候选与共用请求参数; 默认模型 = models 第一项。
-// contextWindow 必配, 默认 160000; 不再有单独的"上下文预算"字段。
+// 上下文窗口由每个模型自己配, 没有 llm.contextWindow 兜底。
 struct JZCliModelConfig
 {
     std::vector<JZCliModelEntry> models;
-    int contextWindow = 160000;
     int netTimeout = 120 * 1000;
     ThinkMode thinkMode = ThinkMode::Auto;
     Json::Value extraBody;
@@ -107,7 +106,7 @@ struct JZCliModelConfig
     int windowFor(const std::string &modelName) const
     {
         const JZCliModelEntry *m = find(modelName);
-        return (m && m->contextWindow > 0) ? m->contextWindow : contextWindow;
+        return m ? m->contextWindow : 0;
     }
 };
 
@@ -339,6 +338,8 @@ protected:
     void onToolResult(const ToolCallResult &result);
     void onError(const std::string &err);
     void onFinished();
+    void onContextCompress(const JZAgentTokenUsage &u);
+    void onLLMHistory(std::shared_ptr<LLMHistory> h);
 
     // 出错自动重试
     enum RetryMode { RetryNone = 0, RetryTransient = 1, RetryFix = 2 };

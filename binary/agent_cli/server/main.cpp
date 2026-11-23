@@ -308,13 +308,11 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
         // 保留内置 agent 原来的缺省值(与独立 cli 的 JZCliConfig 默认值不同)
         config.selfAgent.model.netTimeout = 120000;
         config.selfAgent.maxRounds = 40;
-        config.selfAgent.model.contextWindow = 100000;
 
         Json::Value cliRoot(Json::objectValue);
         if (self->isMember("models"))      cliRoot["llm"]["models"] = (*self)["models"];
         if (self->isMember("netTimeout"))  cliRoot["llm"]["netTimeoutMs"] = (*self)["netTimeout"];
         if (self->isMember("maxRounds"))   cliRoot["llm"]["maxRounds"] = (*self)["maxRounds"];
-        if (self->isMember("contextWindow")) cliRoot["llm"]["contextWindow"] = (*self)["contextWindow"];
         if (self->isMember("rootDir"))     cliRoot["terminal"]["rootDir"] = (*self)["rootDir"];
         if (self->isMember("systemExtra")) cliRoot["system"]["extra"] = (*self)["systemExtra"];
         if (self->isMember("skillsDir"))   cliRoot["skillsDir"] = (*self)["skillsDir"];

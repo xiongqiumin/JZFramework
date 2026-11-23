@@ -63,8 +63,6 @@ public:
     // 空 = 新会话。
     void submit(const std::string &taskId, const std::string &prompt, const std::string &verifyCmd,
                 const Json::Value &ctxJson = Json::Value());
-    // 上一轮结束时的对话快照: server 在 done 时存进任务记录(续会话靠它, 本类不缓存)
-    const Json::Value &lastContextJson() const { return m_lastCtxJson; }
     // 已加载的 skill 名(项目 .jzagent/skills + 全局 ~/.jzagent/skills)
     std::vector<std::string> skillNames() const;
     void cancel();
@@ -79,6 +77,8 @@ private:
     void onToolResult(const struct ToolCallResult &res);
     void onError(const std::string &err);
     void onFinished();
+    void onContextCompress(const JZAgentTokenUsage &u);
+    void onLLMHistory(std::shared_ptr<LLMHistory> h);
     void emitEvent(const std::string &type, const std::string &data);
     std::string buildSystemPrompt() const;
     // 按当前 m_cfg 建 agent/终端/工具/提示词(init 与切换目录共用)
@@ -92,7 +92,6 @@ private:
 
     bool m_busy = false;
     bool m_everRan = false;     // 第二次任务前要 reset(仅 Idle 允许)
-    Json::Value m_lastCtxJson;  // 上一轮结束时的对话快照(存档由任务记录负责, 这里只留最近一份)
     bool m_failed = false;
     bool m_cancelled = false;
     int m_round = 0;

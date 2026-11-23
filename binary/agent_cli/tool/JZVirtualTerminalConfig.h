@@ -79,8 +79,9 @@ enum Flags
 // zoneCheckAccess / checkCriticalFloor)永远只看字段, 不看档位 —— 所以加档位/改档位
 // 只动 applyProfile 一张表, 不必改判定逻辑。
 //
-//   严格 strict   : 只跑登记过的命令(白名单口径) + 区外只读 + 禁联网 + 禁装依赖
-//   默认 standard : 未登记命令放行(黑名单口径) + 区外只读 + 允许联网 + 禁装依赖
+//   严格 strict   : 只跑登记过的命令(白名单口径) + 区外程序/变量程序名拒绝 + 禁联网 + 禁装依赖
+//   默认 standard : 未登记命令放行(黑名单口径) + 区外程序与变量程序名放行(只审能确定的)
+//                   + 允许联网 + 禁装依赖
 //   宽松 loose    : 默认 + 允许装/卸依赖(授信目录也可写)
 //
 // 三档共同的"安全底线"(与档位无关, 没有开关): 提权 / 改账号 / 改系统设置 /
@@ -121,6 +122,10 @@ struct JZVirtualTerminalConfig
     bool allowUnknownPrograms = true;
     bool allowPackageManager = false;   // 默认关: 安装/升级/卸载依赖一律拒绝(程序本身可用)
     bool allowNetwork = true;           // 默认开: 下载/联网本身不改环境, 放行
+    // 严格档才拦"审不出实际程序名"和"按路径跑区外程序"; 默认/宽松只审能确定的。
+    // 安全底线(提权/格式化/关机/删区外文件)仍三档一致, 不受这两项影响。
+    bool denyUnresolvedProgram = false;
+    bool denyOutsideProgram = false;
     // ⚠ 危险指令(dd / mkfs / sudo / shutdown ...)与改系统设置的命令(SystemAdmin)
     //   一律拒绝, 不提供开关。
 

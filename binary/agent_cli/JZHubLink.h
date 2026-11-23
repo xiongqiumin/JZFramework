@@ -36,7 +36,7 @@ public:
         std::string rootDir;
         std::string project;      // 项目名(一个 cli 一个 project)
         std::string modelName;
-        int contextWindow = 160000;   // 当前模型的上下文窗口(必配)
+        int contextWindow = 0;        // 当前模型的上下文窗口(cli 从模型配置上报)
         std::string modelWindows;     // 各模型窗口 JSON 对象字符串
         std::string host;         // server 地址
         int port = 8090;

@@ -42,6 +42,7 @@ public:
     int draft_tokens = 0;           // 投机采样/MTP 草稿 token 数(llama.cpp draft_n)
     int draft_accepted_tokens = 0;  // 投机采样/MTP 被接受数(llama.cpp draft_n_accepted)
 
+    Json::Value toJson() const;     // 任务回包/压缩事件的统一形状
     bool hasTimings() const
     {
         return prompt_ms > 0 || predicted_ms > 0 || draft_tokens > 0;
@@ -76,7 +77,7 @@ public:
 };
 
 // 历史消息：承载角色、内容、工具请求/返回等全部负载
-class LLMHistory
+class JZFRAMEWORK_API LLMHistory
 {
 public:
     enum Role
@@ -140,8 +141,9 @@ struct JZFRAMEWORK_API LLMContext
     void recalcUsage();
 
     std::vector<std::shared_ptr<LLMHistory>> history;
-    // 会话累计消耗 = Σ history[i].usage（计费口径；同一段历史会在每一轮的 prompt 里各计一次，
-    // **不是**当前上下文大小 —— 要上下文大小用 JZAgent::windowTokens()）。
+    // Σ history[i].usage：压缩前的用量由 JZAgent::sigContextCompress 事件落盘，
+    // task_end 里的 usage 只是最后一次压缩之后的快照。两者相加才是整任务用量。
+    // 这不是当前上下文大小（用 JZAgent::windowTokens()）。
     JZAgentTokenUsage usage;
 };
 
@@ -362,6 +364,7 @@ jz_signals:
     JZSigString sigError;
     JZSigVoid   sigFinished;
     JZSignal<std::shared_ptr<LLMHistory>> sigLLMHistory;
+    JZSignal<const JZAgentTokenUsage&> sigContextCompress;  // 压缩前用量快照(清空 history 前发)
 
 protected:
     struct LLMRequstInfo
@@ -485,6 +488,25 @@ protected:
         std::string args;
     };
     std::map<std::string, PendingCall> m_pendingCalls;
+
+    // assistant(tool_calls) 先暂存, 等所有 tool result 到齐再整批入 history ——
+    // history 里不允许出现"带未执行工具调用的 assistant"这种中间态。
+    struct PendingToolRound
+    {
+        std::shared_ptr<LLMHistory> assistant;
+        std::vector<std::shared_ptr<LLMHistory>> results;  // 按 tool_calls 顺序
+        std::map<std::string, size_t> indexById;
+        bool complete() const
+        {
+            if (!assistant)
+                return false;
+            for (const auto &r : results)
+                if (!r)
+                    return false;
+            return true;
+        }
+    };
+    std::shared_ptr<PendingToolRound> m_pendingToolRound;
     JZToolLoopDetector m_loopDetector;
     JZTextLoopDetector m_textLoop;    // 思考/回复文本的循环检测
 };

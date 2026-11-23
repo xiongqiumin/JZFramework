@@ -413,6 +413,8 @@ bool JZServerAgent::build(string &error)
     connect(&m_agent->sigToolResult, this, &JZServerAgent::onToolResult);
     connect(&m_agent->sigError, this, &JZServerAgent::onError);
     connect(&m_agent->sigFinished, this, &JZServerAgent::onFinished);
+    connect(&m_agent->sigContextCompress, this, &JZServerAgent::onContextCompress);
+    connect(&m_agent->sigLLMHistory, this, &JZServerAgent::onLLMHistory);
 
     // 本机执行面(池: 每次 terminal_run 借一台, 并发调用各占一台)
     m_termPool = new JZTerminalPool(8);
@@ -549,6 +551,18 @@ void JZServerAgent::onError(const string &err)
     emitEvent("error", Json::Value(err).toStyledString());
 }
 
+void JZServerAgent::onContextCompress(const JZAgentTokenUsage &u)
+{
+    // 与 cli 一致: 压缩前用量单独落事件, task_end 里只放压缩后的快照。
+    emitEvent("context_compress", u.toJson().toStyledString());
+}
+
+void JZServerAgent::onLLMHistory(std::shared_ptr<LLMHistory> h)
+{
+    if (h)
+        emitEvent("context_history", h->toJson().toStyledString());
+}
+
 void JZServerAgent::onFinished()
 {
     if (!m_busy)
@@ -566,19 +580,11 @@ void JZServerAgent::onFinished()
     // 与 cli 的 task_end 同一形状: 网页任务卡片据此显示 token / 缓存命中
     if (m_agent && m_agent->context())
     {
-        const auto &u = m_agent->context()->usage;
-        Json::Value usage(Json::objectValue);
-        usage["prompt_tokens"] = u.prompt_tokens;
-        usage["completion_tokens"] = u.completion_tokens;
-        usage["total_tokens"] = u.total_tokens;
-        usage["cached_tokens"] = u.cached_tokens;
+        // 最后一次压缩之后的快照；压缩前用量已在 context_compress 事件里落盘。
+        Json::Value usage = m_agent->context()->usage.toJson();
         usage["context_tokens"] = m_agent->windowTokens();
         r["usage"] = usage;
     }
-
-    // 这一轮的对话快照交给 server 存进任务记录(和历史记录放一起), 本类不缓存、不淘汰。
-    if (m_agent)
-        m_lastCtxJson = m_agent->saveContext().toJson();
 
     m_busy = false;
     emitEvent("done", r.toStyledString());

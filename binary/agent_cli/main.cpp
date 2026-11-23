@@ -62,7 +62,6 @@ static const char *kDefaultConfigJson = R"json({
         "models":           [],
         "netTimeoutMs":     120000,
         "maxRounds":        100,
-        "contextWindow":    160000,
         "maxTokens":        8192,
         "maxRetries":       10,
         "maxFixRetries":    2,
@@ -136,7 +135,7 @@ static const char *kDefaultConfigJson = R"json({
     },
 
     "task": {
-        "queues":           1,
+        "queues":           4,
         "maxPending":       32
     },
 

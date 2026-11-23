@@ -501,7 +501,10 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
                 }
             }
 
-            if (cmd.programExpanded)
+            // 程序名带变量/通配符: 严格档拒; 默认/宽松档"审不出就放行" ——
+            // 后面的静态程序检查(白名单/区域/后缀)都基于展开结果, 这时不可信, 直接跳过。
+            const bool unresolvedProgram = cmd.programExpanded;
+            if (unresolvedProgram && cfg.denyUnresolvedProgram)
             {
                 Verdict v;
                 v.decision = Decision::Deny;
@@ -548,8 +551,17 @@ bool JZVirtualTerminal::startRun(const string &command, int timeoutMs, const Run
             }
 
             // 带上参数审: 光看程序名不够 —— `python -c ...`、`git -C ...`、`rm -rf /`
-            // 这些危险都藏在参数里
-            Verdict v = checkExec(head, cmd.argv, base);
+            // 这些危险都藏在参数里。程序名审不出时跳过(上面已按档位决定放行/拒绝)。
+            Verdict v;
+            if (unresolvedProgram)
+            {
+                v.decision = Decision::Allow;
+                v.detail = "程序名带变量/通配符展开, 非严格档不静态审程序";
+            }
+            else
+            {
+                v = checkExec(head, cmd.argv, base);
+            }
             audit("exec", v, head);
             if (!v.allowed())
             {

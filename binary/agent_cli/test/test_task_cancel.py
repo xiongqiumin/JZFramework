@@ -88,7 +88,8 @@ def run_case(agent_cli: str, queues: int, root: str) -> None:
     write_json(cfg, {
         "agentName": "agent_cli",
         "logFile": fwd(os.path.join(logs, "agent_cli.log")),
-        "llm": {"models": [{"name": "mock", "url": model_url, "token": ""}],
+        "llm": {"models": [{"name": "mock", "url": model_url, "token": "",
+                             "contextWindow": 160000}],
                 "maxRounds": 10, "netTimeoutMs": 60000},
         "verify": {"maxRounds": 1, "timeoutMs": 30000},
         "task": {"queues": queues, "maxPending": 8},
@@ -214,7 +215,8 @@ def run_remote_case(agent_cli: str, agent_node: str, root: str) -> None:
     })
     write_json(cfg_cli, {
         "agentName": "agent_cli", "logFile": fwd(os.path.join(logs, "cli.log")),
-        "llm": {"models": [{"name": "mock", "url": model_url}], "maxRounds": 5, "maxRetries": 0},
+        "llm": {"models": [{"name": "mock", "url": model_url, "contextWindow": 160000}],
+                "maxRounds": 5, "maxRetries": 0},
         "task": {"queues": 1, "maxPending": 2},
         "terminal": {"rootDir": fwd(ws_cli), "allowTerminal": True, "allowFileTools": True},
         "network": {"enabled": False},

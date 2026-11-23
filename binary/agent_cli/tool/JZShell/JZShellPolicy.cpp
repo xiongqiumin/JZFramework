@@ -229,22 +229,27 @@ JZShellPolicy::Verdict JZShellPolicy::checkExec(const string &program,
         string p = toSlash(program);
         bool isAbs = (!p.empty() && p[0] == '/') || (p.size() > 1 && p[1] == ':');
         string abs = codeNormalizePath(isAbs ? p : (cwd + "/" + p));
-        // 工作区/授信目录里的程序默认可执行(编译产物 ./app、SDK 里的工具);
-        // 区外程序不许直接按路径跑 —— 要走白名单(白名单里的 g++ 之类不受此限)
+        // 工作区/授信目录里的程序默认可执行(编译产物 ./app、SDK 里的工具)。
+        // 区外路径程序: 严格档拒绝; 默认/宽松档放行 —— 只审能确定的、能审的,
+        // 安全底线(提权/格式化/删区外文件等)在调用方另行无条件检查。
         string execError;
         if (!zoneCheckAccess(m_config, abs, FileAccess::Exec, execError))
         {
-            v.decision = Decision::Deny;
-            v.reason = DenyReason::ProgramDenied;
-            v.detail = execError;
-            return v;
+            Zone z = zoneOfPath(m_config.zone, zoneCheckPath(abs));
+            if (z != Zone::Outside || m_config.denyOutsideProgram)
+            {
+                v.decision = Decision::Deny;
+                v.reason = DenyReason::ProgramDenied;
+                v.detail = execError;
+                return v;
+            }
         }
 
         // 不在审核阶段检查目标是否存在: 编译产物(./app)往往由同一条链路里的前序命令
         // 生成(如 `g++ -o hello hello.cpp && ./hello`), 静态审核时它还不存在, 预先判
         // "不存在"会把合理的 build+run 整条拦掉。路径合法(区域允许执行)即放行,
         // 目标不存在时由 OS 在执行期报 "No such file" —— 与普通 shell 行为一致, 也不削弱
-        // 安全(真正的边界是上面的 zoneCheckAccess: 区外程序一律拒绝)。
+        // 安全(真正的边界是上面的 zoneCheckAccess: 严格档区外程序拒绝)。
         // 仅对"已存在但后缀不对"的可执行(Windows)做后缀拦截; 缺失文件跳过(运行时再说)。
 #ifdef WIN32
         JZFileInfo info(abs);

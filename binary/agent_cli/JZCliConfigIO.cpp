@@ -50,7 +50,7 @@ string jzCliGlobalSkillsDir(const JZCliConfig &config)
     return dir;
 }
 
-// 模型上下文窗口: llm.models 同名项 > llm.contextWindow(必配, 默认 160000)。
+// 模型上下文窗口: 只取 llm.models 同名项的 contextWindow(每个模型必填)。
 int jzCliContextWindow(const JZCliConfig &config, const string &modelName)
 {
     return config.model.windowFor(modelName);
@@ -204,13 +204,13 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
     cfg.str("agentName", config.agentName);
     cfg.str("version", config.version);
 
-    // llm.models 是唯一模型来源: 每项必须给 name + url, token 可空, contextWindow 可省。
-    // 默认模型 = 第一项; 网页只拿名字与窗口, 不输出 token。
+    // llm.models 是唯一模型来源: 每项必须给 name + url + contextWindow, token 可空。
+    // 没有全局 contextWindow 兜底; 默认模型 = 第一项; 网页只拿名字与窗口, 不输出 token。
     {
         const Json::Value *models = findConfigMember(root, "llm", "models");
         if (!models || !models->isArray() || models->empty())
         {
-            error = "llm.models 必须是非空数组, 每项至少含 name 和 url";
+            error = "llm.models 必须是非空数组, 每项至少含 name、url 和 contextWindow";
             return false;
         }
         for (Json::ArrayIndex i = 0; i < models->size(); ++i)
@@ -226,17 +226,13 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
             entry.url = str_trimmed(m.get("url", "").asString());
             if (m.isMember("token") && m["token"].isString())
                 entry.token = str_trimmed(m["token"].asString());
-            if (m.isMember("contextWindow"))
+            const Json::Value &cw = m["contextWindow"];
+            if (!cw.isInt() || cw.asInt() <= 0)
             {
-                const Json::Value &cw = m["contextWindow"];
-                if (cw.isInt() && cw.asInt() > 0)
-                    entry.contextWindow = cw.asInt();
-                else
-                {
-                    error = "llm.models[" + std::to_string((int)i) + "].contextWindow 必须是正整数";
-                    return false;
-                }
+                error = "llm.models[" + std::to_string((int)i) + "].contextWindow 必须是正整数(每个模型必填)";
+                return false;
             }
+            entry.contextWindow = cw.asInt();
             if (entry.name.empty() || entry.url.empty())
             {
                 error = "llm.models[" + std::to_string((int)i) + "] 的 name 和 url 都不能为空";
@@ -250,8 +246,7 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
                 exists = true;
                 old.url = entry.url;
                 old.token = entry.token;
-                if (entry.contextWindow > 0)
-                    old.contextWindow = entry.contextWindow;
+                old.contextWindow = entry.contextWindow;
                 break;
             }
             if (!exists)
@@ -261,12 +256,6 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
     }
     cfg.i32("llm.netTimeoutMs", config.model.netTimeout);
     cfg.i32("llm.maxRounds", config.maxRounds);
-    cfg.i32("llm.contextWindow", config.model.contextWindow);
-    if (config.model.contextWindow <= 0)
-    {
-        error = "llm.contextWindow 必须是正整数";
-        return false;
-    }
     cfg.i32("llm.maxRetries", config.maxRetries);
     cfg.i32("llm.maxFixRetries", config.maxFixRetries);
     cfg.i32("llm.retryDelayMs", config.retryDelayMs);
@@ -308,7 +297,7 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
     if (body && body->isObject())
         config.model.extraBody = *body;
     // 模板里的 llm.maxTokens = OpenAI 输出 token 上限; 经 extraBody 通道发送, 与
-    // llm.contextWindow(整个上下文窗口)不是一回事。llm.body.max_tokens 显式配置优先。
+    // 模型的 contextWindow(整个上下文窗口)不是一回事。llm.body.max_tokens 显式配置优先。
     const Json::Value *maxTokens = findConfigMember(root, "llm", "maxTokens");
     if (maxTokens && maxTokens->isInt() && !config.model.extraBody.isMember("max_tokens"))
         config.model.extraBody["max_tokens"] = *maxTokens;
@@ -546,7 +535,7 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
     cfg.i32("task.keepAlive", config.task.keepAlive);
     cfg.i32("task.idleRecycleSec", config.task.idleRecycleSec);
     if (config.task.queues < 1)
-        config.task.queues = 1;
+        config.task.queues = 4;
     if (config.task.queues > 32)
     {
         jzWarning() << "task.queues 过大(>32), 已按 32 处理";

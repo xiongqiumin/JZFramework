@@ -18,7 +18,7 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, std::string 
 std::string jzCliMemoryFilePath(const JZCliConfig &config);
 // 全局 skills 根: 归一到 <...>/.jzagent(配置给父目录就补 .jzagent)。
 std::string jzCliGlobalSkillsDir(const JZCliConfig &config);
-// 模型上下文窗口: llm.models 同名项 > llm.contextWindow(必配, 默认 160000)。
+// 模型上下文窗口: 只取 llm.models 同名项的 contextWindow(每个模型必填, 无全局默认值)。
 int jzCliContextWindow(const JZCliConfig &config, const std::string &modelName);
 
 #endif

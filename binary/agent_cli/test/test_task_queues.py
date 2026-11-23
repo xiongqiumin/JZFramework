@@ -125,7 +125,8 @@ def main(argv=None) -> int:
     write_json(cfg, {
         "agentName": "agent_cli",
         "logFile": fwd(os.path.join(logs, "agent_cli.log")),
-        "llm": {"models": [{"name": "mock", "url": model_url, "token": ""}],
+        "llm": {"models": [{"name": "mock", "url": model_url, "token": "",
+                             "contextWindow": 160000}],
                 "maxRounds": 10, "netTimeoutMs": 60000},
         "verify": {"maxRounds": 1, "timeoutMs": 30000},
         "task": {"queues": args.queues, "maxPending": 8},

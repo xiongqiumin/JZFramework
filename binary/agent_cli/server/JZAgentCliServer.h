@@ -107,7 +107,7 @@ struct JZCliServerOnlineAgent
     std::string rootDir;
     std::string project;       // 项目名(cli 上报): 一个 cli 一个 project
     std::string modelName;
-    int contextWindow = 160000;   // 当前模型上下文窗口(cli 上报)
+    int contextWindow = 0;        // 当前模型上下文窗口(cli 上报)
     std::string modelWindows;     // 各模型窗口 JSON 对象字符串(cli 上报)
     std::string nodes;         // 节点清单 JSON 数组字符串(cli 上报)
     bool busy = false;
@@ -404,9 +404,12 @@ private:
     // 为什么不塞进任务记录: 同一会话链第 N 条再把前 N 轮存一遍 → tasks.jsonl 涨成 O(n²);
     // 而且续聊只需要"这条会话当前的状态", 不需要任意回溯某条历史任务。
     std::string m_ctxDir;                    // <exeDir>/data/ctx
+    std::map<std::string, Json::Value> m_contextCache;
     std::string contextFile(const std::string &contextId) const;
     void saveContextFile(const std::string &contextId, const Json::Value &ctx);
     Json::Value loadContextFile(const std::string &contextId) const;   // 没有 → null
+    // cli/内置 agent 推来的单条 LLMHistory: 按任务所属会话 append, Summary=reset+append。
+    void applyContextMessage(const std::string &taskId, const Json::Value &msg);
     void dropContextIfUnused(const std::string &contextId);            // 这条会话的任务全删了才清文件
     // origin 留空 = 不过滤; "user" = 只要人下发的
     Json::Value tasksJson(const std::string &agentId, const std::string &state, int limit,

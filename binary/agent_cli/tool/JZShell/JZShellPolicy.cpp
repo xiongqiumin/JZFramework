@@ -646,8 +646,10 @@ void JZShellPolicy::buildDefaultPrograms()
     addProgram("size", { "size" }, CmdCategory::Tool);
     addProgram("tsc", { "tsc.exe", "tsc" }, CmdCategory::Tool);
     addProgram("node", { "node.exe", "node" }, CmdCategory::Tool);
+    // python/python3 不限制参数: `python3 -c "..."` 是日常排查/验证的常用写法(模型也一直在用),
+    // 拦掉它只会让模型反复重试同一条命令。仍然挡 `-m pip`(装依赖 = 改环境)。
     addProgram("python", { "python.exe", "python", "python3" }, CmdCategory::Tool,
-               { "-c" }, { "pip" });
+               {}, { "pip" });
 
     // ---- 包管理: 程序本身可用, 只拦"装/卸/升级/发布"这些改环境的子命令 ----
     // 统一子命令表: 命中即拒。`npm run build` / `pip list` / `cargo test` 照常放行。

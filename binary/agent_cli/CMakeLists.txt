@@ -71,6 +71,16 @@ add_custom_command(TARGET agent_cli POST_BUILD
         $<TARGET_FILE_DIR:agent_cli>/webui/ui
     COMMENT "copy shared web ui (web/ui -> webui/ui)")
 
+# 预压缩静态资源: JZHttpStaticFiles 检测到 <file>.gz 且客户端接受 gzip 时直接发。
+# 只处理构建输出目录; 没有 Python 时跳过, 不影响主构建。
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_command(TARGET agent_cli POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} ${JZFRAMEWORK_ROOT_DIR}/cmake/precompress_static.py
+            $<TARGET_FILE_DIR:agent_cli>/webui
+        COMMENT "precompress agent_cli web assets (gzip)")
+endif()
+
 # 测试用的大模型接入配置: 测试脚本**不写死**任何端点, 一律读 exe 同目录的 test_llm.json。
 # 这里只是"没有就铺一份样例"(见 cmake/copy_if_absent.cmake); 已存在的不覆盖 ——
 # 换端点改的是 exe 目录那份, 不是仓库里的模板(test/test_llm.json)。

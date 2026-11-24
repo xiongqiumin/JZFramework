@@ -7,8 +7,6 @@
 #include "JZDataStream.h"
 
 #define PACK_HEAD 0xAA
-#define MG_RECV_BUFFER_SIZE (4 * 1024)
-#define MG_MAX_PACK_SIZE    (256 * 1024)
 
 enum {
     NetPack_none,

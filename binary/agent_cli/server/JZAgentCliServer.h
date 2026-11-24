@@ -190,7 +190,7 @@ public:
     // 任务记录(server 侧历史, 落盘 tasks.jsonl)
     void onApiTaskList(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req);
-    // 往前翻一页事件("加载更多"): ?id=&before=<offset>&limit=
+    // 事件分页: ?id=&before=<offset> 往前翻(加载更多); ?id=&after=<seq> 往后增量。
     void onApiTaskEvents(JZHttpServerClient *client, const JZHttpRequest &req);
     // A2A: 订阅一个 Task 的状态/产物事件(SSE, 终态自动关流)
     // ⚠ 网页已改用下面的常连, 这个接口只为兼容外部调用方保留
@@ -276,6 +276,7 @@ private:
         int64_t startMs = 0;       // 墙上钟(展示用)
         int64_t lastEventMs = 0;   // tick 计数(比较用)
         int timeoutMs = 0;
+        std::string acceptEncoding;   // 异步回包按提交方的 Accept-Encoding 压缩
     };
 
     // ---- 网页长连接(下行): 每个页面**一条**, 从打开到关闭都不主动断 ----
@@ -299,11 +300,13 @@ private:
         JZHttpServerClient *client = nullptr;
         std::string kind;              // "json" = 结构化结果; "raw" = 文件原始字节
         int64_t deadline = 0;          // tick 计数, 超时回 504
+        std::string acceptEncoding;    // 异步回包按提交方的 Accept-Encoding 压缩
     };
     std::map<std::string, PendingFs> m_pendingFs;   // reqId -> 等待中的 HTTP 请求
     int m_fsSeq = 0;
     bool fsForward(const std::string &agentId, const std::string &op, const Json::Value &body,
-                   JZHttpServerClient *client, const std::string &kind, std::string &error);
+                   JZHttpServerClient *client, const std::string &kind, std::string &error,
+                   const std::string &acceptEncoding = std::string());
     // 决定这次文件操作在哪台机器上执行:
     //   0 = 本机(内置 agent / 没指定 agentId) —— 调用方继续本地执行
     //   1 = 已转给远端 cli, 等 fsRes 回包(调用方直接 return)
@@ -314,6 +317,8 @@ private:
     void reapStuckFs();
 
     JZNetServer *m_hub = nullptr;
+    // 控制面发包统一入口: 预检单包上限, 超限按现有机制断开该连接。
+    bool sendPack(uint64_t conn, const class JZNetPack *pack);
     std::map<uint64_t, JZCliServerOnlineAgent> m_onlineByConn;
     std::map<std::string, uint64_t> m_connByAgent;        // agentId -> conn
     std::map<std::string, PendingTask> m_pendingTasks;    // taskId -> 在跑任务(client 可空, 均有超时)
@@ -331,7 +336,8 @@ private:
     int submitTask(const Json::Value &body, JZHttpServerClient *waiter,
                    Json::Value &ack, std::string &error,
                    const std::string &origin = std::string("user"),
-                   const std::string &parentTaskId = std::string());
+                   const std::string &parentTaskId = std::string(),
+                   const std::string &acceptEncoding = std::string());
 
     // ---- 任务记录 ----
     // 归属(见 docs/agent-hub-design.md §10): **server 是任务历史的主人**, cli 只知道
@@ -377,7 +383,7 @@ private:
     void removeTaskStream(JZHttpServerClient *client);
     void dropTaskStreams(const std::string &taskId);   // 记录已删: 推 deleted 后关流
     void broadcastTaskEvent(const std::string &taskId, const std::string &event,
-                            const std::string &payload);
+                            const std::string &payload, int seq = 0);
     Json::Value agentCardJson(const std::string &agentId) const;
 
     void loadTaskStore();

@@ -66,15 +66,62 @@ void JZNetPacketProcessor::setPassword(std::string token, bool isClient)
     m_recvSeq = 0;
     m_buffer.clear();    // 丢弃握手阶段残留的明文, 避免切换到加密后误把明文当密文解析
     m_cipherBuf.clear();
+    m_receiveOverflow = false;
     m_cryptoOn = true;
+}
+
+// 缓冲区头部是否已经是一个完整包。用于区分"多个完整小包排队"和"一个坏包/超大包还没收全"。
+static bool frontPacketComplete(const JZByteArray &buf, bool crypto)
+{
+    const int maxPack = JZNetPackManager::maxPackSize();
+    if (maxPack <= 0)
+        return true;
+
+    if (crypto)
+    {
+        if (buf.size() < 4)
+            return false;
+        int32_t len = 0;
+        memcpy(&len, buf.data(), 4);
+        if (len < 0 || len > maxPack)
+            return false;
+        return buf.size() >= (size_t)(4 + len + 16);
+    }
+
+    const int minPackLen = 1 + 4 + 4;
+    if (buf.size() < (size_t)minPackLen)
+        return false;
+    const uint8_t *p = (const uint8_t *)buf.data();
+    if (p[0] != PACK_HEAD)
+        return false;
+    int32_t packetSize = 0;
+    memcpy(&packetSize, p + 1, sizeof(int32_t));
+    if (packetSize < minPackLen || packetSize > maxPack)
+        return false;
+    return buf.size() >= (size_t)packetSize;
 }
 
 void JZNetPacketProcessor::append(const char *buffer, int len)
 {
-    if (m_cryptoOn)
-        m_cipherBuf.append(buffer, len);   // 加密模式: 累积原始密文, 由 parse() 统一解密校验
-    else
-        m_buffer.append(buffer, len);      // 明文模式(握手 Hand/HandRes)
+    if (len <= 0 || m_receiveOverflow)
+        return;
+
+    JZByteArray &buf = m_cryptoOn ? m_cipherBuf : m_buffer;
+    buf.append(buffer, len);
+
+    // 一个完整包还没解出来, 缓冲就已经超过单包上限: 说明长度头/流已坏。
+    // 不再等它收全(可能永远收不全), 直接丢, 交给 parse() 返回失败并断开。
+    const int maxPack = JZNetPackManager::maxPackSize();
+    const size_t overhead = m_cryptoOn ? (4 + 16) : 0;   // 加密包: 长度前缀 + Poly1305 tag
+    if (maxPack > 0 && buf.size() > (size_t)maxPack + overhead &&
+        !frontPacketComplete(buf, m_cryptoOn))
+    {
+        LOG_FMT_W("recv buffer exceeded max pack size: %zu > %d (+%zu), drop\n",
+                  buf.size(), maxPack, overhead);
+        m_cipherBuf.clear();
+        m_buffer.clear();
+        m_receiveOverflow = true;
+    }
 }
 
 JZByteArray JZNetPacketProcessor::formatPacket(const JZNetPack *packet)
@@ -122,6 +169,7 @@ void JZNetPacketProcessor::clear()
 {
     m_buffer.clear();
     m_cipherBuf.clear();
+    m_receiveOverflow = false;
 }
 
 void JZNetPacketProcessor::resetCrypto()
@@ -130,6 +178,7 @@ void JZNetPacketProcessor::resetCrypto()
     m_sendSeq = 0;
     m_recvSeq = 0;
     m_cipherBuf.clear();
+    m_receiveOverflow = false;
 }
 
 JZNetPackPtr JZNetPacketProcessor::takePacket()
@@ -163,6 +212,15 @@ void JZNetPacketProcessor::clearPacket()
 
 bool JZNetPacketProcessor::parse()
 {
+    // append() 已经丢弃了"未解出完整包就超过单包上限"的坏缓冲; 这里报告失败, 由连接层断开。
+    if (m_receiveOverflow)
+    {
+        m_receiveOverflow = false;
+        m_cipherBuf.clear();
+        m_buffer.clear();
+        return false;
+    }
+
     // ---- 加密模式: 先从 m_cipherBuf 抽取完整密文包并解密(校验 tag)送入 m_buffer ----
     if (m_cryptoOn)
     {
@@ -206,7 +264,7 @@ bool JZNetPacketProcessor::parse()
     while (m_buffer.size() - buffer_start >= min_pack_len)
     {
         int start = buffer_start;
-        uint8_t head = *((uint8_t*)m_buffer.data());
+        uint8_t head = *((uint8_t*)m_buffer.data() + start);
         if(head != PACK_HEAD)
         {
             LOG_W("pack head error");
@@ -216,7 +274,7 @@ bool JZNetPacketProcessor::parse()
 
         int32_t packet_size;
         memcpy(&packet_size, m_buffer.data() + start + 1, sizeof(int32_t));   // 未对齐安全读取
-        if(packet_size < 0 || packet_size > JZNetPackManager::maxPackSize())
+        if(packet_size < min_pack_len || packet_size > JZNetPackManager::maxPackSize())
         {
             LOG_FMT_W("pack size error: %d (global limit %d)\n",
                       packet_size, JZNetPackManager::maxPackSize());

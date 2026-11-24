@@ -21,7 +21,7 @@ using namespace std;
 // 单次读文件的上限。工具自己还会按行裁剪, 这里只是避免把几百兆的东西读进内存。
 static const int kReadFileLimit = 8 * 1024 * 1024;
 
-// 一次 exec 回给 cli 的输出上限。协议单包上限是 256KB(MG_MAX_PACK_SIZE), 这里留出余量:
+// 一次 exec 回给 cli 的输出上限。协议单包上限默认 10MB(JZNetPackManager), 这里按原有小上限留余量:
 // 头尾各留一半 + 一行显式标记 —— 与 terminal 的"上下文阀"同一个思路(可恢复的截断,
 // 而不是静默丢内容)。
 static const size_t kMaxExecOutputBytes = 120 * 1024;

@@ -10,7 +10,7 @@
 
 using namespace std;
 
-// 事件单包上限: 远低于 MG_MAX_PACK_SIZE(256KB), 留出包头与 JSON 键名的余量。
+// 事件单包上限: 远低于 JZNetPackManager 默认单包上限(10MB), 留出包头与 JSON 键名的余量。
 // 超了不硬切(切坏 JSON 会让 server 侧解析失败), 换成一个说明性的小对象。
 static const size_t kMaxEventBytes = 96 * 1024;
 static const size_t kMaxResultBytes = 160 * 1024;
@@ -33,12 +33,21 @@ static string headBytes(const string &s, size_t n)
     return s.substr(0, n);
 }
 
-static string capPayload(const Json::Value &v, size_t maxBytes)
+static string capPayload(const Json::Value &v, size_t maxBytes, uint8_t &encoding)
 {
     string payload = stripNewline(Json::FastWriter().write(v));
+    encoding = 0;
+
+    // 工具输出/JSON 重复度高, 超过 4KB 就先压; 压后仍不超既有上限才用。
+    string zipped;
+    hubPackZipEncode(payload, zipped, encoding);
+    if (encoding == 1 && zipped.size() <= maxBytes)
+        return zipped;
+    encoding = 0;
     if (payload.size() <= maxBytes)
         return payload;
 
+    // 压不下来才退回说明性截断, 不硬切 JSON。
     Json::Value small(Json::objectValue);
     small["truncated"] = true;
     small["bytes"] = (Json::Int64)payload.size();
@@ -119,6 +128,20 @@ void JZHubLink::onDisconnected()
     scheduleReconnect();
 }
 
+bool JZHubLink::sendPack(const JZNetPack *pack)
+{
+    if (!m_client)
+        return false;
+    if (!hubPackSendable(pack))
+    {
+        jzWarning() << "控制面包超过单包上限, 断开连接(type=" << pack->packetType() << ")";
+        m_client->disconnectFromHost();
+        return false;
+    }
+    m_client->sendPacket(pack);
+    return true;
+}
+
 void JZHubLink::onPacket(JZNetPackPtr pack)
 {
     if (!pack)
@@ -157,8 +180,17 @@ void JZHubLink::onPacket(JZNetPackPtr pack)
     if (type == HubPack_taskSubmit)
     {
         JZHubPackTaskSubmit *in = (JZHubPackTaskSubmit *)pack.get();
+        string bodyText;
+        if (!hubPackZipDecode(in->body, in->encoding, bodyText))
+        {
+            Json::Value r;
+            r["status"] = "failed";
+            r["error"] = "taskSubmit body 解压失败";
+            sendTaskEnd(in->taskId, r);
+            return;
+        }
         Json::Value body;
-        if (!parseJson(in->body, body) || !body.isObject())
+        if (!parseJson(bodyText, body) || !body.isObject())
         {
             jzWarning().noquote().nospace() << "taskSubmit 的 body 不是 JSON 对象, 已丢弃";
             Json::Value r;
@@ -219,11 +251,17 @@ void JZHubLink::onPacket(JZNetPackPtr pack)
         res.reqId = in->reqId;
         res.ok = r.ok;
         res.error = r.error;
+        // 原始文件字节也走 zlib, 文本类文件压缩收益很大。
         res.body = r.body;
+        res.encoding = 0;
+        string wire;
+        hubPackZipEncode(r.body, wire, res.encoding);
+        if (res.encoding == 1)
+            res.body = wire;
         res.size = r.size;
         res.mtime = r.mtime;
         res.truncated = r.truncated;
-        m_client->sendPacket(&res);
+        sendPack(&res);
         return;
     }
 }
@@ -243,7 +281,7 @@ void JZHubLink::sendHello()
     hello.contextWindow = m_config.contextWindow;
     hello.modelWindows = m_config.modelWindows;
     hello.nodes = nodesJson();
-    m_client->sendPacket(&hello);
+    sendPack(&hello);
 }
 
 void JZHubLink::sendHeartbeat()
@@ -256,7 +294,7 @@ void JZHubLink::sendHeartbeat()
     hb.round = m_round;
     hb.taskId = m_taskId;
     hb.nodes = nodesJson();
-    m_client->sendPacket(&hb);
+    sendPack(&hb);
 }
 
 void JZHubLink::scheduleReconnect()
@@ -301,8 +339,8 @@ void JZHubLink::sendTaskEvent(const string &taskId, const string &type, const Js
     JZHubPackTaskEvent ev;
     ev.taskId = taskId;
     ev.type = type;
-    ev.data = capPayload(data, kMaxEventBytes);
-    m_client->sendPacket(&ev);
+    ev.data = capPayload(data, kMaxEventBytes, ev.encoding);
+    sendPack(&ev);
 }
 
 void JZHubLink::sendTaskEnd(const string &taskId, const Json::Value &result)
@@ -315,8 +353,8 @@ void JZHubLink::sendTaskEnd(const string &taskId, const Json::Value &result)
 
     JZHubPackTaskEnd end;
     end.taskId = taskId;
-    end.result = capPayload(result, kMaxResultBytes);
-    m_client->sendPacket(&end);
+    end.result = capPayload(result, kMaxResultBytes, end.encoding);
+    sendPack(&end);
 }
 
 void JZHubLink::notifyState()

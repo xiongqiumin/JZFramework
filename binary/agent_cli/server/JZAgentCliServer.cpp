@@ -47,6 +47,159 @@ struct SlowReqGuard
     }
 };
 
+// ---- 控制面发包预检/上下文裁剪(只动 application 层, JZNet 不碰) ----
+static string stripJsonNewline(string s)
+{
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r'))
+        s.pop_back();
+    return s;
+}
+
+static string headBytesUtf8(const string &s, size_t n)
+{
+    if (s.size() <= n)
+        return s;
+    while (n > 0 && (s[n] & 0xC0) == 0x80)
+        n--;
+    return s.substr(0, n);
+}
+
+static bool isContextBoundary(const Json::Value &m)
+{
+    if (!m.isObject())
+        return false;
+    if (m.get("role", "").asString() == "user")
+        return true;
+    const string kind = m.get("kind", "").asString();
+    return kind == "summary" || kind == "context_start" || kind == "conversation_start";
+}
+
+static void capContextMessage(Json::Value &msg, size_t textMax)
+{
+    if (!msg.isObject())
+        return;
+
+    if (msg.isMember("content"))
+    {
+        Json::Value &content = msg["content"];
+        if (content.isString() && content.asString().size() > textMax)
+        {
+            string s = content.asString();
+            content = headBytesUtf8(s, textMax) + "\n...[控制面单包上限, 已裁剪]";
+        }
+        else if (content.isArray())
+        {
+            for (Json::ArrayIndex i = 0; i < content.size(); i++)
+            {
+                Json::Value &part = content[i];
+                if (!part.isObject())
+                    continue;
+                if (part.get("type", "").asString() == "text" && part.isMember("text"))
+                {
+                    string s = part["text"].asString();
+                    if (s.size() > textMax)
+                        part["text"] = headBytesUtf8(s, textMax) + "\n...[控制面单包上限, 已裁剪]";
+                }
+                else if (part.get("type", "").asString() == "image_url")
+                {
+                    part.removeMember("image_url");
+                    part["type"] = "text";
+                    part["text"] = "[控制面单包上限, 已省略图片]";
+                }
+            }
+        }
+    }
+
+    if (!msg.isMember("tool_calls"))
+        return;
+    Json::Value &calls = msg["tool_calls"];
+    if (calls.isArray())
+    {
+        for (Json::ArrayIndex i = 0; i < calls.size(); i++)
+        {
+            Json::Value &call = calls[i];
+            if (!call.isObject() || !call.isMember("function") || !call["function"].isObject())
+                continue;
+            Json::Value &fn = call["function"];
+            if (!fn.isMember("arguments"))
+                continue;
+            Json::Value &args = fn["arguments"];
+            if (args.isString() && args.asString().size() > textMax)
+            {
+                string s = args.asString();
+                args = headBytesUtf8(s, textMax) + "...}";   // 参数本身可能不是完整 JSON, 只求可发送
+            }
+        }
+    }
+}
+
+static bool buildTaskSubmitPack(const string &taskId, const Json::Value &cliBody,
+                                const Json::Value &ctx, JZHubPackTaskSubmit &submit)
+{
+    Json::Value body(cliBody);
+    if (ctx.isObject())
+        body["context"] = ctx;
+    submit.taskId = taskId;
+    submit.encoding = 0;
+    string plain = stripJsonNewline(Json::FastWriter().write(body));
+    hubPackZipEncode(plain, submit.body, submit.encoding);
+    return hubPackSendable(&submit);
+}
+
+// 让「继续」在 10MB 单包上限内也能送出去: 先按完整轮次丢最老的, 再裁大字段。
+// 返回 false 时调用方给 413, 绝不把超限包交给 JZNetClient::sendPacket。
+static bool fitTaskSubmitContext(Json::Value &ctx, const Json::Value &cliBody,
+                                 const string &taskId,
+                                 JZHubPackTaskSubmit &submit, string &error)
+{
+    if (buildTaskSubmitPack(taskId, cliBody, ctx, submit))
+        return true;
+
+    if (!ctx.isObject() || !ctx["history"].isArray() || ctx["history"].empty())
+    {
+        error = "任务载荷超过控制面单包上限("
+                + to_string(JZNetPackManager::maxPackSize() / (1024 * 1024)) + "MB), 请缩短指令或图片";
+        return false;
+    }
+
+    const Json::Value hist = ctx["history"];
+    for (Json::ArrayIndex i = 1; i < hist.size(); i++)
+    {
+        if (!isContextBoundary(hist[i]))
+            continue;
+        Json::Value cut(Json::arrayValue);
+        for (Json::ArrayIndex j = i; j < hist.size(); j++)
+            cut.append(hist[j]);
+        Json::Value tryCtx(ctx);
+        tryCtx["history"] = cut;
+        if (buildTaskSubmitPack(taskId, cliBody, tryCtx, submit))
+        {
+            jzInfo() << "续会话上下文超过控制面包上限, 丢弃最早的 " << i << " 条历史";
+            ctx = tryCtx;
+            return true;
+        }
+    }
+
+    // 单轮里就有巨型工具输出: 逐级裁剪正文/参数, 保住消息骨架和角色配对。
+    for (size_t limit = 32 * 1024; limit >= 1024; limit /= 2)
+    {
+        Json::Value tryCtx(ctx);
+        Json::Value &hist2 = tryCtx["history"];
+        for (Json::ArrayIndex i = 0; i < hist2.size(); i++)
+            capContextMessage(hist2[i], limit);
+        if (buildTaskSubmitPack(taskId, cliBody, tryCtx, submit))
+        {
+            jzInfo() << "续会话上下文超过控制面包上限, 正文裁到 " << limit << " 字节/条";
+            ctx = tryCtx;
+            return true;
+        }
+    }
+
+    error = "任务载荷超过控制面单包上限("
+            + to_string(JZNetPackManager::maxPackSize() / (1024 * 1024)) + "MB), 请新建会话或缩短指令/图片";
+    return false;
+}
+
 // ===========================================================================
 // 单个被管理 agent 的运行实例
 // ===========================================================================
@@ -537,13 +690,16 @@ static bool isCrossSiteRequest(const JZHttpRequest &req)
     return false;
 }
 
-static void respondJsonAsync(JZHttpServerClient *client, int code, const Json::Value &v)
+// 异步回包拿不到当次 req, 由 PendingTask/PendingFs 记下 Accept-Encoding 传进来。
+static void respondJsonAsync(JZHttpServerClient *client, int code, const Json::Value &v,
+                             const string &acceptEncoding = string())
 {
     if (!client)
         return;
     JZHttpRespone resp;
     resp.setStatusCode(code);
     resp.setJson(Json::FastWriter().write(v));
+    resp.applyContentEncoding(acceptEncoding);
     client->response(resp.toByteArray());
 }
 
@@ -931,6 +1087,21 @@ bool JZAgentCliServer::startHub(std::string &error)
     return true;
 }
 
+bool JZAgentCliServer::sendPack(uint64_t conn, const JZNetPack *pack)
+{
+    if (!m_hub)
+        return false;
+    if (!hubPackSendable(pack))
+    {
+        jzWarning() << "控制面包超过单包上限, 断开连接(conn=" << conn
+                    << ", type=" << pack->packetType() << ")";
+        m_hub->closeClient(conn);
+        return false;
+    }
+    m_hub->sendPacket(conn, pack);
+    return true;
+}
+
 void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
 {
     if (!pack || !m_hub)
@@ -948,7 +1119,7 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
             ack.ok = false;
             ack.error = "hello 缺 agentId";
             ack.serverTimeMs = now;
-            m_hub->sendPacket(conn, &ack);
+            sendPack(conn, &ack);
             m_hub->closeClient(conn);
             return;
         }
@@ -994,7 +1165,7 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
         ack.ok = true;
         ack.acceptTasks = true;
         ack.serverTimeMs = now;
-        m_hub->sendPacket(conn, &ack);
+        sendPack(conn, &ack);
 
         jzInfo().noquote().nospace() << "cli 上线: " << agent.agentId << " (" << agent.name
                                      << " v" << agent.version << ")  conn=" << conn;
@@ -1023,17 +1194,20 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
     if (type == HubPack_taskEvent)
     {
         JZHubPackTaskEvent *ev = (JZHubPackTaskEvent *)pack.get();
+        string data;
+        if (!hubPackZipDecode(ev->data, ev->encoding, data))
+            return;
         if (ev->type == "context_history")
         {
             // 模型上下文增量: 只更新 ctx 文件, 不进 Task.events/SSE 过程流。
             Json::Value msg;
-            if (parseJsonText(ev->data, msg))
+            if (parseJsonText(data, msg))
                 applyContextMessage(ev->taskId, msg);
             return;
         }
         agent.lastEventType = ev->type;
-        agent.lastEventData = ev->data;
-        recordEvent(ev->taskId, ev->type, ev->data);   // A2A: 事件进 Task.events + SSE 广播
+        agent.lastEventData = data;
+        recordEvent(ev->taskId, ev->type, data);   // A2A: 事件进 Task.events + SSE 广播
         return;
     }
 
@@ -1043,8 +1217,14 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
         agent.busy = false;
         agent.taskId.clear();
 
+        string resultText;
+        if (!hubPackZipDecode(end->result, end->encoding, resultText))
+        {
+            resultText.clear();
+            jzWarning() << "taskEnd 解压失败: " << end->taskId;
+        }
         Json::Value result;
-        if (!parseJsonText(end->result, result) || !result.isObject())
+        if (!parseJsonText(resultText, result) || !result.isObject())
         {
             result = Json::Value(Json::objectValue);
             result["status"] = "failed";
@@ -1066,7 +1246,8 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
 
         // 同步等待方拿到的也是 A2A Task, 与 GetTask / SubscribeToTask 同一形状
         TaskRecord *rec = findTask(end->taskId);
-        respondJsonAsync(pt.client, 200, rec ? taskJson(*rec) : Json::Value(Json::objectValue));
+        respondJsonAsync(pt.client, 200, rec ? taskJson(*rec) : Json::Value(Json::objectValue),
+                         pt.acceptEncoding);
         jzInfo().noquote().nospace() << "任务完成: " << end->taskId << "  agent=" << pt.agentId
                                      << "  state=" << (rec ? rec->state : string(kStateUnknown));
         return;
@@ -1085,7 +1266,8 @@ void JZAgentCliServer::onHubPacket(uint64_t conn, JZNetPackPtr pack)
 // 远端文件操作: 把 op 转给 cli, 等它回包(fsRes)再回 HTTP
 // ---------------------------------------------------------------------------
 bool JZAgentCliServer::fsForward(const string &agentId, const string &op, const Json::Value &body,
-                                 JZHttpServerClient *client, const string &kind, string &error)
+                                 JZHttpServerClient *client, const string &kind, string &error,
+                                 const string &acceptEncoding)
 {
     error.clear();
 
@@ -1104,6 +1286,7 @@ bool JZAgentCliServer::fsForward(const string &agentId, const string &op, const 
     p.agentId = agentId;
     p.client = client;
     p.kind = kind;
+    p.acceptEncoding = acceptEncoding;
     p.deadline = JZPlatform::getTickCountMs() + 8000;   // 远端 cli 可能正在跑任务, 给 8s
     m_pendingFs[req.reqId] = p;
 
@@ -1120,7 +1303,7 @@ bool JZAgentCliServer::fsForward(const string &agentId, const string &op, const 
 
     jzInfo().noquote().nospace() << "远端文件操作: " << op << " -> " << agentId
                                  << "  req=" << req.reqId;
-    m_hub->sendPacket(ai->second, &req);
+    sendPack(ai->second, &req);
     return true;
 }
 
@@ -1140,7 +1323,7 @@ int JZAgentCliServer::fsRoute(JZHttpServerClient *client, const JZHttpRequest &r
     }
 
     string error;
-    if (!fsForward(agentId, op, body, client, kind, error))
+    if (!fsForward(agentId, op, body, client, kind, error, req.header("Accept-Encoding")))
     {
         respondJson(client, req, 503, Json::Value(error));
         return 2;
@@ -1158,11 +1341,20 @@ void JZAgentCliServer::onHubFsRes(const JZHubPackFsRes &res)
     if (!p.client)
         return;
 
+    string body;
+    if (!hubPackZipDecode(res.body, res.encoding, body))
+    {
+        Json::Value e(Json::objectValue);
+        e["error"] = "cli 返回的文件内容解压失败";
+        respondJsonAsync(p.client, 502, e, p.acceptEncoding);
+        return;
+    }
+
     if (!res.ok)
     {
         Json::Value e(Json::objectValue);
         e["error"] = res.error.empty() ? string("远端文件操作失败") : res.error;
-        respondJsonAsync(p.client, 404, e);
+        respondJsonAsync(p.client, 404, e, p.acceptEncoding);
         return;
     }
 
@@ -1177,20 +1369,21 @@ void JZAgentCliServer::onHubFsRes(const JZHubPackFsRes &res)
         resp.setHeader("X-File-Mtime", to_string((long long)res.mtime));
         if (res.truncated)
             resp.setHeader("X-File-Truncated", "1");
-        resp.setBody(res.body);
+        resp.setBody(body);
+        resp.applyContentEncoding(p.acceptEncoding);
         p.client->response(resp.toByteArray());
         return;
     }
 
     Json::Value j;
-    if (!parseJsonText(res.body, j))
+    if (!parseJsonText(body, j))
     {
         Json::Value e(Json::objectValue);
         e["error"] = "cli 返回的文件结果不是合法 JSON";
-        respondJsonAsync(p.client, 502, e);
+        respondJsonAsync(p.client, 502, e, p.acceptEncoding);
         return;
     }
-    respondJsonAsync(p.client, 200, j);
+    respondJsonAsync(p.client, 200, j, p.acceptEncoding);
 }
 
 // 超时清扫(由 5s 巡检调用): 远端 cli 掉线/卡住时不能把 HTTP 请求一直挂着
@@ -1211,12 +1404,13 @@ void JZAgentCliServer::reapStuckFs()
         if (it == m_pendingFs.end())
             continue;
         JZHttpServerClient *c = it->second.client;
+        const string acceptEncoding = it->second.acceptEncoding;
         m_pendingFs.erase(it);
         if (!c)
             continue;
         Json::Value e(Json::objectValue);
         e["error"] = "远端 agent 响应超时(可能正在跑任务或已掉线)";
-        respondJsonAsync(c, 504, e);
+        respondJsonAsync(c, 504, e, acceptEncoding);
     }
 }
 
@@ -1314,13 +1508,14 @@ void JZAgentCliServer::reapStuckTasks()
             {
                 JZHubPackTaskCancel cancel;
                 cancel.taskId = taskId;
-                m_hub->sendPacket(ai->second, &cancel);
+                sendPack(ai->second, &cancel);
             }
         }
 
         // 回包与 GetTask 同形状(504 只是 HTTP 状态, body 仍是 Task)
         TaskRecord *rec = findTask(taskId);
-        respondJsonAsync(pt.client, 504, rec ? taskJson(*rec) : Json::Value(Json::objectValue));
+        respondJsonAsync(pt.client, 504, rec ? taskJson(*rec) : Json::Value(Json::objectValue),
+                         pt.acceptEncoding);
     }
 }
 
@@ -1338,7 +1533,8 @@ void JZAgentCliServer::failPendingTasksOf(const string &agentId, const string &e
 
         recordFail(pt.taskId, kStateUnknown, error);   // 对提交方是 502; 历史必须保留"结果未知"
         TaskRecord *rec = findTask(pt.taskId);
-        respondJsonAsync(pt.client, 502, rec ? taskJson(*rec) : Json::Value(Json::objectValue));
+        respondJsonAsync(pt.client, 502, rec ? taskJson(*rec) : Json::Value(Json::objectValue),
+                         pt.acceptEncoding);
     }
 }
 
@@ -1485,9 +1681,9 @@ void JZAgentCliServer::loadTaskStore()
         r.history = stringsFromJson(j.get("history", Json::Value(Json::arrayValue)));
         r.eventSeq = meta.get("eventSeq", (int)r.events.size()).asInt();
 
-        const bool wasWorking = isWorkingState(r.state);
-        // 服务重启会丢掉在途工具回包: 只修复仍在工作态的任务, 给未配对的 tool_call
-        // 在内存里补一个明确的中断结果(不回写 tasks.jsonl, 避免加载时 O(n^2) 膨胀)。
+        const bool wasWorking = isWorkingState(r.state) || r.state == kStateUnknown;
+        // 服务重启会丢掉在途工具回包: 工作态和旧的"结果未知"记录都按未完成取消处理。
+        // 给未配对的 tool_call 在内存里补一个明确的中断结果(不回写 tasks.jsonl)。
         if (wasWorking)
         {
             vector<string> snapshot = r.events, doneIds;
@@ -1527,9 +1723,10 @@ void JZAgentCliServer::loadTaskStore()
             m_taskOrder.push_back(r.taskId);
         if (wasWorking)
         {
-            // 上次进程没等到回包就退出了: 结果不可知(不能假装还在跑)
-            r.state = kStateUnknown;
-            r.error = "server 重启, 结果未知";
+            // 上次进程没等到回包就退出了: 按未完成取消处理(和用户取消同一口径),
+            // 不再制造"结果未知"这种卡在中间的状态。
+            r.state = kStateCanceled;
+            r.error = "server 重启, 任务未完成";
             r.endMs = now;
         }
         m_tasks[r.taskId] = r;
@@ -2034,8 +2231,10 @@ void JZAgentCliServer::recordEnd(const string &taskId, const Json::Value &result
     appendTaskEvent(r, "task_end", tail);
     saveTaskRecord(*r);
 
+    // cli 不再把 task_end 当 taskEvent 发一遍; 终态信号在这里补, 内容只带尾巴。
+    broadcastTaskEvent(taskId, "task_end", toJsonLine(tail), r->eventSeq);
     broadcastTaskEvent(taskId, "artifact_update",
-                       toJsonLine(jsonStringArray(r->artifacts)));
+                       toJsonLine(jsonStringArray(r->artifacts)), r->eventSeq);
     finishTaskStreams(taskId);   // 终态: 补完整 Task 快照后关流
 }
 
@@ -2053,6 +2252,7 @@ void JZAgentCliServer::recordFail(const string &taskId, const string &state, con
     tail["error"] = error;
     appendTaskEvent(r, "task_end", tail);
     saveTaskRecord(*r);
+    broadcastTaskEvent(taskId, "task_end", toJsonLine(tail), r->eventSeq);
     finishTaskStreams(taskId);
 }
 
@@ -2142,7 +2342,7 @@ void JZAgentCliServer::recordEvent(const string &taskId, const string &type, con
     if (forcePush || sit == m_sseTick.end() || tk - sit->second >= 150)
     {
         m_sseTick[taskId] = tk;
-        broadcastTaskEvent(taskId, "status_update", toJsonLine(wire));
+        broadcastTaskEvent(taskId, "status_update", toJsonLine(wire), r->eventSeq);
     }
     // 逐条落盘会把 JSONL 撑成 O(n^2); 每 20 条 + 终态各存一次, 中途 crash 只丢尾部过程。
     // 落盘前先把正在攒的 reply/thinking 落成一条, 否则文件里一直是"上一次 flush 的状态"。
@@ -2169,18 +2369,24 @@ void JZAgentCliServer::removeTaskStream(JZHttpServerClient *client)
 }
 
 void JZAgentCliServer::broadcastTaskEvent(const string &taskId, const string &event,
-                                          const string &payload)
+                                          const string &payload, int seq)
 {
-    // 网页常连(下行): 所有任务的事件都推一份, 帧里带 taskId, 前端自己筛。
+    // 网页常连(下行): 所有任务的事件都推一份, 帧里带 taskId/seq, 前端自己筛。
     // 这条连接不随任务结束关闭 —— 关流/重连就是"连接中断"的来源。
     if (!m_pageStreams.empty())
     {
-        // 常连对网页只是"这个任务有新数据了"的信号(前端只读 taskId), 别把整段原始分片
-        // 再下发一遍: 一条 tool_result 可以到 96KB, 会随 150ms 节流反复推给每个页面。
-        // /api/tasks/subscribe 那条流仍带完整 payload, 供 A2A 订阅者使用。
+        // 常连对网页只是"这个任务有新数据了"的信号, 但必须带 seq:
+        // 前端只对当前显示的任务按 seq 拉增量, 不再反复拉整张任务列表。
+        // 不推原始分片: 一条 tool_result 可以到 96KB。
         Json::Value w(Json::objectValue);
         w["taskId"] = taskId;
         w["event"] = event;
+        w["seq"] = seq;
+        if (TaskRecord *r = findTask(taskId))
+        {
+            w["state"] = r->state;
+            w["lastEventType"] = r->lastEventType;
+        }
         broadcastPageEvent("task", w);
     }
 
@@ -2408,6 +2614,9 @@ Json::Value JZAgentCliServer::tasksJson(const string &agentId, const string &sta
             if (o != origin)
                 continue;
         }
+        // 没有 A2A history 的老记录/脏记录不进列表: 网页展示的会话必须和实际历史一致。
+        if (ti->second.history.empty())
+            continue;
         // 列表只要"最近发生什么"给左栏/摘要用: 30 条足够, 整表体积从几百 KB 降到几十 KB
         // (选中某条时前端会再用 /api/tasks/detail 取完整一页)
         arr.append(taskJson(ti->second, 30));
@@ -2453,8 +2662,7 @@ void JZAgentCliServer::onApiTaskDetail(JZHttpServerClient *client, const JZHttpR
     respondJson(client, req, 200, taskJson(*r));
 }
 
-// 往前翻一页事件: GET /api/tasks/events?id=<taskId>&before=<offset>&limit=200
-// 前端点"加载更多"时调用; offset 就是上一次拿到的 eventsOffset。
+// 事件分页: before=<offset> 往前翻(加载更多); after=<seq> 往后增量(选中任务实时更新)。
 void JZAgentCliServer::onApiTaskEvents(JZHttpServerClient *client, const JZHttpRequest &req)
 {
     TaskRecord *r = findTask(req.queryParam("id"));
@@ -2466,13 +2674,43 @@ void JZAgentCliServer::onApiTaskEvents(JZHttpServerClient *client, const JZHttpR
     SlowReqGuard slow("api/tasks/events");
     flushOpenSegment(r);
 
-    const size_t total = r->events.size();
-    size_t end = (size_t)atoi(req.queryParam("before").c_str());
-    if (end == 0 || end > total)
-        end = total;
     int limit = atoi(req.queryParam("limit").c_str());
     if (limit <= 0 || limit > 2000)
         limit = 1000;
+    const size_t total = r->events.size();
+
+    // after=<seq>: 增量拉取, 只回 seq 大于该值的新事件(聊天区选中任务用)。
+    const int after = atoi(req.queryParam("after").c_str());
+    if (after > 0)
+    {
+        Json::Value arr(Json::arrayValue);
+        int lastSeq = after;
+        for (const string &line : r->events)
+        {
+            Json::Value e;
+            if (!parseJsonText(line, e))
+                continue;
+            const int seq = e.get("seq", 0).asInt();
+            if (seq <= after)
+                continue;
+            arr.append(e);
+            lastSeq = seq;
+            if (arr.size() >= (Json::ArrayIndex)limit)
+                break;
+        }
+        Json::Value out(Json::objectValue);
+        out["events"] = arr;
+        out["offset"] = after;
+        out["end"] = lastSeq;
+        out["total"] = (int)total;
+        out["hasMore"] = lastSeq < (r->eventSeq ? r->eventSeq : lastSeq);
+        respondJson(client, req, 200, out);
+        return;
+    }
+
+    size_t end = (size_t)atoi(req.queryParam("before").c_str());
+    if (end == 0 || end > total)
+        end = total;
     const size_t begin = eventPageBegin(r->events, end, (size_t)limit);
 
     Json::Value out(Json::objectValue);
@@ -2730,7 +2968,7 @@ void JZAgentCliServer::onApiFsRaw(JZHttpServerClient *client, const JZHttpReques
     {
         Json::Value body(Json::objectValue);
         body["path"] = path;
-        body["maxBytes"] = (Json::Int64)(160 * 1024);   // 控制面单包 256KB, 留余量
+        body["maxBytes"] = (Json::Int64)(160 * 1024);   // 控制面单包 10MB, 这里按网页能用的量留余量
         if (fsRoute(client, req, agentId, "read", body, "raw") != 0)
             return;
     }
@@ -3135,7 +3373,8 @@ bool JZAgentCliServer::isSelfAgentId(const string &id) const
 
 int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *waiter,
                                  Json::Value &ack, string &error,
-                                 const string &origin, const string &parentTaskId)
+                                 const string &origin, const string &parentTaskId,
+                                 const string &acceptEncoding)
 {
     // A2A SendMessage 是唯一入口。cli 的 /task 载荷在边界转换一次, 对外不再出现 prompt/verify_cmd。
     const string prompt = messageText(body);
@@ -3204,10 +3443,9 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
             return 400;
         }
         if (isWorkingState(contRec->state) ||
-            contRec->state == kStateUnknown ||
             m_pendingTasks.find(contId) != m_pendingTasks.end())
         {
-            error = "任务 " + contId + " 还在执行或结果未知, 不能接着说";
+            error = "任务 " + contId + " 还在执行, 不能接着说";
             ack["error"] = error;
             return 409;
         }
@@ -3290,6 +3528,7 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         selfPending.startMs = JZDateTime::currentMSecsSinceEpoch();
         selfPending.lastEventMs = JZPlatform::getTickCountMs();
         selfPending.timeoutMs = timeoutMs;
+        selfPending.acceptEncoding = acceptEncoding;
         m_pendingTasks[taskId] = selfPending;
         // 续会话: 这条会话的上下文文件(没有 = 新会话, 从零开始)。
         // contextId 由 recordCreate 定下来(请求没带就是 ctx-<taskId>), 所以从记录里取。
@@ -3325,22 +3564,30 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         recordCreate(taskId, agentId, body, origin, parentTaskId);
 
     // 续会话: 这条会话的对话快照(没有 = 新会话)。cli 端一次性任务对象, 必须显式带过去。
-    if (TaskRecord *rec0 = findTask(taskId))
-    {
-        Json::Value ctx = loadContextFile(rec0->contextId);
-        if (ctx.isObject())
-        {
-            cliBody["context"] = ctx;
-            jzInfo() << "续会话: " << taskId << " 带上 " << ctx["history"].size() << " 条历史";
-        }
-    }
+    // 读出来先过单包预算: 超限就在应用层裁历史, 不让 formatPacket 撞 FATAL。
+    TaskRecord *recCtx = findTask(taskId);
+    Json::Value submitCtx;
+    if (recCtx)
+        submitCtx = loadContextFile(recCtx->contextId);
+    Json::Value originalCtx = submitCtx;
 
     JZHubPackTaskSubmit submit;
-    submit.taskId = taskId;
-    string payload = Json::FastWriter().write(cliBody);   // hub 下游是 cli 的 /task 载荷
-    while (!payload.empty() && (payload.back() == '\n' || payload.back() == '\r'))
-        payload.pop_back();
-    submit.body = payload;
+    if (!fitTaskSubmitContext(submitCtx, cliBody, taskId, submit, error))
+    {
+        error = "任务 " + taskId + ": " + error;
+        ack["error"] = error;
+        ack["taskId"] = taskId;
+        recordFail(taskId, kStateFailed, error);
+        return 413;
+    }
+    // 裁剪后的快照要写回, 否则网页历史和模型历史又不对口(下一次继续还是同一份超大 ctx)。
+    if (recCtx && Json::FastWriter().write(originalCtx) != Json::FastWriter().write(submitCtx))
+    {
+        saveContextFile(recCtx->contextId, submitCtx);
+        m_contextCache[recCtx->contextId] = submitCtx;
+    }
+    if (submitCtx.isObject())
+        jzInfo() << "续会话: " << taskId << " 带上 " << submitCtx["history"].size() << " 条历史";
 
     PendingTask pending;
     pending.taskId = taskId;
@@ -3349,13 +3596,14 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
     pending.startMs = JZDateTime::currentMSecsSinceEpoch();
     pending.lastEventMs = JZPlatform::getTickCountMs();
     pending.timeoutMs = timeoutMs;
+    pending.acceptEncoding = acceptEncoding;
     m_pendingTasks[taskId] = pending;
 
     agent.busy = true;
     agent.taskId = taskId;
     agent.round = 0;
 
-    m_hub->sendPacket(ai->second, &submit);
+    sendPack(ai->second, &submit);
     jzInfo().noquote().nospace() << "任务下发: " << taskId << " -> " << agentId;
 
     ack = taskJson(*findTask(taskId));          // SendMessage 的回包就是一个 Task
@@ -3399,7 +3647,8 @@ void JZAgentCliServer::onSelfAgentEvent(const JZServerAgentEvent &ev)
             PendingTask pt = pit->second;
             m_pendingTasks.erase(pit);
             TaskRecord *rec = findTask(ev.taskId);
-            respondJsonAsync(pt.client, 200, rec ? taskJson(*rec) : Json::Value(Json::objectValue));
+            respondJsonAsync(pt.client, 200, rec ? taskJson(*rec) : Json::Value(Json::objectValue),
+                             pt.acceptEncoding);
         }
         TaskRecord *rec = findTask(ev.taskId);
         jzInfo().noquote().nospace() << "内置 agent 任务结束: " << ev.taskId
@@ -3432,7 +3681,8 @@ void JZAgentCliServer::onApiTasks(JZHttpServerClient *client, const JZHttpReques
 
     Json::Value ack(Json::objectValue);
     string error;
-    const int code = submitTask(body, waiter, ack, error);
+    const int code = submitTask(body, waiter, ack, error, std::string("user"),
+                                std::string(), req.header("Accept-Encoding"));
     if (code == 200)
         return;   // 同步模式: 回包在 taskEnd / done 时发出
     respondJson(client, req, code, ack);
@@ -3478,7 +3728,7 @@ void JZAgentCliServer::onApiTaskCancel(JZHttpServerClient *client, const JZHttpR
         {
             JZHubPackTaskCancel cancel;
             cancel.taskId = taskId;
-            m_hub->sendPacket(ai->second, &cancel);
+            sendPack(ai->second, &cancel);
         }
     }
 
@@ -3552,7 +3802,7 @@ void JZAgentCliServer::onApiTaskDelete(JZHttpServerClient *client, const JZHttpR
                 {
                     JZHubPackTaskCancel cancel;
                     cancel.taskId = tid;
-                    m_hub->sendPacket(ai->second, &cancel);
+                    sendPack(ai->second, &cancel);
                 }
             }
             ++canceled;

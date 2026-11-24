@@ -367,8 +367,8 @@ public:
     int netThreadPriority = 6;
     int netThreadCore = -1;    // cpu core
 
-    int maxRecvSize = 3 * 1024 * 1024;  //单个连接最大接收缓冲区
-    int maxSendSize = 3 * 1024 * 1024;  //单个连接最大发送缓冲区
+    int maxRecvSize = -1;  //单个连接最大接收缓冲区; -1 = 不限制
+    int maxSendSize = -1;  //单个连接最大发送缓冲区; -1 = 不限制
     std::string dns4;  // IPv4 DNS 服务器, 为空则不配置
     std::string dns6;  // IPv6 DNS 服务器, 为空则不配置
 };

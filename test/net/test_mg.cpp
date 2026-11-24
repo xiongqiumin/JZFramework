@@ -19,8 +19,8 @@
 
 #include "mongoose.h"
 
-// JZNet 定制版 mongoose 引用了此全局变量(MG_MAX_RECV_SIZE), 这里提供独立定义(默认 3MB)
-int JZNET_MAX_RECV = 3 * 1024 * 1024;
+// JZNet 定制版 mongoose 引用了此全局变量(MG_MAX_RECV_SIZE), 这里提供独立定义(默认不限制)
+int JZNET_MAX_RECV = -1;
 
 #include <atomic>
 #include <chrono>

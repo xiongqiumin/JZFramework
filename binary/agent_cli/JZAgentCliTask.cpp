@@ -1515,9 +1515,10 @@ void JZAgentCliTask::respondTask(const std::string &status, int rounds, const st
     }
     if (!err.empty())
         r["error"] = err;
-    // 先推事件再回包: 提交方可能已经断开(见 onClientDestroyed), 那样只有 SSE 订阅者
-    // (重连上来的网页)还能看到这次收尾 —— 它是那时唯一的结果出口。
-    pushEvent("task_end", r);
+    // task_end 只发本地 SSE; 控制面由下面的 taskEnd 包唯一承载。
+    // 以前 pushEvent 会同时发 taskEvent + taskEnd 两份完整结果, 线上直接翻倍。
+    if (m_cli)
+        m_cli->pushEvent("task_end", r);
     m_lastResult = r;              // 留一份: 断连期间跑完的任务, 重连时靠 hello 帧补给界面
     m_hasLastResult = true;
     finishHistory(status, rounds, reply, verifyOut, err, r["usage"]);   // 归档进"最近任务"

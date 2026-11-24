@@ -34,7 +34,7 @@ using namespace std;
 //   非 Windows 上 JZFramework 是**静态库**, JZNetObject.cpp 里已有一份强定义, 本文件再定义
 //   一份就是 multiple definition(链接期报错)。故这里按平台收窄。
 #ifdef _WIN32
-int JZNET_MAX_RECV = 3 * 1024 * 1024;
+int JZNET_MAX_RECV = -1;
 #endif
 
 // 与 test_jz_tcp_cpp 一致: 1KB 负载 + 行尾 '\n' 分包

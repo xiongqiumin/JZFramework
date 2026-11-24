@@ -210,16 +210,25 @@ packet 里换名字只会让两套 UI 对不上。
 
 ### 4.4 大小与截断
 
-- 单包上限 **256KB**（`MG_MAX_PACK_SIZE`，`JZNet/JZNetPacket.h`）；
+- 单包上限默认 **10MB**（`JZNetPackManager::s_maxPackSize`，可用 `setMaxPackSize()` 调整）；连接级收/发缓冲默认
+  `-1`（不限制，`JZNET_MAX_RECV/JZNET_MAX_SEND`），超限保护由单包上限和真正的发送/接收逻辑负责；
 - **不做分片**：重组要状态机 + 超时，而收益只覆盖"想一次看几 MB 日志"这种 UI 和模型都不需要的场景。
   要全文就先 `tail`/重定向到文件再分段读（模型侧做法）。
-- 上行（cli→server，`JZHubLink` 里的 `capText`）：
-  - `taskEvent.data` 超 **96KB**、`taskEnd.result` 超 **160KB** ⇒ 换成
-    `{truncated:true, bytes, preview:"<头 4KB>"}`；
+- **控制面 JSON 载荷压缩**：agent_cli/server 同版本发布，都带 zlib 解压。`taskSubmit.body`、
+  `taskEvent.data`、`taskEnd.result`、`fsRes.body` 末尾带一个 `encoding` 字节
+  （0=原始，1=zlib），压缩后更大就保持原样。
+- **终态只走 `taskEnd` 包**：cli 的 `task_end` 只发本地 SSE，不再作为 `taskEvent`
+  上报；server 收到 `taskEnd` 后补一条尾巴 `task_end` 事件并广播，避免完整结果发两份。
+- 上行（cli→server，`JZHubLink` 里的 `capPayload`）：
+  - 先尝试 zlib；压不下来且 `taskEvent.data` 超 **96KB**、`taskEnd.result` 超 **160KB**
+    ⇒ 换成 `{truncated:true, bytes, preview:"<头 4KB>"}`；
   - **不硬切 JSON**（切坏会让 server 解析失败）；
-  - 余量是给包头与键名留的，数值远低于 256KB。
-- 下行（server→cli）`taskSubmit` 目前**不裁**：`images` 里的 dataURL 可能把单包顶爆。
-  这是已知风险，处理方式未定，见 §13。
+  - 余量是给包头与键名留的，数值远低于 10MB 的包上限。
+- 下行（server→cli）`taskSubmit` 由 `hubPackSendable()` 预检；续聊 ctx 超包预算时，
+  server 按完整轮次裁最老 history，必要时再裁大正文/图片参数，并写回 ctx 文件，
+  仍装不下返回 413；预检失败的连接按现有网络机制断开，不让 `formatPacket` 记 FATAL。
+- **浏览器侧**：普通/异步 JSON 都按 `Accept-Encoding` 做 gzip/deflate；静态资源在构建
+  输出目录生成 `.gz` 变体，由 `JZHttpStaticFiles` 命中；SSE slim 帧很小，不额外压缩。
 
 ### 4.5 心跳、重连、离线
 
@@ -1029,8 +1038,8 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
   游标 `advanceRunReadPos` 也在节点侧推进，轮询不会重复灌同一段日志。三条与本地一致的硬规则：
   省略 `run_id` = 该节点最近一次运行（回包里补上实际 id）；**带 `grep` 时不推进游标**
   （否则被过滤掉的行下一轮就永远读不到）；回包按 **32KB** 截断并提示"还有 N 行未显示"
-  （运行记录窗口本身可到 4000 行 / 512KB，不裁会顶爆 256KB 单包）。
-- **输出裁剪**：`execResult.output` 超 **120KB** 时按"头 60KB + 一行显式提示 + 尾 60KB"裁剪（UTF-8 字符边界），远低于 256KB 包上限。
+  （运行记录窗口本身可到 4000 行 / 512KB，仍按 32KB 查询回包让 UI 可控；不是只为单包上限）。
+- **输出裁剪**：`execResult.output` 超 **120KB** 时按"头 60KB + 一行显式提示 + 尾 60KB"裁剪（UTF-8 字符边界），按 UI 可消费量控制，而不是贴着包上限。
 - **超时双保险**：cli 侧 timer 到点 → 发 `execCancel` + 本地收口；node 侧 `run(timeoutMs)` 到点杀进程树。上限 15min。
   后台没有执行超时，但"节点确认已启动"有 15s 超时（没确认就是结果未知，不重放）。
 - **token 必填**：`link` 模式下 `token` 为空直接拒绝启动（否则等于把 shell 交给任何能连上端口的人）。

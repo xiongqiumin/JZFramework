@@ -15,9 +15,15 @@
 #include "JZMqttPacket.h"
 #include "JZTx.h"
 
-int JZNET_MAX_RECV = 3 * 1024 * 1024;
-int JZNET_MAX_SEND = 3 * 1024 * 1024;
+// -1 = 不限制; 正数 = 单连接接收/发送缓冲上限(字节)
+int JZNET_MAX_RECV = -1;
+int JZNET_MAX_SEND = -1;
 static JZNetConfig g_netConfig;
+
+static bool sendBufferOverLimit(size_t used, size_t add, int limit)
+{
+    return limit > 0 && used + add > (size_t)limit;
+}
 
 JZNetEvent mgEventToNetEvent(int ev)
 {
@@ -927,8 +933,8 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             bool send_finished = true;
             if (event->writeCmd == WriteBin)
             {
-                // 防止 send buffer 无限膨胀导致 OOM:
-                if(c->send.len + len > JZNET_MAX_SEND)
+                // JZNET_MAX_SEND 配成正数时, 防止 send buffer 无限膨胀导致 OOM; -1/0 不限
+                if(sendBufferOverLimit(c->send.len, (size_t)len, JZNET_MAX_SEND))
                 {
                     send_finished = false;
                     goto send_end;
@@ -937,7 +943,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteWebSocketText)
             {
-                if(c->send.len + len > JZNET_MAX_SEND)
+                if(sendBufferOverLimit(c->send.len, (size_t)len, JZNET_MAX_SEND))
                 {
                     send_finished = false;
                     goto send_end;
@@ -946,7 +952,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteWebSocketBin)
             {
-                if(c->send.len + len > JZNET_MAX_SEND)
+                if(sendBufferOverLimit(c->send.len, (size_t)len, JZNET_MAX_SEND))
                 {
                     send_finished = false;
                     goto send_end;
@@ -955,7 +961,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteWebSocketPing)
             {
-                if(c->send.len + len > JZNET_MAX_SEND)
+                if(sendBufferOverLimit(c->send.len, (size_t)len, JZNET_MAX_SEND))
                 {
                     send_finished = false;
                     goto send_end;
@@ -964,7 +970,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
             }
             else if (event->writeCmd == WriteMqttMessage)
             {
-                if(c->send.len > JZNET_MAX_SEND)
+                if(sendBufferOverLimit(c->send.len, 0, JZNET_MAX_SEND))
                 {
                     send_finished = false;
                     goto send_end;
@@ -990,7 +996,7 @@ void JZNetThread::onNetEvent(JZNetReqEvent* event)
                 if (pkt->buffer.size() > 0)
                 {
                     len = pkt->buffer.size();
-                    if(c->send.len + pkt->buffer.size() > JZNET_MAX_SEND)
+                    if(sendBufferOverLimit(c->send.len, pkt->buffer.size(), JZNET_MAX_SEND))
                     {
                         send_finished = false;
                         goto send_end;

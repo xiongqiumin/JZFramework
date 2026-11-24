@@ -87,6 +87,8 @@ public:
     void sendTaskEnd(const std::string &taskId, const Json::Value &result);
 
 protected:
+    // 异步提交前先预检: 超限不让 formatPacket 触发 FATAL, 直接断开让 cli 重连。
+    bool sendPack(const JZNetPack *pack);
     void onConnected();
     void onDisconnected();
     void onPacket(JZNetPackPtr pack);

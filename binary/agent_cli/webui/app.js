@@ -223,6 +223,7 @@ const taskEvents = (t) => {
   const older = id ? AG_OLDER[id] : null;
   return older ? older.events.concat(base) : base;
 };
+const taskById = (id) => (AG.tasks || []).filter(t => taskId(t) === id)[0] || null;
 /* 列表项标题用会话第一条用户指令: metadata.prompt 在续说时会被覆盖成最后一句。
    history[0] 列表接口就带; events 只作旧数据兜底(列表只回最近 30 条)。 */
 function taskListPrompt(t) {
@@ -527,7 +528,12 @@ async function deleteTaskRecords(ids, opts) {
 /* 删完把本地列表同步掉: 该任务是被选中的话, 退回欢迎页 */
 function dropTasks(ids) {
   const gone = {};
-  ids.forEach(id => { gone[id] = 1; delete AG_OLDER[id]; });
+  ids.forEach(id => {
+    gone[id] = 1;
+    delete AG_OLDER[id];
+    delete AG.detailLoaded[id];
+    delete AG.renderedSeq[id];
+  });
   AG.tasks = AG.tasks.filter(t => !gone[taskId(t)]);
   if (gone[AG.sel]) { AG.sel = ''; AG.sig = ''; syncTaskUrl(NEW_TASK_MARK); }
   renderSide(); renderHead(); renderTask(true, 'top');
@@ -589,6 +595,8 @@ async function loadAgentsPage() {
 const AG = {
   id: '', kind: '', info: null, card: null, sel: '',
   tasks: [], es: null, watchId: '', poll: 0, sig: null, openMap: {},
+  detailLoaded: {},   // taskId -> true/'loading'/false: 聊天区是否已拿到详情事件页
+  renderedSeq: {},    // taskId -> 已渲染到的最大 eventSeq
   busy: false, termTimer: 0,
   ctx: '',           // 当前要接续的会话 id(选中历史任务时从它身上取; '' = 新会话)
   newTask: QS.get('task') === NEW_TASK_MARK  // 当前停留在"新建任务"态
@@ -642,17 +650,17 @@ function groupEvents(t) {
     if (type === 'thinking' || type === 'reply') {
       const txt = stepText(e);
       if (last && last.kind === type) last.text += txt;   // 流式增量: 同一轮拼成一段
-      else out.push({ kind: type, text: txt });
+      else out.push({ kind: type, text: txt, key: e.seq });
       continue;
     }
     if (type === 'user_msg') {
       // 每一轮用户说了什么(同一条任务里"接着说"会追加多条)
-      out.push({ kind: 'user', text: (d && d.text) || stepText(e) || '' });
+      out.push({ kind: 'user', text: (d && d.text) || stepText(e) || '', key: e.seq });
       continue;
     }
     if (type === 'tool_call') {
       out.push({ kind: 'tool', name: (d && d.name) || 'tool',
-                 args: (d && d.args) || '', result: null, ok: null });
+                 args: (d && d.args) || '', result: null, ok: null, key: e.seq });
       continue;
     }
     if (type === 'tool_result') {
@@ -662,16 +670,16 @@ function groupEvents(t) {
       }
       const res = (d && d.result != null) ? jsonText(d.result) : jsonText(d);
       if (target) { target.result = res; target.ok = !(d && d.ok === false); }
-      else out.push({ kind: 'tool', name: '', args: '', result: res, ok: !(d && d.ok === false) });
+      else out.push({ kind: 'tool', name: '', args: '', result: res, ok: !(d && d.ok === false), key: e.seq });
       continue;
     }
     if (type === 'verify') {
       out.push({ kind: 'verify', round: (d && d.round) || 0, cmd: (d && d.cmd) || '',
                  passed: !!(d && d.passed), exit: (d && d.exit_code),
-                 output: (d && d.output) || '' });
+                 output: (d && d.output) || '', key: e.seq });
       continue;
     }
-    out.push({ kind: 'sys', type: type, text: stepText(e) });
+    out.push({ kind: 'sys', type: type, text: stepText(e), key: e.seq });
   }
   return out;
 }
@@ -723,7 +731,10 @@ function convHtml(t) {
   const blocks = groupEvents(t);
   const hasReply = blocks.some(b => b.kind === 'reply');
   const hasVerify = blocks.some(b => b.kind === 'verify');
-  const body = blocks.map((b, i) => blockHtml(b, id + ':' + i, !!AG.openMap[id + ':' + i])).join('');
+  const body = blocks.map((b, i) => {
+    const key = id + ':' + (b.key != null ? b.key : i);
+    return blockHtml(b, key, !!AG.openMap[key]);
+  }).join('');
 
   let inner = body;
   if (!inner) {
@@ -738,16 +749,8 @@ function convHtml(t) {
   if (vout) inner += `<details class="cs-tool"><summary>验证输出</summary><pre class="jz-log">${esc(vout)}</pre></details>`;
 
   const err = !running ? statusMessage(t) : '';
-  // 「接着说」的任务里每轮都有 user_msg 事件, 用户消息由 blocks 渲染;
-  // 老记录(没有 user_msg)才用 taskPrompt 兜一个气泡。
-  const hasUser = blocks.some(b => b.kind === 'user');
-  const headBubble = hasUser ? '' : `<div class="jz-msg jz-msg--user">
-      <div class="jz-bubble">${esc(taskPrompt(t))}</div>
-      <div class="jz-msg__meta">${esc(taskAgent(t))} · ${shortTime(meta(t).startMs)}</div>
-    </div>`;
   const metaTxt = taskMetaText(t);
   return `<div class="cs-task" data-task="${esc(id)}">
-    ${headBubble}
     <div class="cs-conv">${inner}</div>
     ${err ? `<div class="jz-msg jz-msg--error"><div class="jz-bubble">${esc(err)}</div></div>` : ''}
     <div class="jz-msg__meta cs-task__meta">
@@ -890,9 +893,11 @@ function startNewTask() {
 function selectTask(id, scroll) {
   AG.sel = id;
   AG.sig = null;
+  AG.detailLoaded[id] = false;   // 切换任务: 详情事件页重新拉一次
   adoptContext(id);      // 选中哪条, 下一条就接它的会话
   renderSide();
   renderTask(true, scroll ? 'bottom' : '');
+  loadChatDetail(id);
   if (scroll) activateTab('chat');
   syncTaskUrl(id);
   closeNav();
@@ -1018,7 +1023,11 @@ function renderHead() {
     if (window.JzUI) JzUI.toast(r.ok ? '已请求取消' : '取消失败：' + r.error, r.ok ? 'warn' : 'fail');
     loadTasks();
   };
-  document.getElementById('btnRefresh').onclick = () => { AG.sig = ''; loadTasks(); };
+  document.getElementById('btnRefresh').onclick = () => {
+    AG.sig = '';
+    if (AG.sel) AG.detailLoaded[AG.sel] = false;   // 手动刷新: 详情也重拉
+    loadTasks();
+  };
   if (IS_MOBILE) {
     // 手机顶部只留状态点: idle/busy/offline 由 CSS 上色 + 呼吸动画
     document.body.dataset.state = !online ? 'offline'
@@ -1383,7 +1392,13 @@ async function loadTasks(fresh) {
   if (AG.id) q.push('agentId=' + encodeURIComponent(AG.id));
   try {
     const data = await getJson(api('tasks?' + q.join('&')));
+    const keep = AG.sel && AG.detailLoaded[AG.sel] === true ? taskById(AG.sel) : null;
     AG.tasks = data.tasks || [];
+    // 列表接口每任务只回最近 30 条; 已加载详情的选中任务不能被它冲掉。
+    if (keep) {
+      const i = AG.tasks.findIndex(x => taskId(x) === taskId(keep));
+      if (i >= 0) AG.tasks[i] = keep;
+    }
   } catch (e) {
     document.getElementById('msg').textContent = '读取任务失败: ' + e;
     return;
@@ -1423,6 +1438,10 @@ async function loadTasks(fresh) {
   }
 
   renderHead(); renderTask(false, scrollMode); renderSide(); syncComposer();
+  if (AG.sel && !AG.detailLoaded[AG.sel]) {
+    AG.detailLoaded[AG.sel] = 'loading';
+    loadChatDetail(AG.sel);
+  }
   watchRunning();
   schedulePoll();
 }
@@ -1449,6 +1468,75 @@ let TASKS_REFRESH = 0;
 function scheduleTasksRefresh() {
   if (TASKS_REFRESH) return;
   TASKS_REFRESH = setTimeout(() => { TASKS_REFRESH = 0; loadTasks(); }, 800);
+}
+function maxEventSeq(t) {
+  let n = Number((meta(t) || {}).eventSeq) || 0;
+  ((meta(t) || {}).events || []).forEach(e => { n = Math.max(n, Number(e && e.seq) || 0); });
+  return n;
+}
+async function loadChatDetail(id, force) {
+  if (!id) return;
+  if (!force && AG.detailLoaded[id] === true) return;
+  AG.detailLoaded[id] = 'loading';
+  try {
+    const t = await getJson(api('tasks/detail?id=' + encodeURIComponent(id)));
+    const i = AG.tasks.findIndex(x => taskId(x) === id);
+    if (i >= 0) AG.tasks[i] = t; else AG.tasks.push(t);
+    AG.detailLoaded[id] = true;
+    AG.renderedSeq[id] = maxEventSeq(t);
+    AG.busy = AG.tasks.some(isRunning);
+    renderHead(); renderSide(); syncComposer();
+    if (id === AG.sel) { AG.sig = ''; renderTask(true, ''); }
+  } catch (e) {
+    AG.detailLoaded[id] = false;
+  }
+}
+function applyTaskSignal(m) {
+  const t = taskById(m.taskId);
+  if (!t) return;
+  if (m.state) { t.status = t.status || {}; t.status.state = m.state; }
+  const u = meta(t);
+  if (m.lastEventType) u.lastEventType = m.lastEventType;
+  if (m.seq) u.eventSeq = Math.max(Number(u.eventSeq) || 0, Number(m.seq) || 0);
+  renderHead(); renderSide();
+}
+async function refreshNewEvents(id, m) {
+  const t = taskById(id);
+  if (!t) { loadTasks(); return; }
+  if (AG.detailLoaded[id] !== true) { loadChatDetail(id); return; }
+  const last = Number(AG.renderedSeq[id]) || 0;
+  const want = Number(m && m.seq) || 0;
+  if (want && want <= last) { applyTaskSignal(m || { taskId: id }); return; }
+  // seq 跳太大 / 服务重连过: 别硬拼, 直接重拉详情。
+  if (want && want > last + 500) {
+    AG.detailLoaded[id] = false;
+    loadChatDetail(id, true);
+    return;
+  }
+  try {
+    const d = await getJson(api('tasks/events?id=' + encodeURIComponent(id)
+      + '&after=' + last + '&limit=500'));
+    const evs = d.events || [];
+    if (evs.length) {
+      const u = meta(t);
+      const arr = u.events || (u.events = []);
+      const seen = {};
+      arr.forEach(e => { if (e && e.seq) seen[e.seq] = 1; });
+      evs.forEach(e => {
+        if (e && e.seq && !seen[e.seq]) { arr.push(e); seen[e.seq] = 1; }
+      });
+      AG.renderedSeq[id] = Math.max(last, ...evs.map(e => Number(e && e.seq) || 0));
+      u.eventSeq = Math.max(Number(u.eventSeq) || 0, AG.renderedSeq[id]);
+      if (id === AG.sel) renderTask(false, '');
+    } else if (want > last) {
+      AG.detailLoaded[id] = false;   // 信号说有新 seq 但拉不到: 回退详情
+      loadChatDetail(id, true);
+    }
+    if (m) applyTaskSignal(m);
+  } catch (e) {
+    AG.detailLoaded[id] = false;
+    loadChatDetail(id, true);
+  }
 }
 function onAgentsFrame(m) {
   if (!m || !m.agents) return;
@@ -1492,9 +1580,13 @@ function openEvents() {
     let m = null;
     try { m = JSON.parse(e.data); } catch (_) { m = null; }
     if (!m || !m.taskId) return;
-    // 不为每帧拉 /api/tasks/detail: 对话页没有详情面板, 那份全量 JSON 拉回来也只能被
-    // renderDetail 丢掉。内容由下面 800ms 合并的 loadTasks() 刷新。
-    scheduleTasksRefresh();              // 侧栏/状态要跟着变(限流 800ms)
+    if (m.taskId === AG.sel) {
+      // 当前显示的任务: 按 seq 增量拉新事件, 不再反复拉整张列表。
+      refreshNewEvents(m.taskId, m);
+    } else {
+      // 后台任务: 只更新列表行摘要, 不重绘聊天区。
+      applyTaskSignal(m);
+    }
   });
   EVT.addEventListener('deleted', (e) => {
     evtBeat();
@@ -1526,7 +1618,11 @@ function schedulePoll() {
   clearTimeout(AG.poll);
   AG.poll = 0;
   if (document.hidden || !AG.tasks.some(isRunning)) return;
-  AG.poll = setTimeout(() => { loadTasks(); }, 5000);
+  AG.poll = setTimeout(() => {
+    // 当前任务已有详情: 只补增量; 否则走列表刷新(它会自动补详情)。
+    if (AG.sel && AG.detailLoaded[AG.sel] === true) refreshNewEvents(AG.sel, null);
+    else loadTasks();
+  }, 5000);
 }
 
 /* ---------------- 附图（多模态） ----------------
@@ -3045,7 +3141,12 @@ function initMobile() {
     }, { passive: true });
     list.addEventListener('touchmove', (e) => {
       if (!pulling || !e.touches[0]) return;
-      if (e.touches[0].clientY - y0 > 60) { pulling = false; AG.sig = ''; loadTasks(); }
+      if (e.touches[0].clientY - y0 > 60) {
+        pulling = false;
+        AG.sig = '';
+        if (AG.sel) AG.detailLoaded[AG.sel] = false;
+        loadTasks();
+      }
     }, { passive: true });
     list.addEventListener('touchend', () => { pulling = false; }, { passive: true });
   }

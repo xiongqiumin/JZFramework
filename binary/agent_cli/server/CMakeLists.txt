@@ -29,3 +29,12 @@ add_custom_command(TARGET agent_cli_server POST_BUILD
         ${JZFRAMEWORK_ROOT_DIR}/web/ui
         $<TARGET_FILE_DIR:agent_cli_server>/server_web/ui
     COMMENT "copy server web (server_web/ + shared ui/)")
+
+# 与 agent_cli 同一套静态资源预压缩(见 cmake/precompress_static.py)。
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_custom_command(TARGET agent_cli_server POST_BUILD
+        COMMAND ${Python3_EXECUTABLE} ${JZFRAMEWORK_ROOT_DIR}/cmake/precompress_static.py
+            $<TARGET_FILE_DIR:agent_cli_server>/server_web
+        COMMENT "precompress server web assets (gzip)")
+endif()

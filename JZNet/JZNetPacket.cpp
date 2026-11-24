@@ -94,7 +94,8 @@ void JZNetPackEcho::loadFromStream(JZDataStream &s)
 }
 
 //JZNetPackManager
-int JZNetPackManager::s_maxPackSize = MG_MAX_PACK_SIZE;
+// 默认单包上限 10MB; 运行时可经 setMaxPackSize 调整
+int JZNetPackManager::s_maxPackSize = 10 * 1024 * 1024;
 
 JZNetPackManager *JZNetPackManager::instance()
 {

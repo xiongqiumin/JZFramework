@@ -15,8 +15,10 @@
 //     POST /task 的字段完全一致 —— 这样 cli 侧直接复用 submitTask(), server 侧
 //     不需要跟着 agent 的字段变化改协议(加字段只改 JSON, 不动包结构)。
 //
-// ⚠ 单包上限 MG_MAX_PACK_SIZE(256KB): 事件里的工具输出必须两端都裁, 否则
-//   一次大编译日志会把连接打成畸形包(见 JZHubLink 里的 capText)。
+// ⚠ 单包上限默认 10MB(JZNetPackManager): 事件里的工具输出先 zlib, 压后仍超既有小上限才裁
+//   (见 JZHubLink 里的 capPayload), 避免一次大编译日志把连接打成畸形包。
+//   发包前用 hubPackSendable() 预检: JZNetClient/JZNetServer::sendPacket 是
+//   异步提交, 格式化失败不会再有回执; 太大就在应用层处理, 不让通用网络层兜。
 // ---------------------------------------------------------------------------
 enum
 {
@@ -93,7 +95,8 @@ public:
     virtual void loadFromStream(JZDataStream &s);
 
     std::string taskId;       // server 生成, 回包任务用
-    std::string body;         // JSON
+    std::string body;         // JSON(encoding=1 时为 zlib 字节)
+    uint8_t encoding = 0;     // 0=raw JSON, 1=zlib
 };
 
 // server -> cli: 取消任务(等价 POST /reset scope=task)
@@ -128,7 +131,8 @@ public:
 
     std::string taskId;
     std::string type;         // thinking / reply / tool_call / tool_result / verify / error / task_start / task_end ...
-    std::string data;         // JSON
+    std::string data;         // JSON(encoding=1 时为 zlib 字节)
+    uint8_t encoding = 0;     // 0=raw JSON, 1=zlib
 };
 
 // cli -> server: 任务回包(与 POST /task 的回包一致)
@@ -141,6 +145,7 @@ public:
 
     std::string taskId;
     std::string result;       // JSON: {status, verify_rounds, agent_reply, last_verify_output, error?}
+    uint8_t encoding = 0;     // 0=raw JSON, 1=zlib
 };
 
 // ---------------------------------------------------------------------------
@@ -150,7 +155,7 @@ public:
 // 本机(内置 agent / inproc cli)时 server 直接读盘就行; 跑在别的机器上时只能让
 // cli 在它本机执行 —— 于是有了这一对包。
 //
-// ⚠ 单包上限 256KB: cli 侧读文件会截到 160KB 左右(truncated=true), 大文件在网页上
+// ⚠ 单包上限 10MB: cli 侧读文件仍截到 160KB 左右(truncated=true), 大文件在网页上
 //   只能看一段 —— 真要整份给, 得走分片(暂不做)。
 // ---------------------------------------------------------------------------
 class JZHubPackFsReq : public JZNetPack
@@ -181,7 +186,17 @@ public:
     int64_t size = 0;         // 读文件: 文件总大小(不是 body 的大小)
     int64_t mtime = 0;
     bool truncated = false;   // 读文件: 只给了前一段
+    uint8_t encoding = 0;     // 0=raw body, 1=zlib
 };
+
+// 控制面 JSON 载荷压缩: encoding=0 原始 JSON, 1=zlib。
+// agent_cli 和 server 同版本发布, 都带解压; 包尾 encoding 字段只负责区分本包是否压缩。
+bool hubPackZipEncode(const std::string &plain, std::string &wire, uint8_t &encoding);
+bool hubPackZipDecode(const std::string &wire, uint8_t encoding, std::string &plain);
+
+// 发包前预检: JZNetPackManager 上限内的包才交给 JZNetClient/JZNetServer 异步提交。
+// 序列化走和 JZNetPacketProcessor::formatPacket 一样的规则, 但超限只返回 false, 不记 FATAL。
+bool hubPackSendable(const JZNetPack *pack);
 
 // 注册全部控制面包(幂等; 必须在 JZNetPackInit 之后调用, 两边进程各调一次)
 void JZAgentHubPacketInit();

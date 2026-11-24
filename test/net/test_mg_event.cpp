@@ -25,8 +25,8 @@
 static const char *kPayload = "hello world\n";
 static const size_t kPayloadLen = strlen(kPayload);
 
-// JZNet 定制版 mongoose 引用了此全局变量, 这里提供独立定义(默认 3MB)
-int JZNET_MAX_RECV = 3 * 1024 * 1024;
+// JZNet 定制版 mongoose 引用了此全局变量, 这里提供独立定义(默认不限制)
+int JZNET_MAX_RECV = -1;
 
 // 模拟 JZNet 的事件对象: 每次写/读都 new 一个, 对面线程 delete(对应 JZNetReqEvent / JZNetResEvent)
 struct ReqEvent   // 对应 JZNetReqEvent (Net_Write)

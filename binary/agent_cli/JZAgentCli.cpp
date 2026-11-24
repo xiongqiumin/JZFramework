@@ -1021,7 +1021,7 @@ void JZAgentCli::onHubReset(const std::string &scope)
 //   server 那边看到的是"这台 cli 上报的 rootDir", 但文件在 cli 所在的机器上,
 //   所以只能由 cli 在本机执行, 再把结果原样带回去。
 //   边界与 server 本机的 /api/fs 完全一致(见 JZFileOps.h): 读全盘, 写只能在 root 内。
-//   ⚠ 单包 256KB 上限: read 截到 160KB, truncated 让前端知道"只给了一段"。
+//   ⚠ 单包上限 10MB: read 仍截到 160KB, truncated 让前端知道"只给了一段"。
 // ---------------------------------------------------------------------------
 bool JZAgentCli::onHubFs(const std::string &op, const std::string &bodyText, std::string &resBody,
                          int64_t &size, int64_t &mtime, bool &truncated, std::string &error)

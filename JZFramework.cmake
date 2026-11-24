@@ -81,6 +81,13 @@ else()
     add_library(JZFramework STATIC "")
 endif()
 
+# Windows 下 Debug 产物加 d 后缀(JZFrameworkd.dll/.lib), 让 Debug/Release
+# 可以安装到同一个前缀而不互相覆盖(与 OpenCV 的命名习惯一致)。
+# Linux/macOS 保持单份, 同一前缀只保留最后一次安装的库。
+if(WIN32)
+    set_target_properties(JZFramework PROPERTIES DEBUG_POSTFIX "d")
+endif()
+
 # ---------------------------------------------------------------------------
 # 动态库的运行期落点: 把 JZFramework 运行时(DLL/.so/.dylib)**复制到各 exe 目录**。
 #   * Windows: 没有 RPATH 那套 —— exe 旁边找不到 JZFramework.dll 会直接以 0xC0000135

@@ -985,6 +985,8 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
 - **没有 `logAppend`**：server 侧看不到 cli 的控制台日志；managed 模式下 cli 也没 HTTP，现场排障只能看 cli 自己落盘的 `Agent.log`。这是 managed 模式最该先补的一项。
 - **没有 agent 白名单 / per-agent token**：任何拿到 `hub.token` 的 cli 都能连上（全局单一口令）。
 - ~~管理台没有事件流~~（2026-11-10 已补）：server 在 `Task.metadata.events` 保留有界事件序列（上限 200 条，每 20 条 + 终态落盘），并提供 `GET /api/tasks/subscribe?id=` 的 SSE 订阅。**仍未做**的是 cli 控制台日志的 `logAppend`，以及管理台按轮次展示完整工具输出/trace。
+- **管理台正文仍按段出现，不是逐字流式**（2026-11-24 盘点，待办）：LLM→cli 已是逐 delta（`sigReply`/`sigThinking`），但 server 的 `appendTaskEvent()` 把 `reply/thinking` 合并进 `openText`，只有累计 ≥8KB、切换事件类型、详情/事件接口请求或收尾时才 `flushOpenSegment()`；页面 SSE 只推 `{taskId,seq,...}` 信号，`seq` 未增长时前端直接忽略，实际靠 5s 轮询/8KB 分片拉取；拉到后 `renderTask()` 又整块重绘 `#thread`。表现是短回复常在 `task_end` 一次性出现，长思考按 8KB 跳。
+  建议分两步：① 先试 256–512 字节或按时间 flush，并让 `eventSeq` 随 flush 增长，验证观感；② 真正流式需要 server 推正文增量或 `openText` 快照，前端只追加当前 reply 的 DOM，`task_end` 仍以完整回复为准；不按 token 落 `tasks.jsonl`。
 - **MCP 只在队列 0**：`mcp.servers[]` 只挂 q0（每队列一套会让 stdio MCP 被拉起 N 次），q1+ 的模型工具面不齐。
 - **审计没有发起人**：管理台暂未鉴权（mTLS 已移除、token 待接入），`tasks.jsonl` 里也没有 requester 字段（§8）。
 - **`tasks.jsonl` 不轮转**：内存 500 条，文件无限追加且启动全量载入，长期运行会变慢并占盘。

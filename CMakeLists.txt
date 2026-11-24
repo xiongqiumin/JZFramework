@@ -166,6 +166,9 @@ add_subdirectory(binary)
 #
 #   cmake --install build --config Release --prefix <prefix>
 #
+# Windows: Debug 产物带 d 后缀(JZFrameworkd.dll/.lib)，Debug/Release 可以装到
+# 同一个前缀同时保留；Linux/macOS 不加后缀，同一前缀只保留最后安装的一份。
+#
 # 外部工程只需要:
 #   find_package(JZFramework CONFIG REQUIRED)
 #   target_link_libraries(app PRIVATE JZFramework::JZFramework)

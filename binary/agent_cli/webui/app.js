@@ -1546,7 +1546,12 @@ async function refreshNewEvents(id, m) {
       });
       AG.renderedSeq[id] = Math.max(last, ...evs.map(e => Number(e && e.seq) || 0));
       u.eventSeq = Math.max(Number(u.eventSeq) || 0, AG.renderedSeq[id]);
-      if (id === AG.sel) renderTask(false, '');
+      // 终态必须回源详情: usage/usage_turn 只在 Task.metadata 里, task_end 事件本身
+      // 不携带 usage。详情是运行中拉的(那时还没有 usage), 只追加事件会让上下文圈一直显示 0。
+      if (evs.some(e => e && e.type === 'task_end')) {
+        AG.detailLoaded[id] = false;
+        loadChatDetail(id, true);
+      } else if (id === AG.sel) renderTask(false, '');
     } else if (want > last) {
       AG.detailLoaded[id] = false;   // 信号说有新 seq 但拉不到: 回退详情
       loadChatDetail(id, true);

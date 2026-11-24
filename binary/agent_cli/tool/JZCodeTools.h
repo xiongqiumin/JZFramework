@@ -129,6 +129,18 @@ public:
 };
 
 // ------------------------------------------------------------------
+// append_file: 追加写入
+//   不覆盖原内容，在文件末尾追加；文件不存在时自动创建。
+//   大文件建议 write_file 写第一段，再 append_file 分段追加。
+// ------------------------------------------------------------------
+class JZAppendFileTool : public JZCodeTool
+{
+public:
+    JZAppendFileTool();
+    virtual void call(const ToolCall &params) override;
+};
+
+// ------------------------------------------------------------------
 // modify_file: 局部精确替换（不改其它内容）
 //   old_str 必须非空且唯一匹配（replace_all=true 则全部替换），用 new_str 替换它。
 //   整文件写入请用 write_file；本工具只做"片段级"修改。

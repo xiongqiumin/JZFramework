@@ -160,3 +160,68 @@ if(BUILD_TEST)
     add_subdirectory(test)
 endif()
 add_subdirectory(binary)
+
+# ---------------------------------------------------------------------------
+# install: JZFramework runtime + import lib + public headers + CMake package
+#
+#   cmake --install build --config Release --prefix <prefix>
+#
+# 外部工程只需要:
+#   find_package(JZFramework CONFIG REQUIRED)
+#   target_link_libraries(app PRIVATE JZFramework::JZFramework)
+# 宏(JZFRAMEWORK_DYNAMIC / JSON_DLL / HAS_JZ*)由 imported target 的
+# INTERFACE_COMPILE_DEFINITIONS 自动带出，不需要消费方重复。
+# ---------------------------------------------------------------------------
+include(CMakePackageConfigHelpers)
+
+install(TARGETS JZFramework
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib)
+
+# 模块公共头: 保留 <module>/... 目录结构；config 会把所有含头文件的目录
+# 加入 INTERFACE_INCLUDE_DIRECTORIES，消费方仍可 #include "JZApplication.h"。
+foreach(_jz_mod ${JZFRAMEWORK_ADDED_MODULES})
+    if(EXISTS "${JZFRAMEWORK_ROOT_DIR}/${_jz_mod}")
+        install(DIRECTORY "${JZFRAMEWORK_ROOT_DIR}/${_jz_mod}/"
+            DESTINATION "include/JZFramework/${_jz_mod}"
+            FILES_MATCHING
+                PATTERN "*.h"
+                PATTERN "*.hpp"
+                PATTERN "*.inl"
+                PATTERN "*.inc")
+    endif()
+endforeach()
+unset(_jz_mod)
+
+# 生成头: jz_version.h / JZFrameworkConfig.h
+install(FILES "${JZ_VERSION_HEADER}"
+    DESTINATION "include/JZFramework/generated" OPTIONAL)
+install(FILES "${CMAKE_BINARY_DIR}/generated/JZFrameworkConfig.h"
+    DESTINATION "include/JZFramework/generated" OPTIONAL)
+
+set(JZ_INSTALL_MODULE_DEFS "")
+foreach(_jz_mod ${JZFRAMEWORK_ADDED_MODULES})
+    string(APPEND JZ_INSTALL_MODULE_DEFS "HAS_${_jz_mod};")
+endforeach()
+unset(_jz_mod)
+
+configure_package_config_file(
+    "${JZFRAMEWORK_ROOT_DIR}/cmake/JZFrameworkConfig.cmake.in"
+    "${CMAKE_BINARY_DIR}/JZFrameworkConfig.cmake"
+    INSTALL_DESTINATION "lib/cmake/JZFramework")
+install(FILES "${CMAKE_BINARY_DIR}/JZFrameworkConfig.cmake"
+    DESTINATION "lib/cmake/JZFramework")
+
+# Windows 共享库运行期还需要 OpenSSL DLL；有就一起装，没有不阻塞 install。
+if(WIN32 AND JZFRAMEWORK_DYNAMIC AND OPENSSL_INCLUDE_DIR)
+    get_filename_component(_jz_ossl_bin "${OPENSSL_INCLUDE_DIR}/../bin" ABSOLUTE)
+    file(GLOB _jz_ossl_runtime
+        "${_jz_ossl_bin}/libssl-*.dll"
+        "${_jz_ossl_bin}/libcrypto-*.dll")
+    if(_jz_ossl_runtime)
+        install(FILES ${_jz_ossl_runtime} DESTINATION bin)
+    endif()
+    unset(_jz_ossl_runtime)
+    unset(_jz_ossl_bin)
+endif()

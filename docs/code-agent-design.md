@@ -78,7 +78,7 @@
 | `ts_add_class` / `ts_add_function` / `ts_rename_class` / `ts_rename_function` / `ts_replace_function` / `ts_delete_class` / `ts_delete_function`（7 个符号级编辑） | **删** | `write_file`（整文件重写，主力）/ `modify_file`（old_str→new_str，精确块替换）/ 可选 `replace_all` |
 | `build_project` | **不给模型**（2026-10-14 定） | 编译由模型**在终端里跑** `tsc -p tsconfig.json`；宿主侧 API `buildProject()` 保留给评测宿主/面板编译按钮 |
 | `run_js` | **删**（同一日） | 运行由模型在终端里跑 `code_runtime`（产物目录，缺省入口 `main.js`）；`tsc`/`code_runtime` 以**短名**注册进终端（见 §3.5） |
-| `read_file` / `write_file` / `modify_file` / `search_file` / `search_context` / `terminal_*` / `web_*` / `get_date_time` | **保留** | `terminal_*` 是**唯一执行面**（2026-10-14 起 `command`/cmd.exe 那条也已从 code_agent 摘掉，见 §3.5） |
+| `read_file` / `write_file` / `append_file` / `modify_file` / `search_file` / `search_context` / `terminal_*` / `web_*` / `get_date_time` | **保留** | `terminal_*` 是**唯一执行面**（2026-10-14 起 `command`/cmd.exe 那条也已从 code_agent 摘掉，见 §3.5） |
 | 路径权限校验（`DenyReason` / 可信目录） | **保留并抽出** | 这块实现值得留在工具库，不随 LSP 一起删 |
 
 ### 3.2 三条替代原则

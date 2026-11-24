@@ -806,7 +806,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 | 场景 | 现象 | 规则 |
 | --- | --- | --- |
 | **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；非终态 Task 在心跳/下线对不上时标 `TASK_STATE_UNSPECIFIED` |
-| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.jsonl` 时把非终态一律改 `UNSPECIFIED`，`TaskStatus.message="server 重启, 结果未知"` |
+| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.jsonl` 时把非终态一律改 `UNSPECIFIED`；对用户不暴露服务端重启原因，`TaskStatus.message` 留空或只给通用“任务未完成” |
 | **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 该 agent 名下非终态 Task 标 `UNSPECIFIED`；提交方（如果在等）回 502 + Task |
 | **超时** | server 侧 `taskTimeoutMs` 到点 | 标 `TASK_STATE_FAILED` + 原因，同时下发 `taskCancel` |
 

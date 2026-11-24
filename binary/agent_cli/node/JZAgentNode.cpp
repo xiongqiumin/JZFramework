@@ -186,13 +186,14 @@ void JZAgentNode::init(const JZNodeConfig &config)
     m_server->core()->setInstructions(buildInstructions());
 
     // ---- 文件工具 ----
-    // read_file / write_file / modify_file 是 agent_tool 里现成的那份(与本地
+    // read_file / write_file / append_file / modify_file 是 agent_tool 里现成的那份(与本地
     // code_agent 同一份实现): 按行读带行号、可分段, 改代码校验唯一匹配并回上下文
     // 片段 —— 这几件事 shell 给不了, 所以不走终端。
     if (m_config.allowFileTools)
     {
         addTool(new JZReadFileTool());
         addTool(new JZWriteFileTool());
+        addTool(new JZAppendFileTool());
         addTool(new JZModifyFileTool());
     }
 

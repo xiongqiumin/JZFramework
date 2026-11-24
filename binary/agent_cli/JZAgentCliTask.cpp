@@ -1019,6 +1019,7 @@ void JZAgentCliTask::setupAgent()
         // 这些 shell 给不了(sed 不校验唯一匹配), 所以不走终端。
         addTool(new JZReadFileTool());
         addTool(new JZWriteFileTool());
+        addTool(new JZAppendFileTool());
         addTool(new JZModifyFileTool());
         addTool(new JZSearchFileTool());      // 按文件名/路径找文件(如 "*.d.ts")
         addTool(new JZSearchContextTool());   // 搜文本/正则(原 search_file, 已改名)
@@ -1104,7 +1105,9 @@ string JZAgentCliTask::buildSystemPrompt() const
     }
     if (m_config.allowFileTools)
     {
-        text += "  read_file / write_file / modify_file   按行读(带行号)/整文件写/局部精确替换。\n";
+        text += "  read_file / write_file / append_file / modify_file   按行读(带行号)/整文件写/末尾追加/局部精确替换。\n";
+        text += "  ⭐ 大文件分块写: 先 write_file 写第一段，再用 append_file 追加后续段；"
+                "不要一次 write_file 整个大文件(单次 JSON 参数可能被截断)。\n";
         text += "  search_file    按文件名/路径找文件(通配符 * ?，如 \"*.d.ts\"、\"js_wrapper/*/types/*.d.ts\")，只回路径。\n";
         text += "  search_context 在工作区内搜索文本/正则(找某个串在哪些文件哪些行出现过)。\n";
         text += "  get_datetime   获取当前日期时间(需要\"今天\"这类信息时优先用)。\n";

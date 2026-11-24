@@ -59,7 +59,7 @@ public:
     // 终端是这台机器上唯一的执行面: 关掉它, 文件操作(ls/cat/cp/grep...)也没了 ——
     // 那些都是 shell 命令。
     bool allowTerminal = true;
-    // 文件工具(read_file / write_file / modify_file)。关掉后只剩终端,
+    // 文件工具(read_file / write_file / append_file / modify_file)。关掉后只剩终端,
     // 读写就得走 shell(大文件分段读、改代码校验唯一匹配这些能力会一起没掉)。
     bool allowFileTools = true;
 
@@ -131,7 +131,7 @@ private:
 //
 // 传输方式(HTTP)由 main.cpp 决定, 本类只负责"这台机器上有什么工具":
 //   终端(MCP 直出门面):  terminal_run(执行无状态, 没有 open/close/list)
-//   文件:  read_file / write_file / modify_file
+//   文件:  read_file / write_file / append_file / modify_file
 // 文件操作(ls/cat/mkdir/rm/cp/mv/grep...)不单独做工具 —— 它们都是 shell 命令,
 // 由 terminal_run 覆盖; 只有 modify_file 留在我们这边(sed 不校验唯一匹配)。
 // 终端 MCP 工具直接继承 JZMcpTool; 文件工具经 JZMcpToolBridge 挂成 MCP。

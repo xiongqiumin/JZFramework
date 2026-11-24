@@ -267,17 +267,39 @@ function taskCostLast(t) {
   if (start && m.endMs && m.endMs >= start) return ((m.endMs - start) / 1000).toFixed(1) + 's';
   return taskCost(t);            // 老记录没有 user_msg 事件: 退回总耗时
 }
-/* 任务结束回包里的 token 用量: total 是这次提交的总消耗, cached/prompt 算缓存命中率。
+/* 任务结束回包里的 token 用量: 只算"最后一次提交"(最后一条 user_msg 之后)。
+   优先读 server 算好的 metadata.usage_turn —— 它基于全量事件，不受网页事件分页影响。
+   老记录没有 usage_turn 时退回前端计算: task_end.usage + 最后一条 user_msg 之后的
+   context_compress 事件；再老、连 user_msg 都没有的记录则累加全部压缩事件。
    老任务没有 usage 字段 -> 返回空串, 不显示占位。 */
 function taskUsage(t) {
-  const u = (meta(t) || {}).usage || {};
+  const mt = meta(t) || {};
+  const u = mt.usage || {};
   const num = k => Number(u[k]) || 0;
-  // 终态 usage 只是最后一次压缩之后的快照; 压缩前用量在 context_compress 事件里。
+  // 服务端已算好本次提交用量: 不依赖网页事件页里有没有 user_msg / context_compress。
+  if (mt.usage_turn && typeof mt.usage_turn === 'object') {
+    const turn = mt.usage_turn;
+    const tn = k => Number(turn[k]) || 0;
+    return { prompt: tn('prompt_tokens'),
+             completion: tn('completion_tokens'),
+             total: tn('total_tokens'),
+             cached: tn('cached_tokens'),
+             context: num('context_tokens') };
+  }
   const parseEv = v => {
     if (typeof v !== 'string') return v;
     try { return JSON.parse(v); } catch (e) { return null; }
   };
-  const compressed = k => (taskEvents(t) || []).reduce((sum, raw) => {
+  const evs = taskEvents(t) || [];
+  // 事件按时间顺序；最后一次 user_msg 是本次提交的起点。老记录没有 user_msg 时
+  // 保持原行为(累加全部压缩事件)，至少不会少算。
+  let lastUser = -1;
+  for (let i = 0; i < evs.length; i++) {
+    const e = parseEv(evs[i]);
+    if (e && e.type === 'user_msg') lastUser = i;
+  }
+  const compressed = k => evs.reduce((sum, raw, i) => {
+    if (lastUser >= 0 && i <= lastUser) return sum;
     const e = parseEv(raw);
     if (!e || e.type !== 'context_compress') return sum;
     const d = parseEv(e.data) || {};
@@ -287,7 +309,7 @@ function taskUsage(t) {
            completion: num('completion_tokens') + compressed('completion_tokens'),
            total: num('total_tokens') + compressed('total_tokens'),
            cached: num('cached_tokens') + compressed('cached_tokens'),
-           context: num('context_tokens') };   // 最后一轮实际上下文(windowTokens), 与计费总量不同口径
+           context: num('context_tokens') };   // 最后一轮实际上下文(windowTokens), 与本次消耗不同口径
 }
 function fmtCount(n) {
   if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
@@ -306,7 +328,7 @@ function taskUsageTip(t) {
   const total = u.total || u.prompt + u.completion;
   if (!total) return '';
   const win = taskContextWindow(t);
-  return '输入 ' + u.prompt + ' / 输出 ' + u.completion + ' / 缓存命中 ' + u.cached
+  return '本次输入 ' + u.prompt + ' / 输出 ' + u.completion + ' / 缓存命中 ' + u.cached
     + ' tok（命中率 = 缓存命中 / 输入）'
     + (u.context ? ' · 上下文 ' + fmtCount(u.context) + (win ? ' / ' + fmtCount(win) : '') : '');
 }
@@ -371,18 +393,15 @@ function badge(t) {
 /* ---------------- HTTP ---------------- */
 /* ---- 连接状态: 断了要在页面上说一声, 别让"发送"一直转圈 ---- */
 /* ⚠ 别见到一次失败就报断线: SSE 在任务结束时会正常关流(EventSource 自己重连),
-   轮询偶尔也会超时一次 —— 那一瞬间弹"连接已恢复"就是刷屏的根源。
-   规则: 连续 2 次失败才算断; 断线超过 5s 才提示恢复(短暂抖动什么都不弹)。 */
+   轮询偶尔也会超时一次。规则: 连续 2 次失败才算断; 恢复时静默收起提示条。 */
 const CONN = { lost: false, reason: '', since: 0, fails: 0 };
 function setConn(ok, reason) {
   const bar = document.getElementById('connBar');
   if (ok) {
     CONN.fails = 0;
     if (!CONN.lost) return;
-    const downMs = Date.now() - CONN.since;
     CONN.lost = false; CONN.reason = '';
     if (bar) bar.classList.add('hidden');
-    if (downMs >= 5000 && window.JzUI) JzUI.toast('连接已恢复', 'ok');
     return;
   }
   const why = reason || '网络中断';

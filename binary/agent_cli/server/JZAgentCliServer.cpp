@@ -1664,10 +1664,16 @@ void JZAgentCliServer::loadTaskStore()
         r.state = st.get("state", kStateUnknown).asString();
         if (statusParts.isArray() && statusParts.size() > 0)
             r.error = statusParts[0].get("text", "").asString();
+        // 旧记录可能把服务端重启写进错误文案; 对用户不再暴露这类内部原因。
+        if (r.error.find("server 重启") != string::npos ||
+            r.error.find("服务重启") != string::npos ||
+            r.error.find("服务器重启") != string::npos)
+            r.error.clear();
         r.lastEventType = meta.get("lastEventType", "").asString();
         r.rounds = meta.get("rounds", 0).asInt();
         r.round = meta.get("round", 0).asInt();
         r.usage = meta.get("usage", Json::Value());
+        r.usageTurn = meta.get("usage_turn", Json::Value());
         r.startMs = (long long)meta.get("startMs", 0).asInt64();
         r.endMs = (long long)meta.get("endMs", 0).asInt64();
         r.contextId = j.get("contextId", "").asString();
@@ -1680,6 +1686,9 @@ void JZAgentCliServer::loadTaskStore()
         r.artifacts = stringsFromJson(j.get("artifacts", Json::Value(Json::arrayValue)));
         r.history = stringsFromJson(j.get("history", Json::Value(Json::arrayValue)));
         r.eventSeq = meta.get("eventSeq", (int)r.events.size()).asInt();
+        // 老记录没有 usage_turn: 用落盘的全量事件补算一次(不受事件分页影响)
+        if (!r.usageTurn.isObject() && r.usage.isObject())
+            r.usageTurn = taskUsageTurn(r);
 
         const bool wasWorking = isWorkingState(r.state) || r.state == kStateUnknown;
         // 服务重启会丢掉在途工具回包: 工作态和旧的"结果未知"记录都按未完成取消处理。
@@ -1710,9 +1719,8 @@ void JZAgentCliServer::loadTaskStore()
                 if (!id.empty())
                     result["id"] = id;
                 result["ok"] = false;
-                result["result"] = "中断：服务重启，工具结果未知";
+                result["result"] = "中断";
                 result["interrupted"] = true;
-                result["reason"] = "server_restart";
                 appendTaskEvent(&r, "tool_result", result);
                 if (!id.empty())
                     doneIds.push_back(id);
@@ -1724,9 +1732,9 @@ void JZAgentCliServer::loadTaskStore()
         if (wasWorking)
         {
             // 上次进程没等到回包就退出了: 按未完成取消处理(和用户取消同一口径),
-            // 不再制造"结果未知"这种卡在中间的状态。
+            // 不再制造"结果未知"这种卡在中间的状态。错误文案不向用户暴露服务端重启。
             r.state = kStateCanceled;
-            r.error = "server 重启, 任务未完成";
+            r.error.clear();
             r.endMs = now;
         }
         m_tasks[r.taskId] = r;
@@ -2194,6 +2202,7 @@ void JZAgentCliServer::recordEnd(const string &taskId, const Json::Value &result
     r->rounds = result.get("verify_rounds", 0).asInt();
     r->error = result.get("error", "").asString();
     r->usage = result.get("usage", Json::Value());
+    r->usageTurn = taskUsageTurn(*r);   // 本次提交: 最后一次 user_msg 之后的用量
     r->endMs = r->statusMs = (long long)JZDateTime::currentMSecsSinceEpoch();
 
     // A2A: 结果放 Artifact, 不要用 Message 传输出
@@ -2536,6 +2545,65 @@ JZAgentCliServer::TaskRecord *JZAgentCliServer::findTask(const string &taskId)
     return (it == m_tasks.end()) ? nullptr : &it->second;
 }
 
+// 本次提交的 token: task_end.usage + 最后一条 user_msg 之后的 context_compress。
+// 事件列表可能被分页截断，网页不一定拿得到那条 user_msg，所以在 server 侧算好。
+Json::Value JZAgentCliServer::taskUsageTurn(const TaskRecord &r) const
+{
+    if (!r.usage.isObject())
+        return Json::Value();
+
+    static const char *kKeys[] = {
+        "prompt_tokens", "completion_tokens", "total_tokens", "cached_tokens"
+    };
+    Json::Value out(Json::objectValue);
+    for (const char *k : kKeys)
+        out[k] = (Json::Int64)0;
+
+    auto addUsage = [&out](const Json::Value &u)
+    {
+        if (!u.isObject())
+            return;
+        for (const char *k : kKeys)
+            out[k] = out[k].asInt64() + u.get(k, 0).asInt64();
+    };
+
+    addUsage(r.usage);
+
+    // 最后一条 user_msg = 本次提交起点；老记录没有 user_msg 时保持"累加全部压缩事件"。
+    bool hasUser = false;
+    size_t lastUser = 0;
+    for (size_t i = 0; i < r.events.size(); ++i)
+    {
+        Json::Value e;
+        if (!parseJsonText(r.events[i], e) || !e.isObject())
+            continue;
+        if (e.get("type", "").asString() == "user_msg")
+        {
+            hasUser = true;
+            lastUser = i;
+        }
+    }
+
+    const size_t begin = hasUser ? lastUser + 1 : 0;
+    for (size_t i = begin; i < r.events.size(); ++i)
+    {
+        Json::Value e;
+        if (!parseJsonText(r.events[i], e) || !e.isObject())
+            continue;
+        if (e.get("type", "").asString() != "context_compress")
+            continue;
+        Json::Value d = e["data"];
+        if (d.isString())
+        {
+            Json::Value parsed;
+            if (parseJsonText(d.asString(), parsed))
+                d = parsed;
+        }
+        addUsage(d);
+    }
+    return out;
+}
+
 // 对外只有这一种形状: A2A v1.0 Task。管理所需的额外信息一律放 metadata。
 Json::Value JZAgentCliServer::taskJson(const TaskRecord &r, int evLimit) const
 {
@@ -2573,6 +2641,8 @@ Json::Value JZAgentCliServer::taskJson(const TaskRecord &r, int evLimit) const
     meta["round"] = r.round;
     if (r.usage.isObject())
         meta["usage"] = r.usage;
+    if (r.usageTurn.isObject())
+        meta["usage_turn"] = r.usageTurn;
     meta["lastEventType"] = r.lastEventType;
     // 事件**全量落盘**, 但对外一次只回一页(默认最近 200 条, 起点对齐到 user_msg)。
     // 前端拿 eventsOffset > 0 就显示"加载更多", 走 /api/tasks/events 往前翻。

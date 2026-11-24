@@ -39,7 +39,6 @@ private:
     JZByteArray m_cipherBuf;     // 加密模式下: 接收侧累积的原始密文(长度前缀+密文+tag)
     std::vector<JZNetPackPtr> m_packList;
     bool m_cryptoOn;             // 是否启用握手加密(ChaCha20-Poly1305)
-    bool m_receiveOverflow = false;   // 未解出完整包就超过单包上限: 丢弃并让 parse() 失败
     JZByteArray m_key;           // 32 字节
     JZByteArray m_sendNonce;     // 12 字节(发送方向 base nonce)
     JZByteArray m_recvNonce;     // 12 字节(接收方向 base nonce)

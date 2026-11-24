@@ -358,6 +358,7 @@ private:
         long long startMs = 0, endMs = 0, statusMs = 0;
         int eventSeq = 0;                          // 事件序号(断线重连可据此去重)
         Json::Value usage;                         // 任务结束回包里的 token 用量(含缓存命中)
+        Json::Value usageTurn;                     // 本次提交用量(最后一条 user_msg 之后)
         std::vector<std::string> events;           // 状态事件(JSON 字符串, 放 metadata.events), 全量不裁剪
         // ---- 流式分片合并(落盘前) ----
         // reply/thinking 是逐 token 推送的, 一条一条写会把 events 撑成几万个碎片。
@@ -406,6 +407,9 @@ private:
     // 1000 而不是 200: 200 条事件在长任务里三四十个块就到了, "加载更多"动不动就冒出来,
     // 用户以为是没显示全。绝大多数任务 1000 条一次到底; 真超了还有 /api/tasks/events 往前翻。
     Json::Value taskJson(const TaskRecord &r, int evLimit = 1000) const;
+    // 本次提交的 token: task_end.usage + 最后一条 user_msg 之后的 context_compress。
+    // 事件可能被分页截断，所以由 server 在收尾/载入时算好，不依赖网页是否拿到了那条 user_msg。
+    Json::Value taskUsageTurn(const TaskRecord &r) const;
     // ---- 会话上下文存档: 一个 contextId 一个文件, 只留最新一份 ----
     // 为什么不塞进任务记录: 同一会话链第 N 条再把前 N 轮存一遍 → tasks.jsonl 涨成 O(n²);
     // 而且续聊只需要"这条会话当前的状态", 不需要任意回溯某条历史任务。

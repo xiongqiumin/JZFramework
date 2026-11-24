@@ -1153,6 +1153,103 @@ void JZWriteFileTool::call(const ToolCall &params)
     finish(params, true, msg);
 }
 
+// ==================== JZAppendFileTool ====================
+JZAppendFileTool::JZAppendFileTool()
+{
+    ToolDefine def;
+    def.name = "append_file";
+    def.description = "向文件末尾追加内容（不覆盖原内容）。文件不存在会自动创建。"
+                      "大文件建议先用 write_file 写第一段，再用 append_file 分段追加，"
+                      "避免单次生成过大的 JSON 参数被截断。";
+    def.parameters.push_back(makeParam("path", ParamType::String, "相对工作区或绝对路径"));
+    def.parameters.push_back(makeParam("content", ParamType::String, "要追加到文件末尾的文本"));
+    def.required_parameters.push_back("path");
+    def.required_parameters.push_back("content");
+    setToolDefine(def);
+}
+
+void JZAppendFileTool::call(const ToolCall &params)
+{
+    string rel = params.params.get("path", "").asString();
+    if (rel.empty())
+    {
+        finish(params, false, "参数 path 不能为空");
+        return;
+    }
+    string content = params.params.get("content", "").asString();
+    if (content.empty())
+    {
+        finish(params, false, "参数 content 不能为空");
+        return;
+    }
+
+    string abs = fullPath(rel);
+    DenyReason ret = checkPathPermission(ToolOperator::Write, abs);
+    if (ret != DenyReason::None)
+    {
+        finish(params, false, denyReasonText(ret), ret);
+        return;
+    }
+
+    JZFileInfo info(abs);
+    if (info.exists() && info.isDir())
+    {
+        finish(params, false, "目标是目录, 不能追加: " + rel, DenyReason::WriteDenied);
+        return;
+    }
+    if (info.exists() && !isTextFile(abs))
+    {
+        finish(params, false, "不能追加二进制文件: " + rel);
+        return;
+    }
+
+    bool existed = info.exists();
+
+    // 与原文件行尾保持一致: 原来是 CRLF, 追加的 LF 也翻成 CRLF
+    string out = content;
+    if (existed && !out.empty())
+    {
+        string oldText;
+        string readError;
+        if (readHostFile(m_host, abs, oldText, readError) &&
+            oldText.find("\r\n") != string::npos && out.find("\r\n") == string::npos)
+        {
+            str_replace(out, "\n", "\r\n");
+        }
+    }
+
+    string dir = JZFileInfo(abs).path();
+    if (!dir.empty())
+    {
+        JZDir parent;
+        if (!parent.exists(dir) && !parent.mkpath(dir))
+        {
+            finish(params, false, "创建父目录失败: " + dir, DenyReason::WriteDenied);
+            return;
+        }
+    }
+
+    JZFile file;
+    if (!file.open(abs, existed ? "ab" : "wb"))
+    {
+        finish(params, false, "打开文件失败(权限?): " + rel, DenyReason::WriteDenied);
+        return;
+    }
+    int written = file.write(str_toUtf8(out));
+    file.close();
+    if (written != (int)out.size())
+    {
+        finish(params, false, "追加长度不符: " + rel, DenyReason::EditFailed);
+        return;
+    }
+
+    vector<string> lines = readLines(out);
+    string msg = (existed ? "已追加到文件 " : "已新建文件 ") + rel +
+                 "，本次 " + to_string(lines.size()) + " 行，当前 " +
+                 to_string(JZFileInfo(abs).size()) + " 字节。";
+    finish(params, true, msg);
+}
+
 // ==================== JZModifyFileTool ====================
 JZModifyFileTool::JZModifyFileTool()
 {

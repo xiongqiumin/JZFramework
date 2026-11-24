@@ -1,0 +1,73 @@
+@PACKAGE_INIT@
+
+# JZFramework installed package.
+# The imported target carries the same compiler definitions and include paths
+# that the in-tree JZFramework target exposes, so consumers do not need to
+# repeat JZFRAMEWORK_DYNAMIC / JSON_DLL / HAS_JZ* / NOMINMAX manually.
+
+set(_jz_root "${PACKAGE_PREFIX_DIR}")
+set(_jz_inc_root "${_jz_root}/include/JZFramework")
+
+# 安装时保留了模块目录结构；把所有目录加入搜索路径，消费方可以继续使用
+# #include "JZApplication.h" / "JZJson.h" / "json/json.h" 这类裸文件名。
+file(GLOB_RECURSE _jz_entries LIST_DIRECTORIES true "${_jz_inc_root}/*")
+set(_jz_inc_dirs "${_jz_inc_root}")
+foreach(_jz_e IN LISTS _jz_entries)
+    if(IS_DIRECTORY "${_jz_e}")
+        list(APPEND _jz_inc_dirs "${_jz_e}")
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES _jz_inc_dirs)
+
+if(@JZFRAMEWORK_DYNAMIC@)
+    add_library(JZFramework::JZFramework SHARED IMPORTED)
+    if(WIN32)
+        set_target_properties(JZFramework::JZFramework PROPERTIES
+            IMPORTED_IMPLIB "${_jz_root}/lib/JZFramework.lib"
+            IMPORTED_LOCATION "${_jz_root}/bin/JZFramework.dll")
+    elseif(APPLE)
+        set_target_properties(JZFramework::JZFramework PROPERTIES
+            IMPORTED_LOCATION "${_jz_root}/lib/libJZFramework.dylib")
+    else()
+        set_target_properties(JZFramework::JZFramework PROPERTIES
+            IMPORTED_LOCATION "${_jz_root}/lib/libJZFramework.so")
+    endif()
+else()
+    add_library(JZFramework::JZFramework STATIC IMPORTED)
+    if(WIN32)
+        set_target_properties(JZFramework::JZFramework PROPERTIES
+            IMPORTED_LOCATION "${_jz_root}/lib/JZFramework.lib")
+    else()
+        set_target_properties(JZFramework::JZFramework PROPERTIES
+            IMPORTED_LOCATION "${_jz_root}/lib/libJZFramework.a")
+    endif()
+endif()
+
+set(_jz_defs "@JZ_INSTALL_MODULE_DEFS@")
+if(@JZFRAMEWORK_DYNAMIC@)
+    list(APPEND _jz_defs JZFRAMEWORK_DYNAMIC JSON_DLL)
+    if("HAS_JZJSEngine" IN_LIST _jz_defs)
+        list(APPEND _jz_defs USING_QJS_SHARED)
+    endif()
+endif()
+list(APPEND _jz_defs NOMINMAX _CRT_SECURE_NO_WARNINGS)
+
+set_property(TARGET JZFramework::JZFramework APPEND PROPERTY
+    INTERFACE_INCLUDE_DIRECTORIES ${_jz_inc_dirs})
+set_property(TARGET JZFramework::JZFramework APPEND PROPERTY
+    INTERFACE_COMPILE_DEFINITIONS ${_jz_defs})
+
+if(WIN32)
+    # JZWidget/JZNet/JZAudio 等模块用到的系统库。共享库消费方不强制需要，
+    # 静态库消费方必须有；放在接口上对两种模式都安全。
+    set_property(TARGET JZFramework::JZFramework APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES gdiplus imm32 shell32 comdlg32 ole32 user32 gdi32 iphlpapi winmm)
+endif()
+
+unset(_jz_root)
+unset(_jz_inc_root)
+unset(_jz_headers)
+unset(_jz_inc_dirs)
+unset(_jz_defs)
+
+check_required_components(JZFramework)

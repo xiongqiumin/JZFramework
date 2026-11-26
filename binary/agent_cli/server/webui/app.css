@@ -938,3 +938,7 @@ body.is-col-resize { cursor: col-resize; user-select: none; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .dpick-row.is-sel { background: var(--jz-accent); color: #fff; }
+
+/* 琚埅鏂殑澶у唴瀹? 鐐逛竴琛屾寜 seq 鍙栧洖瀹屾暣鍐呭(瑙?app.js blockHtml) */
+.cs-load { cursor: pointer; color: #2a6fd6; font-size: 12px; padding: 4px 0; user-select: none; }
+.cs-load:hover { text-decoration: underline; }

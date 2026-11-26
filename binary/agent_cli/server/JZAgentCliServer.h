@@ -7,12 +7,12 @@
 #include <vector>
 
 #include "JZAgentCliTask.h"      // JZCliConfig: 内置 agent 与 cli 共用配置
+#include "JZAgentTaskStore.h"    // 任务历史: SQLite 摘要库
 #include "JZJson.h"
 #include "JZNet/JZNetPacket.h"   // JZNetPackPtr(onHubPacket 的入参)
 #include "JZObject.h"
 
 class JZHttpServer;
-#include "JZServerAgent.h"
 
 class JZTimer;
 class JZNetServer;
@@ -78,6 +78,7 @@ struct JZCliServerAgentConfig
     bool enabled = true;        // 是否随 server 启动; 全部 disabled / agents 为空 = 不起任何 cli
     std::vector<std::string> args;   // 启动参数, 如 ["-c","agent1.json"](只用其中的配置文件路径)
     std::string dir;            // 基准目录(空 = server 同目录); args 里的相对路径按它展开
+    std::vector<std::string> tools; // 额外工具名(如 server_agents / server_task_query), 由注册表创建
 };
 
 // 一台被管理 cli 的运行状态(线程视角; 在线与否看控制面 hub 的在线列表)
@@ -136,12 +137,6 @@ struct JZCliServerConfig
     // 管理的一系列 agent_cli(各作为一个子进程拉起并监管)
     std::vector<JZCliServerAgentConfig> agents;
 
-    // server 自己那个 JZAgent(内置 agent, 跑在 server 进程内, agentId 默认 "server")
-    // 运行参数与 agent_cli 共用 JZCliConfig, 只是在这里多记一个是否启用与展示用 id/name。
-    bool selfAgentEnabled = false;
-    std::string selfAgentId = "server";
-    std::string selfAgentName = "server(builtin)";
-    JZCliConfig selfAgent;
 };
 
 // 单个被管理 agent 的运行实例(实现细节, 见 cpp)
@@ -166,7 +161,7 @@ public:
     bool stopAgent(const std::string &name);    // 优雅停止
     bool restartAgent(const std::string &name); // 重启
 
-    // ---- 给 server 内置 agent 的工具用(实现见 JZServerAgent.cpp) ----
+    // ---- 给 server_* 工具用 ----
     Json::Value snapshotAgents() const { return onlineAgentsJson(); }
     Json::Value snapshotTasks(const std::string &agentId, const std::string &state, int limit) const
     {
@@ -187,7 +182,7 @@ public:
     void onApiTaskCancel(JZHttpServerClient *client, const JZHttpRequest &req);
     // 删除历史任务记录(只允许已结束的; 在跑的必须先取消)
     void onApiTaskDelete(JZHttpServerClient *client, const JZHttpRequest &req);
-    // 任务记录(server 侧历史, 落盘 tasks.jsonl)
+    // 任务记录(server 侧历史, 落盘 SQLite tasks.db)
     void onApiTaskList(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiTaskDetail(JZHttpServerClient *client, const JZHttpRequest &req);
     // 事件分页: ?id=&before=<offset> 往前翻(加载更多); ?id=&after=<seq> 往后增量。
@@ -233,7 +228,6 @@ private:
     JZTimer *m_reapTimer = nullptr;
     void failPendingTasksOf(const std::string &agentId, const std::string &error);
     Json::Value onlineAgentsJson() const;
-    Json::Value selfModelListJson() const;   // selfAgent.models: 只给名字, 不含 token
     std::string resolveProgram(const JZCliServerAgentConfig &cfg) const;
     void appendLog(JZCliServerAgentInstance *inst, const std::string &chunk);
     // 管理台网页的落盘目录(<exeDir>/server_web); 页面 CSS/JS 也从这里读
@@ -324,11 +318,7 @@ private:
     std::map<std::string, PendingTask> m_pendingTasks;    // taskId -> 在跑任务(client 可空, 均有超时)
     int m_taskSeq = 0;
 
-    // ---- 内置 agent(server 自己跑的那个 JZAgent) ----
-    JZServerAgent *m_selfAgent = nullptr;
-    bool isSelfAgentId(const std::string &id) const;
-    void onSelfAgentEvent(const JZServerAgentEvent &ev);
-    // 任务下发核心: HTTP 与内置 agent 的工具共用。
+    // 任务下发核心: HTTP 与 server_* 工具共用。
     //   waiter 非空 = 同步模式(调用方不要自己回包, 回包在 taskEnd/done 时发出)
     //   返回 http 状态码; 202 = 已接受(异步), >=400 = 失败(ack 里有 error)
     //   origin: "user" = 人主动下发(HTTP/管理台), "agent" = 内置 agent 的工具内部派活。
@@ -343,38 +333,11 @@ private:
     // 归属(见 docs/agent-hub-design.md §10): **server 是任务历史的主人**, cli 只知道
     // "当前这一条"加上它自己内存里的 recent(重启即丢)。历史不在 server 落盘的话,
     // cli 一重启, 提交方就再也查不到自己交过什么。
-    // 只有一套模型: A2A v1.0 Task。内部字段名也用状态词本身, 不再存 running/success 那套。
-    struct TaskRecord
-    {
-        std::string taskId, agentId, prompt, verifyCmd;
-        std::string state;         // TASK_STATE_SUBMITTED / WORKING / COMPLETED / FAILED / CANCELED / REJECTED / UNSPECIFIED
-        std::string error;         // TaskStatus.message
-        std::string contextId;
-        std::string project;       // 项目名(来自 agent): 网页按 project 筛选任务
-        std::string origin;        // "user"(人下发) / "agent"(内置 agent 工具派活)
-        std::string parentTaskId;  // origin=agent 时: 是哪个任务调的工具
-        std::string lastEventType;
-        int rounds = 0, round = 0;
-        long long startMs = 0, endMs = 0, statusMs = 0;
-        int eventSeq = 0;                          // 事件序号(断线重连可据此去重)
-        Json::Value usage;                         // 任务结束回包里的 token 用量(含缓存命中)
-        Json::Value usageTurn;                     // 本次提交用量(最后一条 user_msg 之后)
-        std::vector<std::string> events;           // 状态事件(JSON 字符串, 放 metadata.events), 全量不裁剪
-        // ---- 流式分片合并(落盘前) ----
-        // reply/thinking 是逐 token 推送的, 一条一条写会把 events 撑成几万个碎片。
-        // 这里把"连续的同类型分片"攒成一整段, 遇到别的类型/任务收尾才落一条。
-        std::string openKind;                      // 正在累积的类型(reply/thinking); 空 = 没有
-        std::string openText;                      // 已累积的文本
-        long long openAt = 0;                      // 首片时间(落盘时当 at 用)
-        std::vector<std::string> artifacts;        // A2A Artifact(JSON 字符串)
-        std::vector<std::string> history;          // A2A Message(JSON 字符串)
-        // 注意: 对话上下文**不在这里**。每条任务存一份快照会让 JSONL 涨成 O(n²),
-        // 而续聊只要"这条会话最新一份"就够(见下面的 ctx 文件)。
-    };
+    // 记录结构和持久化都放在 JZAgentTaskStore 里, 这里只保留类型别名。
+    using TaskRecord = JZAgentTaskRecord;
     std::map<std::string, TaskRecord> m_tasks;      // taskId -> 记录
-    std::map<std::string, long long> m_sseTick;     // taskId -> 上次推 status_update 的 tick(节流)
     std::vector<std::string> m_taskOrder;           // 插入顺序(裁剪最老的)
-    std::string m_taskFile;                         // <exeDir>/data/tasks.jsonl
+    JZAgentTaskStore m_taskStore;                   // 摘要常驻, 详情按需解析
 
     // GET /api/tasks/subscribe?id= 的订阅者: taskId -> 若干 SSE 连接
     std::map<std::string, std::vector<JZHttpServerClient*> > m_taskStreams;
@@ -387,9 +350,17 @@ private:
                             const std::string &payload, int seq = 0);
     Json::Value agentCardJson(const std::string &agentId) const;
 
-    void loadTaskStore();
-    void saveTaskRecord(const TaskRecord &r);       // 追加一行(JSONL, 后写覆盖先写)
-    void rewriteTaskStore();                        // 删除记录后整体重写(否则重启会被旧行复活)
+    void loadTaskStore();                           // 打开 SQLite 任务库, 只载入摘要
+    bool openTaskStoreDb();
+    void ensureTaskDetail(TaskRecord &r) const;     // 从 payloadJson 解析全量 events/artifacts/history
+    // 从会话上下文(ctx 存档)重建这条任务的聊天记录:
+    //   聊天记录 = 上下文历史(user/assistant/tool) + 任务生命周期(submitted/task_start/task_end)。
+    // 运行中的事件只在内存里(SSE/网页实时), 不再落盘; 重启后靠这里恢复。
+    Json::Value eventsFromContext(const TaskRecord &r) const;
+    void upsertTaskRecord(TaskRecord &r);
+    void pruneTaskStore();                          // 删除已被裁掉/删掉的任务行
+    void saveTaskRecord(TaskRecord &r);             // upsert 一行到 SQLite
+    void rewriteTaskStore();                        // 删除记录后同步 SQLite
     void recordCreate(const std::string &taskId, const std::string &agentId, const Json::Value &body,
                       const std::string &origin = std::string("user"),
                       const std::string &parentTaskId = std::string());
@@ -411,7 +382,7 @@ private:
     // 事件可能被分页截断，所以由 server 在收尾/载入时算好，不依赖网页是否拿到了那条 user_msg。
     Json::Value taskUsageTurn(const TaskRecord &r) const;
     // ---- 会话上下文存档: 一个 contextId 一个文件, 只留最新一份 ----
-    // 为什么不塞进任务记录: 同一会话链第 N 条再把前 N 轮存一遍 → tasks.jsonl 涨成 O(n²);
+    // 为什么不塞进任务记录: 同一会话链第 N 条再把前 N 轮存一遍 → 任务库 payload 涨成 O(n²);
     // 而且续聊只需要"这条会话当前的状态", 不需要任意回溯某条历史任务。
     std::string m_ctxDir;                    // <exeDir>/data/ctx
     std::map<std::string, Json::Value> m_contextCache;

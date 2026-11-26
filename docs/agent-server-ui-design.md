@@ -154,7 +154,7 @@
 | 指令 / agent 回复 `<pre>` | `max-height` 180px / 220px |
 | Artifact `<pre>` | `max-height` 320px，`white-space: pre-wrap` |
 
-⇒ 超出部分靠滚动，被裁掉的**前段过程事件不可回溯**（当前取舍：不撑爆 `tasks.jsonl` 与 DOM）。
+⇒ 超出部分靠滚动，被裁掉的**前段过程事件不可回溯**（当前取舍：不撑爆 `tasks.db` 与 DOM）。
 
 ---
 

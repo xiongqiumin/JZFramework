@@ -1,7 +1,9 @@
 #include "JZAgentCli.h"
 
 #include "JZByteArray.h"
+#include "JZDateTime.h"      // 错误消息也作为一条历史(带时间戳)写进上下文
 #include "JZCliConfigIO.h"   // jzCliMemoryFilePath(与启动打印同一套规则)
+#include "JZCliExtraTool.h"  // 配置驱动的额外工具
 #include "JZDebug.h"
 #include "JZDir.h"
 #include "JZFile.h"
@@ -465,7 +467,7 @@ void JZAgentCliTask::onToolResult(const ToolCallResult &result)
 
     Json::Value d;
     d["id"] = result.id;
-    d["ok"] = result.isOk;
+    // 不再带 ok: 成功/失败由错误事件(role=error 的历史)体现, 实时和重建两边的形状保持一致
     d["result"] = result.result;
     pushEvent("tool_result", d);
 }
@@ -1083,6 +1085,17 @@ void JZAgentCliTask::setupAgent()
             [this](const std::string &host) { return m_cli->nodeLink(host); }, list, this);
         m_agent->addTool(ssh);
         m_tools.push_back(ssh);
+    }
+
+    // 配置驱动的额外工具: 由宿主(server 等)注册工厂, 只在 internal worker 的配置里出现。
+    for (const std::string &name : m_config.extraTools) {
+        JZAgentTool *tool = jzCreateCliExtraTool(name, this);
+        if (!tool) {
+            jzWarning() << "额外工具未注册, 已跳过:" << name.c_str();
+            continue;
+        }
+        m_agent->addTool(tool);
+        m_tools.push_back(tool);
     }
 }
 
@@ -1738,6 +1751,16 @@ void JZAgentCliTask::onError(const std::string &err)
     d["retry_mode"] = (mode == RetryFix) ? "fix" : (mode == RetryTransient ? "continue" : "none");
     d["retryable"] = retryable;          // 还会自动重试吗(网页据此提示"将自动重试")
     pushEvent("error", d);
+
+    // 错误也留一条历史(role=error, 只存不发给模型): 聊天记录从上下文重建时
+    // 天然还原成一条 error 事件, 不必再单独持久化过程事件(见 JZAgentCliServer::eventsFromContext)。
+    {
+        Json::Value m;
+        m["role"] = "error";
+        m["content"] = err;
+        m["at"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
+        pushEvent("context_history", m);
+    }
 }
 
 void JZAgentCliTask::onContextCompress(const JZAgentTokenUsage &u)

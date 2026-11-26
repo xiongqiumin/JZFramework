@@ -17,6 +17,7 @@ JZInprocCli::~JZInprocCli()
 
 bool JZInprocCli::startCli(const std::string &configPath, const std::string &agentName,
                            const std::string &hubHost, int hubPort, const std::string &hubToken,
+                           const std::vector<std::string> &extraTools,
                            std::string &error)
 {
     // 配置解析放在调用线程: 这里只是读文件 + 填结构体, 不碰任何 JZ 对象,
@@ -38,6 +39,7 @@ bool JZInprocCli::startCli(const std::string &configPath, const std::string &age
     m_hubHost = hubHost;
     m_hubPort = hubPort;
     m_hubToken = hubToken;
+    m_extraTools = extraTools;
 
     // 注意: JZAgentCli 不在这个线程建 —— 它归线程自己的事件循环(见 run())
     setLastError(std::string());
@@ -81,6 +83,15 @@ void JZInprocCli::run()
     config.server.token = m_hubToken;
     if (config.server.agentId.empty())
         config.server.agentId = m_agentName;
+    // agents[].tools 与 cli 配置里的 extraTools 合并, 由任务创建时按注册表挂载。
+    for (const auto &name : m_extraTools) {
+        bool exists = false;
+        for (const auto &old : config.extraTools) {
+            if (old == name) { exists = true; break; }
+        }
+        if (!exists)
+            config.extraTools.push_back(name);
+    }
 
     JZAgentCli *cli = new JZAgentCli();
     if (!cli->init(config, error))

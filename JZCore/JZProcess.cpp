@@ -68,11 +68,35 @@ static HANDLE openDetachedSink(const string &file, SECURITY_ATTRIBUTES *sa)
                        FILE_ATTRIBUTE_NORMAL, nullptr);
 }
 
+// Windows 环境变量名**不区分大小写**: `Path` 与 `PATH` 是同一个变量
+// (GetEnvironmentVariable/SetEnvironmentVariable 按忽略大小写解析, 实测三种拼法读到同一个值)。
+// 而 std::map 默认比较器区分大小写 —— 拿它做"父环境 + 覆盖"会把同一个变量当成两个 key:
+// 覆盖值压在另一条上, 环境块里同时留下 `Path`(继承) 和 `PATH`(覆盖)。
+// 后果: ① 覆盖是否生效取决于排序位置, 纯运气; ② 绝大多数程序按忽略大小写查 PATH 感知不到,
+// 但 .NET/MSBuild 的 ProcessStartInfo.EnvironmentVariables 用大小写不敏感的字典装它, 直接抛
+// ArgumentException(实测: agent 终端里跑 cmake 的 Visual Studio 生成器 → MSBuild MSB6001 →
+// 编译器 "broken" / "No CMAKE_CXX_COMPILER could be found")。
+// POSIX 侧不适用(那边环境变量名本来就区分大小写, `Path` 与 `PATH` 是两个变量), 见 execvp 分支。
+struct WinEnvNameLessA
+{
+    bool operator()(const string &a, const string &b) const
+    {
+        return _stricmp(a.c_str(), b.c_str()) < 0;
+    }
+};
+struct WinEnvNameLessW
+{
+    bool operator()(const wstring &a, const wstring &b) const
+    {
+        return _wcsicmp(a.c_str(), b.c_str()) < 0;
+    }
+};
+
 // 子进程环境块(ANSI): 本进程环境打底, 再用 vars 覆盖 —— 与 createProcess 的语义一致
 // (`export FOO=bar; ./server &` 里 server 必须看得到 FOO)。
 static string buildEnvBlockAnsi(const map<string, string> &vars)
 {
-    map<string, string> merged;
+    map<string, string, WinEnvNameLessA> merged;
     LPCH cur = GetEnvironmentStringsA();
     if (cur)
     {
@@ -615,7 +639,8 @@ bool JZProcessPrivate::createProcess()
     std::wstring wEnvBlock;
     if (!envVars.empty())
     {
-        std::map<std::wstring, std::wstring> env;
+        // 大小写不敏感: `Path` 与 `PATH` 是同一个变量, 见 WinEnvNameLessW 的注释
+        std::map<std::wstring, std::wstring, WinEnvNameLessW> env;
         LPWCH cur = GetEnvironmentStringsW();
         if (cur)
         {

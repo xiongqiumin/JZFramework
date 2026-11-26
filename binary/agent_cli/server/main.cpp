@@ -16,6 +16,7 @@
 #include <string>
 
 #include "JZAgentCliServer.h"
+#include "JZServerExtraTools.h"
 #include "JZApplication.h"
 #include "JZCliConfigIO.h"   // 内置 agent 与 agent_cli 共用配置解析
 #include "JZCommandLineParser.h"
@@ -283,6 +284,11 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
             as.readMemberDefault("name", ac.name, string());
             as.readMemberDefault("enabled", ac.enabled, true);
             as.readMemberDefault("dir", ac.dir, string());
+            const Json::Value *tools = a.isMember("tools") ? &a["tools"] : nullptr;
+            if (tools && tools->isArray())
+                for (Json::ArrayIndex k = 0; k < tools->size(); ++k)
+                    if ((*tools)[k].isString())
+                        ac.tools.push_back((*tools)[k].asString());
             // 兼容旧配置: cmd / mode 已取消(cli 一律源码引用跑在本进程的线程里), 读到也不用
             const Json::Value *args = a.isMember("args") ? &a["args"] : nullptr;
             if (args && args->isArray())
@@ -294,45 +300,6 @@ static bool loadConfig(const string &path, JZCliServerConfig &config, string &er
         }
     }
 
-    // selfAgent: server 进程自己跑的那个 JZAgent(内置 agent, agentId 默认 "server")
-    //   与远端 cli 平级出现在 agent 列表里; 它多了几个"控制面"工具(见 JZServerAgent.cpp)。
-    //   运行参数与 agent_cli 共用 JZCliConfigIO 解析: 老配置里的平铺字段在这里映射成分组格式。
-    const Json::Value *self = findMember(root, "", "selfAgent", "selfAgent");
-    if (self && self->isObject())
-    {
-        JZJsonStream as(self);
-        as.readMemberDefault("enabled", config.selfAgentEnabled, false);
-        as.readMemberDefault("agentId", config.selfAgentId, string("server"));
-        as.readMemberDefault("name", config.selfAgentName, string("server(内置)"));
-
-        // 保留内置 agent 原来的缺省值(与独立 cli 的 JZCliConfig 默认值不同)
-        config.selfAgent.model.netTimeout = 120000;
-        config.selfAgent.maxRounds = 40;
-
-        Json::Value cliRoot(Json::objectValue);
-        if (self->isMember("models"))      cliRoot["llm"]["models"] = (*self)["models"];
-        if (self->isMember("netTimeout"))  cliRoot["llm"]["netTimeoutMs"] = (*self)["netTimeout"];
-        if (self->isMember("maxRounds"))   cliRoot["llm"]["maxRounds"] = (*self)["maxRounds"];
-        if (self->isMember("rootDir"))     cliRoot["terminal"]["rootDir"] = (*self)["rootDir"];
-        if (self->isMember("systemExtra")) cliRoot["system"]["extra"] = (*self)["systemExtra"];
-        if (self->isMember("skillsDir"))   cliRoot["skillsDir"] = (*self)["skillsDir"];
-
-        string cliError;
-        if (!jzCliParseConfig(cliRoot, config.selfAgent, cliError))
-        {
-            error = "selfAgent 配置错误: " + cliError;
-            return false;
-        }
-        if (config.selfAgentEnabled && config.selfAgentId.empty())
-            config.selfAgentId = "server";
-        config.selfAgent.agentName = config.selfAgentId;
-
-        if (config.selfAgentEnabled && config.selfAgent.model.models.empty())
-        {
-            error = "selfAgent.enabled=true 但没配 selfAgent.models[]";
-            return false;
-        }
-    }
     return true;
 }
 
@@ -500,6 +467,8 @@ int main(int argc, char *argv[])
     }
 
     JZAgentCliServer server;
+    // 注册内部 worker 可用的 server_* 工具工厂(异步代理, 只在配置 tools[] 里列出才挂载)。
+    jzRegisterServerExtraTools(&server);
     if (!server.init(config, err))
     {
         fprintf(stderr, "%s\n", err.c_str());
@@ -520,5 +489,7 @@ int main(int argc, char *argv[])
             config.http.sslEnabled ? "https" : "http", config.http.bind.c_str(), config.http.port,
             config.hub.bind.c_str(), config.hub.port, (int)config.agents.size());
 
-    return app.exec();
+    const int ret = app.exec();
+    jzUnregisterServerExtraTools();
+    return ret;
 }

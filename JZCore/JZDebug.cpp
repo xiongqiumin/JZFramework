@@ -9,11 +9,15 @@ JZDebug::JZDebugData::JZDebugData()
 {
     isSpace = true;
     isQuote = true;
+    enabled = false;
     logLevel = 0;
 }
 
 JZDebug::JZDebugData::~JZDebugData()
 {
+    if (!enabled)
+        return;
+
     JZLogManager::instance()->log(LogModule_General,logLevel,message);
 }
 
@@ -21,6 +25,10 @@ JZDebug::JZDebug(int level)
 {
     d = std::make_shared<JZDebugData>();
     d->logLevel = level;
+    // 等级由 JZLogManager 统一管(环境变量 JZ_LOG_LEVEL / setLogLevel()).
+    // 这里提前判一次, 是为了被过滤时连字符串都不拼 —— log() 里还有同样的兜底。
+    // LOG_FATAL 无条件放行: 崩溃前的最后一条, 不能被等级吞掉。
+    d->enabled = (level == LOG_FATAL) || (level >= JZLogManager::instance()->logLevel());
 }
 
 JZDebug::~JZDebug()
@@ -74,6 +82,9 @@ void JZDebug::setQuote(bool flag)
 
 void JZDebug::append(const string &msg)
 {
+    if (!d->enabled)
+        return;
+
     if (d->isSpace)
     {
         if (!d->message.empty())

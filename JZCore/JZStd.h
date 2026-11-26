@@ -36,7 +36,17 @@ JZFRAMEWORK_API int str_lastIndexOf(const std::string &str, const std::string &s
 JZFRAMEWORK_API std::vector<std::string> str_split(const std::string &str, const std::string &sep, JZ::SplitBehavior behavior = JZ::KeepEmptyParts);
 JZFRAMEWORK_API std::string str_join(const std::vector<std::string> &str_list, const std::string &sep);
 
+// ==================== 数值字符串解析 ====================
+// 统一约定(五个函数一致):
+//   · 先去掉首尾空白再解析(" 12 " 与 "12" 等价)
+//   · 必须整串都是数字("12abc" / "12 " 后面的东西 / 中间夹字符 -> 失败)
+//   · 溢出/超出目标类型范围 -> 失败(ok=false, 返回 0); 无符号类型不接受负号
+//   · 空串/全空白/认不出 -> 失败; ok 仅在成功时置 true (失败返回 0 无法区分 "0", 要看 ok)
+//   · 不识别 "inf"/"nan" (str_toDouble 会当成失败)
 JZFRAMEWORK_API int str_toInt(const std::string& str, bool* ok = nullptr,int base = 10);
+JZFRAMEWORK_API unsigned int str_toUInt(const std::string& str, bool* ok = nullptr, int base = 10);
+JZFRAMEWORK_API int64_t str_toInt64(const std::string& str, bool* ok = nullptr, int base = 10);
+JZFRAMEWORK_API uint64_t str_toUInt64(const std::string& str, bool* ok = nullptr, int base = 10);
 JZFRAMEWORK_API double str_toDouble(const std::string& str, bool* ok = nullptr);
 
 JZFRAMEWORK_API std::string str_local_to_utf8(const std::string& local);
@@ -58,7 +68,11 @@ JZFRAMEWORK_API std::string str_ensure_utf8(const std::string& str);
 JZFRAMEWORK_API std::wstring str_to_wstr(const std::string& str);
 JZFRAMEWORK_API std::string wstr_to_str(const std::wstring& str);
 
+// C 风格转义: \n \t \" \\ \a \b \f \v, 其余不可打印字节写成 \xNN
 JZFRAMEWORK_API std::string str_escape(const std::string& src);
+// 反解 str_escape 的输出, 额外认 \ddd(八进制) / \xN.. / \uXXXX / \UXXXXXXXX。
+// ⚠ 任何语法错误(孤立反斜杠 / 八进制或 \x 越界 / \u \U 位数不够 / 不认识的转义)
+//   都会 jzWarning 并**返回空串**, 不做"保留原文继续跑"的部分还原 —— 空串即整串非法。
 JZFRAMEWORK_API std::string str_unescape(const std::string& src);
 
 //vector

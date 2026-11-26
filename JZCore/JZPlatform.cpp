@@ -3,6 +3,7 @@
 #include "JZStd.h"
 #include "JZDebug.h"
 #include <cstdlib>
+#include <stdlib.h>     // _dupenv_s / _putenv_s / getenv / setenv / unsetenv
 
 #ifdef JZ_OS_NORMAL
 #include <chrono>
@@ -26,6 +27,62 @@ void* JZPlatformWrapper::malloc(size_t size)
 void JZPlatformWrapper::free(void *ptr)
 {
     ::free(ptr);
+}
+
+// === 环境变量的平台原始实现 ===
+// 桌面/Android 走 OS; 裸机(FreeRTOS / RT-Thread)没有这个机制, 返回空/失败。
+static std::string platformGetEnv(const std::string &name)
+{
+#ifdef JZ_OS_NORMAL
+#  ifdef _MSC_VER
+    // MSVC 下 getenv 属"不安全 CRT"(C4996), 用 _dupenv_s 更省事
+    char *buf = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&buf, &len, name.c_str()) != 0 || !buf)
+        return std::string();
+
+    std::string v(buf);
+    ::free(buf);
+    return v;
+#  else
+    const char *buf = ::getenv(name.c_str());
+    return buf ? std::string(buf) : std::string();
+#  endif
+#else
+    (void)name;
+    return std::string();
+#endif
+}
+
+static bool platformSetEnv(const std::string &name, const std::string &value)
+{
+    if (name.empty())
+        return false;
+
+#ifdef JZ_OS_NORMAL
+#  ifdef _MSC_VER
+    // Windows 下空 value 就是删除(_putenv_s 语义, 与 SetEnvironmentVariable 一致);
+    // POSIX 的 setenv 把空串当有效值, 所以那边也显式 unsetenv 对齐。
+    return _putenv_s(name.c_str(), value.c_str()) == 0;
+#  else
+    if (value.empty())
+        return ::unsetenv(name.c_str()) == 0;
+    return ::setenv(name.c_str(), value.c_str(), 1) == 0;
+#  endif
+#else
+    (void)value;
+    return false;
+#endif
+}
+
+std::string JZPlatformWrapper::getEnv(const std::string &name)
+{
+    return platformGetEnv(name);
+}
+
+bool JZPlatformWrapper::setEnv(const std::string &name, const std::string &value)
+{
+    return platformSetEnv(name, value);
 }
 
 //JZPlatform
@@ -61,6 +118,20 @@ void JZPlatform::free(void *ptr)
         g_inst->free(ptr);
     else
         ::free(ptr);
+}
+
+std::string JZPlatform::getEnv(const std::string &name)
+{
+    if (g_inst)
+        return g_inst->getEnv(name);
+    return platformGetEnv(name);
+}
+
+bool JZPlatform::setEnv(const std::string &name, const std::string &value)
+{
+    if (g_inst)
+        return g_inst->setEnv(name, value);
+    return platformSetEnv(name, value);
 }
 
 // ==================== 平台信息 ====================

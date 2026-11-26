@@ -115,6 +115,10 @@ struct JZCliConfig
     std::string agentName = "agent_cli";
     std::string version = "1.0.0";
 
+    // 配置驱动的额外工具名(extraTools[] / agents[].tools[])。
+    // 由 jzCreateCliExtraTool() 按注册表创建, 加载失败只警告不影响基础工具。
+    std::vector<std::string> extraTools;
+
     // llm.*: 模型候选 / 上下文窗口 / 请求参数。端点全在 model.models[] 里。
     JZCliModelConfig model;
     // 当前任务选中的模型名; 默认 = model.models 第一项, 任务可用 modelName 临时覆盖。
@@ -195,7 +199,6 @@ struct JZCliConfig
     std::string httpBind = "127.0.0.1";
     int httpPort = 8080;
     std::string httpToken;
-    std::string httpDir;
 
     JZCliTaskConfig task;
     JZCliServerLinkConfig server;

@@ -5,6 +5,11 @@
 >
 > 状态：P0（node `link` + cli `nodes[]` + `remote_ssh`）、P1（模式互斥）、P2（控制通道）、多队列、任务历史
 > 均已实现；**P3（日志回传等）与 node 自述（§6.6）未实现**。大包策略未定，见 §4.4。
+>
+> 2026-11-25 变更：`selfAgent` / `JZServerAgent` 已移除；server 的唯一内置执行体是 `agents[]` 里的
+> `JZInprocCli`（同进程线程，仍走本机 hub），可通过 `agents[].tools` 挂载只读 `server_agents` /
+> `server_task_query` 代理工具。standalone cli 不再随 exe 部署网页，唯一网页源迁到
+> `binary/agent_cli/server/webui`，构建到 `<exeDir>/server_web`。
 
 ---
 
@@ -609,8 +614,8 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
     }
   },
   "hub":       { "bind": "0.0.0.0", "port": 8090, "token": "<控制通道口令>" },
-  "agents":    [ { "name": "local1", "cmd": "agent_cli", "args": ["-c", "a1.json"], "dir": "" } ],
-  "selfAgent": { "enabled": true, "agentId": "server", "name": "server(内置)" }
+  "agents":    [ { "name": "local1", "enabled": true, "args": ["-c", "a1.json"], "dir": "",
+                    "tools": ["server_agents", "server_task_query"] } ]
 }
 ```
 
@@ -622,8 +627,7 @@ remote_ssh(host?, command, cwd?, timeout_ms?)
 | ~~`http.ssl.requireClientCert` / `caFile`~~ | **已于 2026-11-14 移除**（mTLS 客户端证书）。老配置里留着不报错，只是不再生效；应用层 token 鉴权待接入，在那之前管理台只应绑 `127.0.0.1` |
 | `hub.bind` / `hub.port` | `JZNetServer` 监听（默认 8090），控制面专用，不能与 `http.port` 相同 |
 | `hub.token` | 控制通道握手口令（全局单一口令） |
-| `agents[]` | server **本机**托管的 cli 子进程（`name/cmd/args/dir/enabled`），与 hub 并存；**不是** hub 白名单，也没有 per-agent token |
-| `selfAgent` | server 进程内置的 agent，见 §11 |
+| `agents[]` | server **本机**托管的 cli 实例：源码引用跑在 server 进程线程里（`JZInprocCli`），通过本机 hub 上线；字段 `name/enabled/args/dir/tools`。**不是** hub 白名单，也没有 per-agent token |
 
 > server 进程**不再内嵌 frps**（2026-11-10 移除）；内网穿透需要时单独部署
 > `jzfrps` / `jzfrpc`，与本架构的控制面互不依赖。旧配置文件里残留的 `frp` 段会被忽略。
@@ -715,7 +719,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 ⚠ 区域约束是**命令级**的（重定向目标写不了区外），程序自己做什么管不到（`rm -rf ~/x` 拦不住）。
 真正的边界只能是沙箱。
 
-**审计口径**：server 按任务记录 `{agentId, taskId, prompt, status, verify_rounds, 起止时间, 错误}`，落 `data/tasks.jsonl`。
+**审计口径**：server 按任务记录 `{agentId, taskId, prompt, status, verify_rounds, 起止时间, 错误}`，落 `data/tasks.db`（SQLite）。
 ⚠ 目前**没有"发起人"**：管理台暂未鉴权（token 待接入），也不记录请求方，所以"谁交的"只能靠外部日志。
 
 ---
@@ -788,7 +792,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 
 | 数据 | 谁是权威 | 生命周期 | 放在哪 |
 | --- | --- | --- | --- |
-| 任务历史（谁在什么时候交了什么、结果如何） | **server** | 跨 cli 重启、跨 cli 更换、跨 server 重启都要在 | `<exeDir>/data/tasks.jsonl` |
+| 任务历史（谁在什么时候交了什么、结果如何） | **server** | 跨 cli 重启、跨 cli 更换、跨 server 重启都要在 | `<exeDir>/data/tasks.db` |
 | 任务执行（当前这一条的上下文/队列/验证进程） | **cli** | 任务结束即弃；进程重启即丢 | cli 内存 |
 | agent 在线状态、节点、最近事件 | **cli 上报，server 缓存** | 心跳刷新，掉线即失效 | server 内存（`m_onlineByConn`） |
 
@@ -806,7 +810,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 | 场景 | 现象 | 规则 |
 | --- | --- | --- |
 | **cli 重启** | 它不认识之前的任务；正在跑的丢了 | server 记录照旧；非终态 Task 在心跳/下线对不上时标 `TASK_STATE_UNSPECIFIED` |
-| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.jsonl` 时把非终态一律改 `UNSPECIFIED`；对用户不暴露服务端重启原因，`TaskStatus.message` 留空或只给通用“任务未完成” |
+| **server 重启** | 内存里的在跑任务全丢 | 载入 `tasks.db` 时把非终态一律改 `CANCELED`；对用户不暴露服务端重启原因，`TaskStatus.message` 留空或只给通用“任务未完成” |
 | **cli 掉线 / hello 断开** | 不可能再收到 `taskEnd` | 该 agent 名下非终态 Task 标 `UNSPECIFIED`；提交方（如果在等）回 502 + Task |
 | **超时** | server 侧 `taskTimeoutMs` 到点 | 标 `TASK_STATE_FAILED` + 原因，同时下发 `taskCancel` |
 
@@ -857,46 +861,32 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 > 页面交互细节（筛选 / 列表 / 详情 / SSE 跟随 / 有界展示 / 已知问题与改进清单）单独见
 > `docs/agent-server-ui-design.md`；本节只保留架构与协议口径，避免双写。
 
-`GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, builtin, process, offline}`。
+`GET /api/agent?id=` → `{ kind, info, tasks[] }`，`kind ∈ {hub, inproc, offline}`。
 
-### 11.2 为什么 server 自己也要有一个 agent
+### 11.2 内部 worker：agents[] 的 JZInprocCli
 
-管理动作（看集群、给某台派任务、查记录、启停本机子进程）**只有 server 知道**，远端 cli 的工具表里既没有也不该有（那是控制面权限，属主不是执行面）。
+server 不再有 `JZServerAgent` / `selfAgent`。本机执行体只有一种：`agents[]` 里的 `JZInprocCli` ——
+完整 `agent_cli` 跑在 server 进程的独立线程里，不另开进程，但仍通过 `127.0.0.1` hub 上线，与远端 cli 走同一套
+`hello` / `taskSubmit` / `taskEvent` / `taskEnd` / `fsReq` 链路。因此 API、任务记录、上下文、文件树对本地和远端一致。
 
-所以 server 进程内直接跑一个 `JZAgent`（`JZServerAgent`）：
+### 11.3 server 工具（按配置挂载）
 
-- 出现在 `/api/status` 的 `online[]` 里，`agentId` 默认 `server`，带 `builtin=true`；
-- 与远端 cli **走同一套接口**：`POST /api/tasks {agentId:"server"}`、`GET /api/agent?id=server`、任务记录同样落 `tasks.jsonl`；
-- 区别只在执行位置：任务在 server 进程内跑，不下发 hub。
+管理动作（看集群、查记录）只有 server 知道，作为**额外工具**挂给内部 worker；`agents[].tools` 决定挂载哪些：
 
-配置：
+| 工具 | 作用 | 状态 |
+| --- | --- | --- |
+| `server_agents` | 集群视图：在线 cli（忙闲/节点/工作区）+ 任务计数 | 已实现（async 代理） |
+| `server_task_query` | 查任务记录（列表/单条，可按 agent/status 过滤） | 已实现（async 代理） |
+| `server_task_submit` | 派任务给其他 agentId | 未迁移（唯一 worker 场景容易派给自己） |
+| `server_agent_control` | 启停/重启本机 agent | 未迁移（self-target 有 self-join 风险） |
 
-```json
-"selfAgent": {
-  "enabled": true, "agentId": "server", "name": "server(内置)",
-  "rootDir": "...", "modelUrl": "...", "modelName": "...", "modelToken": "...",
-  "maxRounds": 40, "maxToken": 100000
-}
-```
+工具在 cli 线程 `call()` 只投递请求；server 线程执行 snapshot 并回投结果，避免跨线程直接读 server 状态。
 
-### 11.3 server 独有工具
+### 11.4 边界
 
-| 工具 | 作用 |
-| --- | --- |
-| `server_agents` | 集群视图：在线 cli（忙闲/节点/工作区）+ 本机子进程 + 任务计数 |
-| `server_task_submit` | 把指令发给任意 agentId（**强制 `returnImmediately:true`**，工具里同步等会把自己卡死） |
-| `server_task_query` | 查任务记录（列表/单条，可按 agent/status 过滤） |
-| `server_agent_control` | 启停/重启 server 本机被监管的 `agents[]` 子进程 |
-
-本地执行面（`terminal_run/query/cancel`、`read_file`、`get_datetime`）与 cli 用的是同一份 `agent_tool` 实现，
-只是终端实例独立（`id="server"`）。`selfAgent.rootDir` 通过独立 `ICodeToolHost` 同时喂给终端区域配置与 `read_file`，
-不是只写进提示词；取消时显式 `cancelAll()` 停本地进程，终态为 `cancelled`。
-
-### 11.4 内置 agent 的边界
-
-- **不参与 verify 门控**：server 本机没有"产物"概念，任务结束即结束，`verify_rounds` 恒为 0；
-- 只能"通过任务"影响远端 cli，读不到远端文件 —— 这是权限边界，不是缺失；
-- 忙时 `POST /api/tasks` 回 409（单实例，没有队列；需要队列就用远端 cli 的 `task.queues`）。
+- 内部 worker 与远端 cli 共用 CLI 任务链：verify 门控、多队列、memory、MCP 都由 cli 配置决定；
+- `server_*` 工具只在 internal worker 上，不通过 hub 下发给远端 cli；
+- 网页由 server 提供（`server_web/`），standalone cli 不再部署网页。
 
 ### 11.5 列表 = 「曾经连过的全部」（含离线）
 
@@ -905,7 +895,7 @@ cli 配置分组（两种模式共用，managed 下忽略 `http.*`）：
 | 档案 | `data/agents.json`（整文件重写）：`agentId/name/version/rootDir/modelName/firstSeen/lastSeen/connects` |
 | 接口 | `GET /api/status` 的 `known[]`：**在线优先**，其次按 `lastSeen` 倒序；`online` 由 `m_connByAgent` 现算 |
 | 离线详情 | `GET /api/agent?id=` 依次查 在线 → 档案（`kind=offline`）→ 本机子进程；离线时详情页**禁用派活表单** |
-| 删除 | `POST /api/agent/forget?agentId=`：在线 409、内置 agent 400；默认只删档案，`withTasks=1` 连任务记录一起删（并重写 `tasks.jsonl`，否则追加文件会在重启时"复活"已删行） |
+| 删除 | `POST /api/agent/forget?agentId=`：在线 409、内置 agent 400；默认只删档案，`withTasks=1` 连 `tasks.db` 里的任务记录一起删 |
 | 心跳回收 | hub 每 5s 扫一次，`now - lastSeen > 20s` 判离线 |
 
 **刷新口径按"数据还会不会变"分**：会变的（单个进行中 Task）只走 `GET /api/tasks/subscribe?id=` 的 SSE：
@@ -986,10 +976,10 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
 - **没有 agent 白名单 / per-agent token**：任何拿到 `hub.token` 的 cli 都能连上（全局单一口令）。
 - ~~管理台没有事件流~~（2026-11-10 已补）：server 在 `Task.metadata.events` 保留有界事件序列（上限 200 条，每 20 条 + 终态落盘），并提供 `GET /api/tasks/subscribe?id=` 的 SSE 订阅。**仍未做**的是 cli 控制台日志的 `logAppend`，以及管理台按轮次展示完整工具输出/trace。
 - **管理台正文仍按段出现，不是逐字流式**（2026-11-24 盘点，待办）：LLM→cli 已是逐 delta（`sigReply`/`sigThinking`），但 server 的 `appendTaskEvent()` 把 `reply/thinking` 合并进 `openText`，只有累计 ≥8KB、切换事件类型、详情/事件接口请求或收尾时才 `flushOpenSegment()`；页面 SSE 只推 `{taskId,seq,...}` 信号，`seq` 未增长时前端直接忽略，实际靠 5s 轮询/8KB 分片拉取；拉到后 `renderTask()` 又整块重绘 `#thread`。表现是短回复常在 `task_end` 一次性出现，长思考按 8KB 跳。
-  建议分两步：① 先试 256–512 字节或按时间 flush，并让 `eventSeq` 随 flush 增长，验证观感；② 真正流式需要 server 推正文增量或 `openText` 快照，前端只追加当前 reply 的 DOM，`task_end` 仍以完整回复为准；不按 token 落 `tasks.jsonl`。
+  建议分两步：① 先试 256–512 字节或按时间 flush，并让 `eventSeq` 随 flush 增长，验证观感；② 真正流式需要 server 推正文增量或 `openText` 快照，前端只追加当前 reply 的 DOM，`task_end` 仍以完整回复为准；不按 token 落 `tasks.db`。
 - **MCP 只在队列 0**：`mcp.servers[]` 只挂 q0（每队列一套会让 stdio MCP 被拉起 N 次），q1+ 的模型工具面不齐。
-- **审计没有发起人**：管理台暂未鉴权（mTLS 已移除、token 待接入），`tasks.jsonl` 里也没有 requester 字段（§8）。
-- **`tasks.jsonl` 不轮转**：内存 500 条，文件无限追加且启动全量载入，长期运行会变慢并占盘。
+- **审计没有发起人**：管理台暂未鉴权（mTLS 已移除、token 待接入），`tasks.db` 里也没有 requester 字段（§8）。
+- ~~**`tasks.jsonl` 不轮转**~~（2026-11-25 已修）：任务历史改为 `tasks.db`，启动只读摘要，详情按任务解析 `payload_json`，内存/库都只保留最近 500 条。
 
 **未决**
 
@@ -1022,9 +1012,10 @@ cli 侧不是另写一套执行逻辑：`JZAgentCli::onApi*` 只把「当前任�
 | `binary/agent_cli/JZAgentCli.{h,cpp}` | 配置结构 / `managed()` / `startNodes()` / `startServerLink()` / 多队列调度 / `nodesJson()` / `makeInfo` |
 | `binary/agent_cli/main.cpp` | 解析 `server.*` 与 `nodes[]`；`--check` 打印运行模式；standalone/managed 启动分支 |
 | `binary/agent_cli/server/JZAgentCliServer.{h,cpp}` | `startHub()`（`JZNetServer`）+ 在线注册表 + 任务记录/store + `/api/*` + 网页 |
-| `binary/agent_cli/server/JZServerAgent.{h,cpp}` | server 内置 agent（§11） |
-| `binary/agent_cli/server/main.cpp` | 解析 `http.*` / `hub.*` / `agents[]` / `selfAgent`，默认配置模板，`--check` |
-| `binary/agent_cli/server/web/*` | 管理台（A2A 形状：`index/agent/tasks/new` + `app.js` + `app.css`），样式走 `web/ui` 的 jz-ui |
+| `binary/agent_cli/server/JZInprocCli.{h,cpp}` | 本机 inproc worker：同进程线程跑完整 cli，仍走本机 hub |
+| `binary/agent_cli/server/JZServerExtraTools.{h,cpp}` | `server_agents` / `server_task_query` 的 async 工具代理 |
+| `binary/agent_cli/server/main.cpp` | 解析 `http.*` / `hub.*` / `agents[]`（含 `tools`），默认配置模板，`--check` |
+| `binary/agent_cli/server/webui/*` | 唯一网页源，构建到 `<exeDir>/server_web`，样式走 `web/ui` 的 jz-ui |
 | `binary/agent_cli/test/fake_llm.py` | 固定返回「任务已成功」的假 LLM（OpenAI 兼容 SSE），离线跑全链路用 |
 | `binary/agent_cli/test/test_a2a_flow.py` | 手动自检：假 LLM → server → cli(managed) → 网页/API/SSE（`--serve` 可手动开网页）。**不进 ctest**（2026-11-13 移除：断言停在旧 webui 文案/页面） |
 

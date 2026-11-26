@@ -108,6 +108,8 @@ add_executable(agent_cli_test
     # 配置解析与派生路径(与独立 exe / inproc 共用同一份实现)
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZCliConfigIO.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZCliConfigIO.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZCliExtraTool.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../JZCliExtraTool.h
     # JZAgentCli 依赖的传输层: node(执行面)与 server(控制面)
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZNodeLink.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../JZHubLink.cpp

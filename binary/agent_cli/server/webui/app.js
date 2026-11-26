@@ -605,8 +605,8 @@ async function loadAgentsPage() {
   if (cliList) cliList.innerHTML = clis.length
     ? clis.map(agentRow).join('')
     : `<div class="conn conn--empty">还没有 agent cli 连过。<br>
-       在 agent_cli 配置里填 <code>server.host</code> / <code>server.port</code>,
-       或者打开本机的 <code>selfAgent.enabled</code>。</div>`;
+       在 server 配置的 <code>agents[]</code> 里启用一台, 或让 cli 配置
+       <code>server.host</code> / <code>server.port</code> 指到本机 hub。</div>`;
 }
 
 /* ============================ /agent  对话 ============================ */
@@ -616,7 +616,10 @@ const AG = {
   tasks: [], es: null, watchId: '', poll: 0, sig: null, openMap: {},
   detailLoaded: {},   // taskId -> true/'loading'/false: 聊天区是否已拿到详情事件页
   renderedSeq: {},    // taskId -> 已渲染到的最大 eventSeq
-  busy: false, termTimer: 0,
+  // 正在生成的那一段(thinking/reply)的实时文本: 事件要等整段结束才落盘,
+  // 期间靠 SSE 帧里的 chunk 拼出来显示(见 task 帧处理 + groupEvents 末尾)。
+  liveText: {},       // taskId -> { kind: 'thinking'|'reply', text }
+  busy: false, termTimer: 0, liveTimer: 0,
   ctx: '',           // 当前要接续的会话 id(选中历史任务时从它身上取; '' = 新会话)
   newTask: QS.get('task') === NEW_TASK_MARK  // 当前停留在"新建任务"态
 };
@@ -668,8 +671,14 @@ function groupEvents(t) {
     const last = out[out.length - 1];
     if (type === 'thinking' || type === 'reply') {
       const txt = stepText(e);
-      if (last && last.kind === type) last.text += txt;   // 流式增量: 同一轮拼成一段
-      else out.push({ kind: type, text: txt, key: e.seq });
+      const trunc = !!(d && d.truncated);
+      if (last && last.kind === type) {          // 流式增量: 同一轮拼成一段
+        last.text += txt;
+        last.truncated = last.truncated || trunc;
+      } else {
+        out.push({ kind: type, text: txt, key: e.seq, seq: e.seq,
+                   truncated: trunc, bytes: (d && d.full_bytes) || 0 });
+      }
       continue;
     }
     if (type === 'user_msg') {
@@ -679,7 +688,8 @@ function groupEvents(t) {
     }
     if (type === 'tool_call') {
       out.push({ kind: 'tool', name: (d && d.name) || 'tool',
-                 args: (d && d.args) || '', result: null, ok: null, key: e.seq });
+                 args: (d && d.args) || '', result: null, ok: null, key: e.seq,
+                 seq: e.seq, truncated: !!(d && d.truncated), bytes: (d && d.full_bytes) || 0 });
       continue;
     }
     if (type === 'tool_result') {
@@ -688,8 +698,16 @@ function groupEvents(t) {
         if (out[k].kind === 'tool' && out[k].result === null) { target = out[k]; break; }
       }
       const res = (d && d.result != null) ? jsonText(d.result) : jsonText(d);
-      if (target) { target.result = res; target.ok = !(d && d.ok === false); }
-      else out.push({ kind: 'tool', name: '', args: '', result: res, ok: !(d && d.ok === false), key: e.seq });
+      const trunc = !!(d && d.truncated), bytes = (d && d.full_bytes) || 0;
+      if (target) {
+        target.result = res; target.ok = !(d && d.ok === false);
+        target.truncated = trunc; target.bytes = bytes;
+        target.resultSeq = e.seq;      // 截断的是"结果"那条, 点开时按这个 seq 取
+      } else {
+        out.push({ kind: 'tool', name: '', args: '', result: res,
+                   ok: !(d && d.ok === false), key: e.seq, seq: e.seq,
+                   truncated: trunc, bytes: bytes });
+      }
       continue;
     }
     if (type === 'verify') {
@@ -700,17 +718,29 @@ function groupEvents(t) {
     }
     out.push({ kind: 'sys', type: type, text: stepText(e), key: e.seq });
   }
+  // 正在生成的那一段: 事件要等整段结束才落盘, 期间用 SSE 带来的分片文本补在末尾。
+  // 落盘后 refreshNewEvents 会清掉这个缓冲, 不会重复。
+  const live = AG.liveText[taskId(t)];
+  if (live && live.text) {
+    const last = out[out.length - 1];
+    if (last && last.kind === live.kind) last.text += live.text;
+    else out.push({ kind: live.kind, text: live.text, key: 'live' });
+  }
   return out;
 }
 function blockHtml(b, key, open) {
   const attr = open ? ' open' : '';
+  // 内容太大时服务端只推了前 512 字节: 给一个"点开再取"的入口(按事件 seq 拉那一条)
+  const more = b.truncated
+    ? `<div class="cs-load" data-seq="${b.resultSeq || b.seq || ''}">内容较大（${fmtBytes(b.bytes)}），点击加载完整内容</div>`
+    : '';
   if (b.kind === 'thinking') {
     return `<details class="cs-think" data-open="${esc(key)}"${attr}>
-      <summary>思考（${b.text.length} 字）</summary>
-      <div class="cs-think__body">${esc(b.text)}</div></details>`;
+      <summary>思考（${b.text.length} 字${b.truncated ? '，已截断' : ''}）</summary>
+      <div class="cs-think__body">${esc(b.text)}${more}</div></details>`;
   }
   if (b.kind === 'reply') {
-    return `<div class="jz-msg jz-msg--agent"><div class="jz-bubble">${esc(b.text || '…')}</div></div>`;
+    return `<div class="jz-msg jz-msg--agent"><div class="jz-bubble">${esc(b.text || '…')}${more}</div></div>`;
   }
   if (b.kind === 'user') {
     return `<div class="jz-msg jz-msg--user"><div class="jz-bubble">${esc(b.text || '')}</div></div>`;
@@ -726,7 +756,7 @@ function blockHtml(b, key, open) {
       : `<button class="cs-tool__copy" type="button" data-copy="${esc(key)}" title="复制输出">复制</button>`;
     return `<details class="cs-tool" data-open="${esc(key)}"${attr}>
       <summary><span class="cs-tool__dot ${dot}"></span>${head}${copy}</summary>
-      <pre class="jz-log">${esc(b.result == null ? '（等待结果…）' : (b.result || '（空）'))}</pre>
+      <pre class="jz-log">${esc(b.result == null ? '（等待结果…）' : (b.result || '（空）'))}</pre>${more}
     </details>`;
   }
   if (b.kind === 'verify') {
@@ -950,7 +980,7 @@ function renderTask(force, scrollMode) {
   const sig = t
     // eventSeq 必须进签名: 列表每任务只回最近 30 条, 事件变多后 length 会卡在 30,
     // 但 seq 一直在涨 —— 不带它这里会一直 early-return, 页面看着像停止推送。
-    ? `${taskId(t)}:${stateOf(t)}:${meta(t).eventSeq || 0}:${taskEvents(t).length}:${replyText(t).length}:${verifyText(t).length}`
+    ? `${taskId(t)}:${stateOf(t)}:${meta(t).eventSeq || 0}:${taskEvents(t).length}:${replyText(t).length}:${verifyText(t).length}:${((AG.liveText[taskId(t)] || {}).text || '').length}`
     : 'none';
   if (!force && sig === AG.sig) return;
   AG.sig = sig;
@@ -1488,6 +1518,51 @@ function scheduleTasksRefresh() {
   if (TASKS_REFRESH) return;
   TASKS_REFRESH = setTimeout(() => { TASKS_REFRESH = 0; loadTasks(); }, 800);
 }
+/* 流式分片/推送事件到了: 节流重绘聊天区 */
+function scheduleLiveRender() {
+  if (AG.liveTimer) return;
+  AG.liveTimer = setTimeout(() => {
+    AG.liveTimer = 0;
+    if (AG.sel) renderTask(false, '');
+  }, 120);
+}
+
+/* 被截断的事件(内容过大, 服务端只推了预览): 用户点开时按 seq 取回那一条完整内容 */
+async function loadFullEvent(tid, seq) {
+  const t = taskById(tid);
+  if (!t || !seq) return;
+  try {
+    const d = await getJson(api('tasks/events?id=' + encodeURIComponent(tid)
+      + '&after=' + (Number(seq) - 1) + '&limit=1'));
+    const ev = (d.events || [])[0];
+    if (!ev) return;
+    const u = meta(t);
+    const arr = u.events || (u.events = []);
+    const i = arr.findIndex(e => e && Number(e.seq) === Number(ev.seq));
+    if (i >= 0) arr[i] = ev; else arr.push(ev);
+    AG.sig = '';
+    renderTask(true, '');
+  } catch (e) { /* 取不到就保持预览 */ }
+}
+
+/* 服务端把事件**整条推过来**(帧里带 type/data/at): 直接落进本地事件表,
+   不再为每条事件回拉 /api/tasks/events。返回是否真的新增了事件(按 seq 去重)。 */
+function applyPushedEvent(t, m) {
+  if (!t || !m || !m.seq || !m.type) return false;
+  const id = taskId(t);
+  const u = meta(t);
+  const arr = u.events || (u.events = []);
+  if (!arr.some(e => e && Number(e.seq) === Number(m.seq))) {
+    arr.push({ seq: m.seq, at: m.at || Date.now(), type: m.type, data: m.data });
+    // 本地只留最近一段, 更早的靠"加载更多"按 seq 往前翻
+    if (arr.length > 2000) arr.splice(0, arr.length - 2000);
+  }
+  u.eventSeq = Math.max(Number(u.eventSeq) || 0, Number(m.seq) || 0);
+  AG.renderedSeq[id] = Math.max(Number(AG.renderedSeq[id]) || 0, Number(m.seq) || 0);
+  // 事件已落盘(整段一条), 实时缓冲作废
+  delete AG.liveText[id];
+  return true;
+}
 function maxEventSeq(t) {
   let n = Number((meta(t) || {}).eventSeq) || 0;
   ((meta(t) || {}).events || []).forEach(e => { n = Math.max(n, Number(e && e.seq) || 0); });
@@ -1517,7 +1592,8 @@ function applyTaskSignal(m) {
   const u = meta(t);
   if (m.lastEventType) u.lastEventType = m.lastEventType;
   if (m.seq) u.eventSeq = Math.max(Number(u.eventSeq) || 0, Number(m.seq) || 0);
-  renderHead(); renderSide();
+  // 纯流式分片(每秒几十帧)只更新实时文本, 不必重绘头部/侧栏 —— 那是给状态变化用的
+  if (!m.chunk) { renderHead(); renderSide(); }
 }
 async function refreshNewEvents(id, m) {
   const t = taskById(id);
@@ -1537,6 +1613,8 @@ async function refreshNewEvents(id, m) {
       + '&after=' + last + '&limit=500'));
     const evs = d.events || [];
     if (evs.length) {
+      // 这一段已经落盘成事件了, 实时缓冲作废(否则末尾会重复显示一遍)
+      delete AG.liveText[id];
       const u = meta(t);
       const arr = u.events || (u.events = []);
       const seen = {};
@@ -1604,8 +1682,26 @@ function openEvents() {
     let m = null;
     try { m = JSON.parse(e.data); } catch (_) { m = null; }
     if (!m || !m.taskId) return;
+    const t = taskById(m.taskId);
+    // 流式分片(thinking/reply): 先拼进实时缓冲, 让文字边生成边出现;
+    // 事件流里的同一条要等整段结束才落盘(见服务端 appendTaskEvent)。
+    if (m.chunk && m.type) {
+      const cur = AG.liveText[m.taskId];
+      if (cur && cur.kind === m.type) cur.text += m.chunk;
+      else AG.liveText[m.taskId] = { kind: m.type, text: m.chunk };
+      scheduleLiveRender();
+      applyTaskSignal(m);
+      return;                       // 分片不是完整事件, 不需要回拉
+    }
+    // 服务端把事件整条推过来的: 直接落到本地(不 chunk 的帧才是完整事件)
+    if (!m.chunk && m.type && m.data !== undefined && t) {
+      applyPushedEvent(t, m);
+      applyTaskSignal(m);
+      scheduleLiveRender();
+      return;
+    }
     if (m.taskId === AG.sel) {
-      // 当前显示的任务: 按 seq 增量拉新事件, 不再反复拉整张列表。
+      // 没有事件内容的帧(如 task_end: 要回源取 usage): 走原来的增量拉取
       refreshNewEvents(m.taskId, m);
     } else {
       // 后台任务: 只更新列表行摘要, 不重绘聊天区。
@@ -2189,6 +2285,13 @@ function initChatPage() {
   document.addEventListener('click', (e) => {
     const pick = document.getElementById('modelPick');
     if (pick && !pick.contains(e.target)) closeModelMenu();
+  });
+  // 被截断的事件(内容过大): 点一行就按 seq 取回那一条完整内容
+  document.addEventListener('click', (ev) => {
+    const el = ev.target && ev.target.closest ? ev.target.closest('.cs-load') : null;
+    if (!el) return;
+    const seq = Number(el.getAttribute('data-seq'));
+    if (AG.sel && seq) loadFullEvent(AG.sel, seq);
   });
   renderModel();
   on('btnSettings', openSettings);

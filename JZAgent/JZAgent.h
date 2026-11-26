@@ -85,7 +85,11 @@ public:
         User,       // 用户
         Assistant,  // AI助手
         System,     // 系统提示
-        Tool        // 工具返回
+        Tool,       // 工具返回
+        // 下面两种是"只存档、只给界面看"的历史消息: 聊天记录从上下文重建时就靠它们,
+        // 但**永远不发给模型**(见 buildContext)。
+        Thinking,   // 某一轮 assistant 的思考过程(单独一条, content 就是思考全文)
+        Error,      // 任务中途的错误(LLM 失败/循环检测/取消等), 重建后就是一条 error 事件
     };
 
     // 消息性质：普通对话消息 / 上下文起点 / 压缩摘要。
@@ -101,10 +105,21 @@ public:
         Summary,      // 压缩摘要(内部: 不进界面, 但同样是新的上下文起点)
     };
 
+    // 自增 id: 由所属 JZAgent 发号(JZAgent::m_historyIdSeed), 按入历史顺序严格递增。
+    // 存档里带着; 载入时 JZAgent::loadContext() 把发号器抬到历史最大值 + 1。
+    // 用于稳定标识/定位一条历史, 不发给模型(见 buildContext)。
+    int64_t id = 0;
+
     Role role;
     Kind kind = Kind::Message;
     std::string content;
-    std::string thinking;               // 推理/思考过程(reasoning_content/thinking), 仅实时上抛, 不回写模型上下文
+    // 推理/思考过程的**临时累加器**(reasoning_content/thinking)。只在流式累积期间暂放在
+    // assistant 上; 入历史前被 emitThinkingHistory() 抽成独立一条 role=Thinking 的消息。
+    // 不参与序列化。
+    std::string thinking;
+    // 毫秒时间戳, **仅展示/存档用**: 落进 ctx 存档后, server 靠它从上下文历史重建聊天记录
+    // (见 JZAgentCliServer::eventsFromContext)。发模型前会剔除, 见 buildContext()。
+    int64_t at = 0;
     std::vector<std::string> images;    // 附带的图片(data URL), 多模态消息用
     std::vector<ToolCall> toolRequest;  // 工具请求
     std::string toolResponseId;         // 工具返回
@@ -432,6 +447,17 @@ protected:
     bool checkToolLoop(const std::string &toolId, const std::string &result);
 
     void llmLoop();
+
+    // 入历史唯一入口: 分配自增 id, push 进 m_context.history 并增量通知。
+    // id 只在这里发, 所以它严格按入历史顺序递增(不是按对象构造顺序)。
+    void pushHistory(const std::shared_ptr<LLMHistory> &h);
+    // 历史消息 id 发号器: 每个 agent 一份; loadContext() 载入存档后抬到 max(id)+1。
+    int64_t m_historyIdSeed = 1;
+
+    // 把本轮 assistant 的思考过程作为**独立一条历史消息**(kind=Thinking)存档:
+    // 只给界面 / 聊天记录重建用, 不发给模型(见 buildContext)。存完清掉 assistant 上的 thinking,
+    // 免得存档里两份。reply 为空或没有思考时什么都不做。
+    void emitThinkingHistory(const std::shared_ptr<LLMHistory> &reply);
 
     // 超出预算时把最旧一段历史发给大模型做摘要压缩，用一条摘要消息替换原消息。
     // 成功发起异步压缩返回 true；无可压缩项(策略不支持/已无可压)返回 false。

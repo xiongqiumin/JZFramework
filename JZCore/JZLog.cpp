@@ -5,6 +5,7 @@
 #include "JZApplication.h"
 #include "JZTimer.h"
 #include "JZStd.h"      // str_utf8_to_console(): 控制台输出编码, 见下面 toConsoleBytes
+#include "JZPlatform.h" // JZPlatform::getEnv(): 环境变量统一从这里取
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -101,6 +102,40 @@ JZLogEvent::JZLogEvent()
 
 //JZLogManager
 static bool g_logEnabled = false;
+
+// 环境变量 JZ_LOG_LEVEL 指定的最小输出等级(不区分大小写, 允许首尾空格):
+//   数字 0/1/2/3/4 = debug/info/warn/error/fatal
+//   或名字 debug|info|warn|warning|error|fatal
+//   没设置/认不出来 -> LOG_DEBUG(不过滤, 保持旧行为)。
+// ⚠ LOG_FATAL 不参与过滤, 见 log()。
+static bool parseLogLevel(const std::string &v, int *level)
+{
+    if (v == "debug" || v == "d")   { *level = LOG_DEBUG;   return true; }
+    if (v == "info" || v == "i")    { *level = LOG_INFO;    return true; }
+    if (v == "warn" || v == "warning" || v == "w") { *level = LOG_WARNING; return true; }
+    if (v == "error" || v == "err" || v == "e")    { *level = LOG_ERROR;   return true; }
+    if (v == "fatal" || v == "f")   { *level = LOG_FATAL;   return true; }
+
+    bool ok = false;
+    int n = str_toInt(v, &ok);
+    if (ok && n >= LOG_DEBUG && n <= LOG_FATAL)
+    {
+        *level = n;
+        return true;
+    }
+    return false;
+}
+
+static int logLevelFromEnv()
+{
+    std::string v = str_trimmed(str_toLower(JZPlatform::getEnv("JZ_LOG_LEVEL")));
+    int level = LOG_DEBUG;
+    if (!v.empty() && parseLogLevel(v, &level))
+        return level;
+
+    return LOG_DEBUG;
+}
+
 JZLogManager *JZLogManager::instance()
 {
     static JZLogManager inst;
@@ -110,6 +145,7 @@ JZLogManager *JZLogManager::instance()
 JZLogManager::JZLogManager()
 {
     g_logEnabled = true;
+    m_logLevel.store(logLevelFromEnv(), std::memory_order_relaxed);
     
     JZLogModuleConfig config;
     config.name = "General";
@@ -145,6 +181,19 @@ void JZLogManager::setConfig(JZLogConfig config)
 {
     m_config = config;
     updateFlushTimer();
+}
+
+int JZLogManager::logLevel()
+{
+    return m_logLevel.load(std::memory_order_relaxed);
+}
+
+void JZLogManager::setLogLevel(int level)
+{
+    if (level < LOG_DEBUG || level > LOG_FATAL)
+        return;
+
+    m_logLevel.store(level, std::memory_order_relaxed);
 }
 
 void JZLogManager::addModule(int module, JZLogModuleConfig config)
@@ -310,8 +359,17 @@ static std::string toConsoleBytes(const std::string &utf8)
 
 void JZLogManager::log(int module_id, int level, const std::string &message)
 {
+    // 等级过滤放最前面: 热路径上只多一次无锁原子读, 不合格的连锁都不用进。
+    // JZDebug 侧已做了同样的早退(避免拼串), 这里是兜底 —— LOG_D/LOG_I 等宏、
+    // logFmt、各模块直接的 log() 调用全走这一条。
+    // LOG_FATAL 无条件放行(它是崩溃前的最后一条, 不能被等级吞掉)。
+    if (!g_logEnabled)
+        return;
+    if (level != LOG_FATAL && level < m_logLevel.load(std::memory_order_relaxed))
+        return;
+
     JZMutexLocker locker(&m_lock);
-    if (!g_logEnabled || !map_contains(m_modules,module_id))
+    if (!map_contains(m_modules,module_id))
         return;
 
     auto module = m_modules[module_id];    

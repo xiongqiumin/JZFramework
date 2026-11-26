@@ -2,6 +2,7 @@
 #define JZ_INPROC_CLI_H_
 
 #include <string>
+#include <vector>
 
 #include "JZMutex.h"
 #include "JZThread.h"
@@ -36,6 +37,7 @@ public:
     // 只能连自己这台 server)。配置解析在调用线程上做, 出错直接返回 false。
     bool startCli(const std::string &configPath, const std::string &agentName,
                   const std::string &hubHost, int hubPort, const std::string &hubToken,
+                  const std::vector<std::string> &extraTools,
                   std::string &error);
 
     // 退出事件循环并等线程结束(可重复调用)
@@ -55,6 +57,7 @@ private:
     std::string m_hubHost;
     int m_hubPort = 0;
     std::string m_hubToken;
+    std::vector<std::string> m_extraTools;
 
     JZAgentCli *m_cli = nullptr;    // 只在 cli 线程上创建 / 析构
 

@@ -146,6 +146,34 @@ static bool buildTaskSubmitPack(const string &taskId, const Json::Value &cliBody
     return hubPackSendable(&submit);
 }
 
+// 上下文压缩只影响"发给模型的这一段": ctx 文件保留完整历史(聊天记录要用),
+// 真正交给 cli 之前从**最后一条 summary** 开始截(摘要在内, 它前面的是被压掉的旧消息)。
+// 没有 summary 就整体照发。
+static void trimHistoryToLastSummary(Json::Value &ctx)
+{
+    if (!ctx.isObject())
+        return;
+    Json::Value &hist = ctx["history"];
+    if (!hist.isArray())
+        return;
+    Json::ArrayIndex last = 0;
+    bool found = false;
+    for (Json::ArrayIndex i = 0; i < hist.size(); i++)
+    {
+        if (hist[i].isObject() && hist[i].get("kind", "").asString() == "summary")
+        {
+            last = i;
+            found = true;
+        }
+    }
+    if (!found || last == 0)
+        return;
+    Json::Value cut(Json::arrayValue);
+    for (Json::ArrayIndex i = last; i < hist.size(); i++)
+        cut.append(hist[i]);
+    hist = cut;
+}
+
 // 让「继续」在 10MB 单包上限内也能送出去: 先按完整轮次丢最老的, 再裁大字段。
 // 返回 false 时调用方给 413, 绝不把超限包交给 JZNetClient::sendPacket。
 static bool fitTaskSubmitContext(Json::Value &ctx, const Json::Value &cliBody,
@@ -845,7 +873,7 @@ static vector<string> stringsFromJson(const Json::Value &arr)
 }
 
 // hub 包里的 data 可能是 JSON 对象/字符串, 也可能被上游裁过而不合法; 一律归成 Value,
-// 文本太长就截断(事件序列要落盘, 一条巨型日志会撑爆 tasks.jsonl)。
+// 文本太长就截断(事件序列要落库, 一条巨型日志会撑爆 payload_json)。
 static Json::Value looseJson(const string &text)
 {
     if (text.empty())
@@ -923,7 +951,22 @@ static Json::Value agentToJson(JZCliServerAgentInstance *inst)
 // ===========================================================================
 JZAgentCliServer::JZAgentCliServer(JZObject *parent)
     : JZObject(parent)
+    , m_taskStore(JZPlatform::applicationDirPath() + "/data")
 {
+    m_taskStore.setPayloadBuilder([this](TaskRecord &r) {
+        ensureTaskDetail(r);
+        Json::Value j = taskJson(r, -1);
+        // 聊天记录不随任务落盘: 唯一真源是会话上下文(ctx 存档, 增量写), 读的时候用
+        // eventsFromContext() 重建。运行中的事件只在内存里供 SSE/网页实时用。
+        // 这样就不会再出现"任务库快照停在几十条、和上下文对不上"的两份数据。
+        if (j["metadata"].isObject())
+        {
+            j["metadata"]["events"] = Json::Value(Json::arrayValue);
+            j["metadata"]["eventsTotal"] = 0;
+            j["metadata"]["eventsOffset"] = 0;
+        }
+        return Json::FastWriter().write(j);
+    });
 }
 
 JZAgentCliServer::~JZAgentCliServer()
@@ -993,28 +1036,6 @@ bool JZAgentCliServer::init(const JZCliServerConfig &config, std::string &error)
 bool JZAgentCliServer::start(std::string &error)
 {
     m_startTime = JZDateTime::currentMSecsSinceEpoch();
-
-    // 内置 agent: server 自己那个 JZAgent(可选)。先起它, 后面的工具才拿得到集群视图
-    if (m_config.selfAgentEnabled)
-    {
-        m_selfAgent = new JZServerAgent(this);
-        JZCliConfig selfCfg = m_config.selfAgent;
-        selfCfg.agentName = m_config.selfAgentId;   // 通用配置里用 agentName 承载内置 agent 的 id
-        string err;
-        if (!m_selfAgent->init(selfCfg, this, err))
-        {
-            jzWarning() << "内置 agent 启动失败:" << err;
-            m_selfAgent->deleteLater();
-            m_selfAgent = nullptr;
-        }
-        else
-        {
-            connect(&m_selfAgent->sigEvent, this, &JZAgentCliServer::onSelfAgentEvent);
-            jzInfo() << "内置 agent 已就绪: id=" << m_config.selfAgentId
-                     << "  model=" << m_config.selfAgent.selectedModel
-                     << "  root=" << m_config.selfAgent.rootDir;
-        }
-    }
 
     // 两个端口都是"必须起来"的: 控制面挂了管不了远端 cli, 管理台挂了人什么都看不见。
     // 失败就直接返回, 由 main 打印原因并退出 —— 不带着半死不活的状态进事件循环。
@@ -1311,8 +1332,8 @@ int JZAgentCliServer::fsRoute(JZHttpServerClient *client, const JZHttpRequest &r
                               const string &agentId, const string &op, const Json::Value &body,
                               const string &kind)
 {
-    // 没指定 agent / 内置 agent: 文件就在本进程这台机器上, 直接读盘
-    if (agentId.empty() || isSelfAgentId(agentId))
+    // 没指定 agent: 文件就在 server 本机, 直接读盘
+    if (agentId.empty())
         return 0;
 
     // 指定了 agent 就必须在**它那台机器**上执行: 离线不能悄悄回落到 server 本机的同名路径
@@ -1490,26 +1511,17 @@ void JZAgentCliServer::reapStuckTasks()
         PendingTask pt = pit->second;
         m_pendingTasks.erase(pit);
 
-        // 先落终态再取消: selfAgent.cancel() 会同步发 done, 不能让这次 done 抢先写成别的状态。
         const int secs = pt.timeoutMs / 1000;
         const std::string human =
             secs >= 60 ? (to_string(secs / 60) + " 分钟") : (to_string(secs) + " 秒");
         recordFail(taskId, kStateFailed, "任务无响应(" + human + "没有任何事件)");
 
-        if (isSelfAgentId(pt.agentId))
+        auto ai = m_connByAgent.find(pt.agentId);
+        if (ai != m_connByAgent.end() && m_hub)
         {
-            if (m_selfAgent)
-                m_selfAgent->cancel();
-        }
-        else
-        {
-            auto ai = m_connByAgent.find(pt.agentId);
-            if (ai != m_connByAgent.end() && m_hub)
-            {
-                JZHubPackTaskCancel cancel;
-                cancel.taskId = taskId;
-                sendPack(ai->second, &cancel);
-            }
+            JZHubPackTaskCancel cancel;
+            cancel.taskId = taskId;
+            sendPack(ai->second, &cancel);
         }
 
         // 回包与 GetTask 同形状(504 只是 HTTP 状态, body 仍是 Task)
@@ -1536,14 +1548,6 @@ void JZAgentCliServer::failPendingTasksOf(const string &agentId, const string &e
         respondJsonAsync(pt.client, 502, rec ? taskJson(*rec) : Json::Value(Json::objectValue),
                          pt.acceptEncoding);
     }
-}
-
-Json::Value JZAgentCliServer::selfModelListJson() const
-{
-    Json::Value arr(Json::arrayValue);
-    for (const auto &m : m_config.selfAgent.model.models)
-        arr.append(m.name);
-    return arr;
 }
 
 Json::Value JZAgentCliServer::onlineAgentsJson() const
@@ -1582,170 +1586,176 @@ Json::Value JZAgentCliServer::onlineAgentsJson() const
         arr.append(j);
     }
 
-    // 内置 agent: 与远端 cli 平级地出现在列表里(网页点进去看到的就是它)
-    if (m_selfAgent)
-    {
-        Json::Value j(Json::objectValue);
-        j["agentId"] = m_config.selfAgentId;
-        j["name"] = m_config.selfAgentName;
-        j["version"] = "builtin";
-        j["rootDir"] = m_selfAgent->config().rootDir;
-        j["project"] = m_selfAgent->config().rootDir;   // project 就是工作区根目录
-        j["modelName"] = m_config.selfAgent.selectedModel;
-        j["modelList"] = selfModelListJson();
-        j["contextWindow"] = jzCliContextWindow(m_config.selfAgent, m_config.selfAgent.selectedModel);
-        {
-            Json::Value mw(Json::objectValue);
-            for (const auto &m : m_config.selfAgent.model.models)
-            {
-                if (m.contextWindow > 0)
-                    mw[m.name] = m.contextWindow;
-            }
-            j["modelWindows"] = mw;
-        }
-        j["busy"] = m_selfAgent->busy();
-        j["round"] = m_selfAgent->round();
-        j["taskId"] = m_selfAgent->taskId();
-        j["acceptTasks"] = true;
-        j["builtin"] = true;
-        j["lastSeen"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
-        j["lastEventType"] = m_selfAgent->lastEventType();
-        j["nodes"] = Json::Value(Json::arrayValue);
-        arr.append(j);
-    }
     return arr;
 }
 
 // ---------------------------------------------------------------------------
-// 任务记录: server 侧历史
-//   数据归属(§15): server 记"任务生命周期", cli 记"当前执行"; 历史必须在 server 落盘,
-//   否则 cli 重启后提交方查不到自己交过的任务。JSONL 追加写, 载入时同 taskId 后者覆盖前者。
+// 任务记录: server 侧历史(SQLite 实现在 JZAgentTaskStore)
 // ---------------------------------------------------------------------------
 void JZAgentCliServer::loadTaskStore()
 {
     const string dir = JZPlatform::applicationDirPath() + "/data";
-    JZDir dataDir;
-    dataDir.mkpath(dir);
-    m_taskFile = dir + "/tasks.jsonl";
-    // 会话上下文放在同目录的 ctx/ 下: 一个 contextId 一个文件, 只留最新一份
     m_ctxDir = dir + "/ctx";
+    JZDir dataDir;
     dataDir.mkpath(m_ctxDir);
 
-    ifstream ifs(m_taskFile, ios::binary);
-    if (!ifs)
+    string error;
+    if (!m_taskStore.open(&error)) {
+        jzWarning() << "任务库打开失败:" << error;
         return;
+    }
 
-    const long long now = (long long)JZDateTime::currentMSecsSinceEpoch();
-    string line;
-    int n = 0;
-    while (getline(ifs, line))
-    {
-        if (line.empty())
-            continue;
-        Json::Value j;
-        if (!parseJsonText(line, j) || !j.isObject())
-            continue;
-        // 只认 A2A Task 一种落盘格式; 不是这种形状的行直接跳过, 不做旧格式兼容
-        TaskRecord r;
-        r.taskId = j.get("id", "").asString();
-        if (r.taskId.empty())
-            continue;
-        Json::Value meta = j.get("metadata", Json::Value(Json::objectValue));
-        Json::Value st = j.get("status", Json::Value(Json::objectValue));
-        Json::Value statusMsg = st.get("message", Json::Value(Json::objectValue));
-        Json::Value statusParts = statusMsg.get("parts", Json::Value(Json::arrayValue));
-        r.agentId = meta.get("agentId", "").asString();
-        r.prompt = meta.get("prompt", "").asString();
-        r.verifyCmd = meta.get("verifyCmd", "").asString();
-        r.origin = meta.get("origin", "").asString();
-        if (r.origin.empty())
-            r.origin = kOriginUser;         // 旧记录没有来源字段: 当时的任务全部是人下发的
-        r.parentTaskId = meta.get("parentTaskId", "").asString();
-        r.state = st.get("state", kStateUnknown).asString();
-        if (statusParts.isArray() && statusParts.size() > 0)
-            r.error = statusParts[0].get("text", "").asString();
-        // 旧记录可能把服务端重启写进错误文案; 对用户不再暴露这类内部原因。
-        if (r.error.find("server 重启") != string::npos ||
-            r.error.find("服务重启") != string::npos ||
-            r.error.find("服务器重启") != string::npos)
-            r.error.clear();
-        r.lastEventType = meta.get("lastEventType", "").asString();
-        r.rounds = meta.get("rounds", 0).asInt();
-        r.round = meta.get("round", 0).asInt();
-        r.usage = meta.get("usage", Json::Value());
-        r.usageTurn = meta.get("usage_turn", Json::Value());
-        r.startMs = (long long)meta.get("startMs", 0).asInt64();
-        r.endMs = (long long)meta.get("endMs", 0).asInt64();
-        r.contextId = j.get("contextId", "").asString();
-        if (r.contextId.empty())
-            r.contextId = "ctx-" + r.taskId;
-        r.project = meta.get("project", "").asString();
-        r.statusMs = (long long)meta.get("statusMs",
-                                          Json::Value((Json::Int64)(r.endMs ? r.endMs : r.startMs))).asInt64();
-        r.events = stringsFromJson(meta.get("events", Json::Value(Json::arrayValue)));
-        r.artifacts = stringsFromJson(j.get("artifacts", Json::Value(Json::arrayValue)));
-        r.history = stringsFromJson(j.get("history", Json::Value(Json::arrayValue)));
-        r.eventSeq = meta.get("eventSeq", (int)r.events.size()).asInt();
-        // 老记录没有 usage_turn: 用落盘的全量事件补算一次(不受事件分页影响)
-        if (!r.usageTurn.isObject() && r.usage.isObject())
-            r.usageTurn = taskUsageTurn(r);
-
-        const bool wasWorking = isWorkingState(r.state) || r.state == kStateUnknown;
-        // 服务重启会丢掉在途工具回包: 工作态和旧的"结果未知"记录都按未完成取消处理。
-        // 给未配对的 tool_call 在内存里补一个明确的中断结果(不回写 tasks.jsonl)。
-        if (wasWorking)
-        {
-            vector<string> snapshot = r.events, doneIds;
-            for (const string &es : snapshot)
-            {
-                Json::Value ev;
-                if (!parseJsonText(es, ev) || ev.get("type", "").asString() != "tool_result")
-                    continue;
-                Json::Value d = ev.get("data", Json::Value(Json::objectValue));
-                const string id = d.isObject() ? d.get("id", "").asString() : string();
-                if (!id.empty())
-                    doneIds.push_back(id);
-            }
-            for (const string &es : snapshot)
-            {
-                Json::Value ev;
-                if (!parseJsonText(es, ev) || ev.get("type", "").asString() != "tool_call")
-                    continue;
-                Json::Value d = ev.get("data", Json::Value(Json::objectValue));
-                const string id = d.isObject() ? d.get("id", "").asString() : string();
-                if (!id.empty() && std::find(doneIds.begin(), doneIds.end(), id) != doneIds.end())
-                    continue;
-                Json::Value result(Json::objectValue);
-                if (!id.empty())
-                    result["id"] = id;
-                result["ok"] = false;
-                result["result"] = "中断";
-                result["interrupted"] = true;
-                appendTaskEvent(&r, "tool_result", result);
-                if (!id.empty())
-                    doneIds.push_back(id);
-            }
-        }
-
+    vector<TaskRecord> records;
+    if (!m_taskStore.load(records, &error)) {
+        jzWarning() << "任务库载入失败:" << error;
+        return;
+    }
+    for (TaskRecord &r : records) {
         if (m_tasks.find(r.taskId) == m_tasks.end())
             m_taskOrder.push_back(r.taskId);
-        if (wasWorking)
-        {
-            // 上次进程没等到回包就退出了: 按未完成取消处理(和用户取消同一口径),
-            // 不再制造"结果未知"这种卡在中间的状态。错误文案不向用户暴露服务端重启。
-            r.state = kStateCanceled;
-            r.error.clear();
-            r.endMs = now;
-        }
         m_tasks[r.taskId] = r;
-        ++n;
     }
-    while (m_taskOrder.size() > 500)
-    {
+    while (m_taskOrder.size() > 500) {
         m_tasks.erase(m_taskOrder.front());
         m_taskOrder.erase(m_taskOrder.begin());
     }
-    jzInfo().noquote().nospace() << "任务记录: 载入 " << n << " 条 (" << m_taskFile << ")";
+    set<string> liveIds;
+    for (const auto &kv : m_tasks)
+        liveIds.insert(kv.first);
+    m_taskStore.prune(liveIds);
+    jzInfo().noquote().nospace() << "任务记录: 载入 " << records.size()
+                                 << " 条摘要 (" << m_taskStore.dbFile() << ")";
+}
+
+void JZAgentCliServer::ensureTaskDetail(TaskRecord &r) const
+{
+    m_taskStore.ensureDetail(r);
+    // 任务记录不保存聊天记录(见构造里的 payloadBuilder): 内存里没有就从会话上下文重建。
+    if (r.events.empty())
+    {
+        Json::Value evs = eventsFromContext(r);
+        for (const auto &e : evs)
+            r.events.push_back(toJsonLine(e));
+        r.eventSeq = (int)r.events.size();
+        r.detailLoaded = true;
+    }
+}
+
+// 聊天记录 = 会话上下文(ctx 存档)里属于这条任务的那一段。
+// ctx 里每条消息带 taskId(applyContextMessage 盖章), 据此切分; at 是展示用时间戳。
+Json::Value JZAgentCliServer::eventsFromContext(const TaskRecord &r) const
+{
+    Json::Value out(Json::arrayValue);
+    if (r.taskId.empty())
+        return out;
+
+    Json::Value ctx;
+    auto it = m_contextCache.find(r.contextId);
+    if (it != m_contextCache.end())
+        ctx = it->second;
+    else if (!r.contextId.empty())
+        ctx = loadContextFile(r.contextId);
+    if (!ctx.isObject())
+        return out;
+    const Json::Value &hist = ctx["history"];
+    if (!hist.isArray())
+        return out;
+
+    auto pushEvent = [&out](const char *type, Json::Value data, Json::Int64 at)
+    {
+        Json::Value e(Json::objectValue);
+        e["seq"] = (int)out.size() + 1;
+        e["at"] = at;
+        e["type"] = type;
+        e["data"] = data;
+        out.append(e);
+    };
+
+    // 任务生命周期(submitted/task_start/task_end)不合成: 用户消息本身就是一轮的起点,
+    // 任务状态在 status/metadata 里, 聊天记录只由历史消息推出来。
+    for (const auto &m : hist)
+    {
+        if (!m.isObject())
+            continue;
+        if (m.get("taskId", "").asString() != r.taskId)
+            continue;   // 别的任务的消息(同一条会话的上一轮)
+        const string kind = m.get("kind", "").asString();
+        if (kind == "summary")
+            continue;   // 压缩摘要是内部消息, 不进界面
+        const string role = m.get("role", "").asString();
+        const Json::Int64 at = m.get("at", (Json::Int64)0).asInt64();
+
+        // 思考 / 错误各自是一条独立历史(role=thinking / error), 直接映射成一条事件
+        if (role == "thinking")
+        {
+            Json::Value d(Json::objectValue);
+            d["text"] = m.get("content", "").asString();
+            pushEvent("thinking", d, at);
+            continue;
+        }
+        if (role == "error")
+        {
+            Json::Value d(Json::objectValue);
+            d["text"] = m.get("content", "").asString();
+            pushEvent("error", d, at);
+            continue;
+        }
+
+        if (role == "user")
+        {
+            Json::Value d(Json::objectValue);
+            d["text"] = m.get("content", "").asString();
+            pushEvent("user_msg", d, at);
+            continue;
+        }
+        if (role == "assistant")
+        {
+            const string content = m.get("content", "").asString();
+            if (!content.empty())
+            {
+                Json::Value d(Json::objectValue);
+                d["text"] = content;
+                pushEvent("reply", d, at);
+            }
+            const Json::Value &calls = m["tool_calls"];
+            if (calls.isArray())
+            {
+                for (const auto &tc : calls)
+                {
+                    Json::Value d(Json::objectValue);
+                    d["id"] = tc.get("id", "").asString();
+                    const Json::Value &fn = tc["function"];
+                    d["name"] = fn.get("name", "").asString();
+                    d["args"] = fn.get("arguments", "").asString();
+                    pushEvent("tool_call", d, at);
+                }
+            }
+            continue;
+        }
+        if (role == "tool")
+        {
+            Json::Value d(Json::objectValue);
+            d["id"] = m.get("tool_call_id", "").asString();
+            d["result"] = m.get("content", "").asString();
+            pushEvent("tool_result", d, at);
+            continue;
+        }
+    }
+
+    return out;
+}
+
+void JZAgentCliServer::upsertTaskRecord(TaskRecord &r)
+{
+    m_taskStore.upsert(r);
+}
+
+void JZAgentCliServer::pruneTaskStore()
+{
+    set<string> liveIds;
+    for (const auto &kv : m_tasks)
+        liveIds.insert(kv.first);
+    m_taskStore.prune(liveIds);
 }
 
 // ---------------------------------------------------------------------------
@@ -1826,11 +1836,14 @@ void JZAgentCliServer::applyContextMessage(const string &taskId, const Json::Val
         ctx["usage"]["cached_tokens"] = 0;
     }
 
-    // 压缩摘要 = 清空旧历史后只剩这一条; 其余消息按序 append。
+    // 摘要只按序 append, **不清空**旧历史: ctx 是聊天记录的唯一真源, 旧消息要留着给界面;
+    // 压缩对模型的影响在取上下文时处理(见 trimHistoryToLastSummary)。
     Json::Value &hist = ctx["history"];
-    if (msg.get("kind", "").asString() == "summary")
-        hist = Json::Value(Json::arrayValue);
-    hist.append(msg);
+    // 从上下文重建聊天记录(eventsFromContext)要按任务切分: 一条会话跨多轮任务,
+    // 所以每条消息都盖上所属 taskId(at 由 cli 写入)。
+    Json::Value stamped = msg;
+    stamped["taskId"] = taskId;
+    hist.append(stamped);
 
     saveContextFile(id, ctx);
     m_contextCache[id] = ctx;
@@ -1847,41 +1860,14 @@ void JZAgentCliServer::dropContextIfUnused(const string &contextId)
     JZDir().remove(contextFile(contextId));
 }
 
-void JZAgentCliServer::saveTaskRecord(const TaskRecord &r)
+void JZAgentCliServer::saveTaskRecord(TaskRecord &r)
 {
-    if (m_taskFile.empty())
-        return;
-    string line = Json::FastWriter().write(taskJson(r, -1));   // 落盘: 全量事件
-    ofstream ofs(m_taskFile, ios::app | ios::binary);
-    if (!ofs)
-    {
-        jzWarning() << "任务记录写不进去:" << m_taskFile;
-        return;
-    }
-    ofs << line;   // FastWriter 自带行尾
+    upsertTaskRecord(r);
 }
 
 void JZAgentCliServer::rewriteTaskStore()
 {
-    if (m_taskFile.empty())
-        return;
-    ofstream ofs(m_taskFile, ios::binary | ios::trunc);
-    if (!ofs)
-    {
-        jzWarning() << "任务记录重写失败:" << m_taskFile;
-        return;
-    }
-    // 保持 JSONL: 每条一行, 与追加写同格式
-    for (const auto &id : m_taskOrder)
-    {
-        auto it = m_tasks.find(id);
-        if (it == m_tasks.end())
-            continue;
-        string line = Json::FastWriter().write(taskJson(it->second, -1));   // 重写: 全量
-        while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
-            line.pop_back();
-        ofs << line << "\n";
-    }
+    pruneTaskStore();
 }
 
 // ---------------------------------------------------------------------------
@@ -2035,30 +2021,6 @@ Json::Value JZAgentCliServer::knownAgentsJson() const
         items.push_back(j);
     }
 
-    // 内置 agent 永远在线, 也放进同一张表
-    if (m_selfAgent)
-    {
-        Json::Value j(Json::objectValue);
-        j["agentId"] = m_config.selfAgentId;
-        j["name"] = m_config.selfAgentName;
-        j["version"] = "builtin";
-        j["rootDir"] = m_selfAgent->config().rootDir;
-        j["project"] = m_selfAgent->config().rootDir;   // project 就是工作区根目录
-        j["modelName"] = m_config.selfAgent.selectedModel;
-        j["modelList"] = selfModelListJson();
-        j["firstSeen"] = (Json::Int64)m_startTime;
-        j["connects"] = 1;
-        j["builtin"] = true;
-        j["online"] = true;
-        j["busy"] = m_selfAgent->busy();
-        j["taskId"] = m_selfAgent->taskId();
-        j["round"] = m_selfAgent->round();
-        j["lastSeen"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
-        j["lastEventType"] = m_selfAgent->lastEventType();
-        j["nodes"] = Json::Value(Json::arrayValue);
-        items.push_back(j);
-    }
-
     std::sort(items.begin(), items.end(), [](const Json::Value &x, const Json::Value &y)
     {
         const bool xo = x.get("online", false).asBool();
@@ -2094,8 +2056,6 @@ void JZAgentCliServer::recordCreate(const string &taskId, const string &agentId,
         r.project = body.get("rootDir", "").asString();   // 切到哪个目录, 就归哪个 project
     if (r.project.empty())
     {
-        if (isSelfAgentId(agentId))
-            r.project = m_selfAgent ? m_selfAgent->config().rootDir : string();
         auto ai = m_connByAgent.find(agentId);
         if (ai != m_connByAgent.end())
         {
@@ -2142,6 +2102,7 @@ void JZAgentCliServer::recordCreate(const string &taskId, const string &agentId,
         m_tasks.erase(m_taskOrder.front());
         m_taskOrder.erase(m_taskOrder.begin());
     }
+    pruneTaskStore();
     saveTaskRecord(r);
 }
 
@@ -2152,6 +2113,7 @@ void JZAgentCliServer::recordContinue(const string &taskId, const Json::Value &b
     TaskRecord *r = findTask(taskId);
     if (!r)
         return;
+    ensureTaskDetail(*r);
     flushOpenSegment(r);        // 上一轮最后那段先落, 别和新一轮搅在一起
     const long long now = (long long)JZDateTime::currentMSecsSinceEpoch();
 
@@ -2196,6 +2158,7 @@ void JZAgentCliServer::recordEnd(const string &taskId, const Json::Value &result
     TaskRecord *r = findTask(taskId);
     if (!r || !isWorkingState(r->state))
         return;   // timeout/lost 等 server 终态不能被迟到的 taskEnd 覆盖
+    ensureTaskDetail(*r);
     flushOpenSegment(r);        // 收尾前把正在攒的 reply/thinking 段落成一条
     const string reply = result.get("agent_reply", "").asString();
     r->state = stateFromResult(result.get("status", "").asString());
@@ -2252,6 +2215,7 @@ void JZAgentCliServer::recordFail(const string &taskId, const string &state, con
     TaskRecord *r = findTask(taskId);
     if (!r || !isWorkingState(r->state))
         return;
+    ensureTaskDetail(*r);
     flushOpenSegment(r);
     r->state = state;
     r->error = error;
@@ -2282,12 +2246,15 @@ void JZAgentCliServer::flushOpenSegment(TaskRecord *r)
     r->openKind.clear();
     r->openText.clear();
     r->openAt = 0;
+    // 事件变了就必须让落盘快照失效, 见 appendTaskEvent 里的说明
+    r->payloadJson.clear();
 }
 
 void JZAgentCliServer::appendTaskEvent(TaskRecord *r, const string &type, const Json::Value &data)
 {
     if (!r)
         return;
+    ensureTaskDetail(*r);
 
     // reply/thinking 是逐 token 来的: 攒成一整段再落一条, 否则 events 全是碎片。
     if (type == "reply" || type == "thinking")
@@ -2296,10 +2263,10 @@ void JZAgentCliServer::appendTaskEvent(TaskRecord *r, const string &type, const 
                           : (data.isObject() ? data.get("text", "").asString() : string());
         if (r->openKind == type)
         {
+            // 整段攒着, 只在类型切换/收尾时落成一条事件: 历史(以及从历史重建的聊天记录)
+            // 就是"每段一条"。生成过程中要看进度, 网页吃 SSE 帧里带的 chunk, 见
+            // broadcastTaskEvent 里 status_update 的处理。
             r->openText += text;
-            // 一段很长时不憋着: 先落一次, 让中途看网页/落盘也能看到大部分内容
-            if (r->openText.size() >= 8192)
-                flushOpenSegment(r);
             return;
         }
         flushOpenSegment(r);              // 上一段是另一种类型: 先落
@@ -2318,6 +2285,11 @@ void JZAgentCliServer::appendTaskEvent(TaskRecord *r, const string &type, const 
     r->events.push_back(toJsonLine(e));
     r->lastEventType = type;
     r->statusMs = (long long)JZDateTime::currentMSecsSinceEpoch();
+    // ⚠ payloadJson 是"落盘快照"的缓存, 只在 ensureDetail() 里由旧快照解析后清空。
+    // 以前追加事件/历史时不失效 ⇒ upsert() 每次都把**第一次构造时**的 payload 再写一遍
+    // (见 JZAgentTaskStore::upsert), 于是 DB 里的 events 永远停在二十几条, 进程一挂就
+    // 只剩那份旧快照 —— 表现就是"重启后聊天记录被截断"。事件一变就让快照失效。
+    r->payloadJson.clear();
 }
 
 void JZAgentCliServer::recordEvent(const string &taskId, const string &type, const string &data)
@@ -2336,24 +2308,16 @@ void JZAgentCliServer::recordEvent(const string &taskId, const string &type, con
 
     Json::Value v = looseJson(data);
     appendTaskEvent(r, type, v);
-    // 推给 SSE 的是**这一条原始分片**(前端拿它只为"有新数据了"这个信号),
-    // 不能用 r->events.back() —— reply/thinking 现在会合并, back() 未必是刚来的这条,
-    // 而且新任务的第一条事件可能还没落(openText 正在攒), back() 会越界。
-    // SSE 只是"有新数据了"的信号: 分片级别推送太密(一秒几百次), 同一任务 150ms 推一次就够,
-    // 前端随后会自己拉详情/轮询补齐。终态强制推, 免得收尾那一帧被节流吞掉。
+    // 推给 SSE 的是**这一条原始分片**(不能用 r->events.back(): reply/thinking 会合并,
+    // back() 未必是刚来的这条; 新任务的第一条事件可能还没落, back() 会越界)。
+    // 不做节流: 每条都推。网页直接把这帧当事件用(不再回拉 /api/tasks/events)。
     Json::Value wire(Json::objectValue);
     wire["seq"] = r->eventSeq;
+    wire["at"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
     wire["type"] = type;
     wire["data"] = v;
-    const long long tk = JZPlatform::getTickCountMs();
-    auto sit = m_sseTick.find(taskId);
-    const bool forcePush = (type == "task_end" || type == "error" || type == "submitted");
-    if (forcePush || sit == m_sseTick.end() || tk - sit->second >= 150)
-    {
-        m_sseTick[taskId] = tk;
-        broadcastTaskEvent(taskId, "status_update", toJsonLine(wire), r->eventSeq);
-    }
-    // 逐条落盘会把 JSONL 撑成 O(n^2); 每 20 条 + 终态各存一次, 中途 crash 只丢尾部过程。
+    broadcastTaskEvent(taskId, "status_update", toJsonLine(wire), r->eventSeq);
+    // 每 20 条 + 终态各存一次 SQLite; 中途 crash 只丢尾部过程。
     // 落盘前先把正在攒的 reply/thinking 落成一条, 否则文件里一直是"上一次 flush 的状态"。
     if (r->eventSeq % 20 == 0)
     {
@@ -2395,6 +2359,53 @@ void JZAgentCliServer::broadcastTaskEvent(const string &taskId, const string &ev
         {
             w["state"] = r->state;
             w["lastEventType"] = r->lastEventType;
+        }
+        // 事件按"够小就整条推, 太大就推标题"发下去: 网页收到帧直接落进本地事件表,
+        // 不再回拉 /api/tasks/events; 只有被截断的(truncated)才在用户点开时按 seq 取那一条。
+        // thinking/reply 是逐 token 的分片, 额外带一份 chunk 给"边生成边显示"用。
+        if (event == "status_update" && !payload.empty())
+        {
+            Json::Value ev;
+            if (parseJsonText(payload, ev) && ev.isObject())
+            {
+                const string tp = ev.get("type", "").asString();
+                w["type"] = tp;
+                w["at"] = ev.get("at", (Json::Int64)0);
+                Json::Value d = ev["data"];
+                static const size_t kInlineMax = 4096;     // 超过这个字节数就不整条推
+                static const size_t kPreviewBytes = 512;   // 推下去的预览长度(utf8 字节)
+                const size_t bytes = Json::FastWriter().write(d).size();
+                if (bytes > kInlineMax)
+                {
+                    // 只截"长文本"字段, 保留 name/id/ok/seq 这类结构信息
+                    static const char *kLongFields[] = { "text", "result", "output", "args", "content" };
+                    for (size_t i = 0; i < sizeof(kLongFields) / sizeof(kLongFields[0]); i++)
+                    {
+                        if (!d.isMember(kLongFields[i]) || !d[kLongFields[i]].isString())
+                            continue;
+                        string s = d[kLongFields[i]].asString();
+                        if (s.size() > kPreviewBytes)
+                        {
+                            s.resize(kPreviewBytes);
+                            // 别切坏多字节字符: 退到最后一个完整 utf8 起始字节
+                            while (!s.empty() && ((unsigned char)s.back() & 0xC0) == 0x80)
+                                s.pop_back();
+                            d[kLongFields[i]] = s;
+                        }
+                    }
+                    d["truncated"] = true;
+                    d["full_bytes"] = (Json::Int64)bytes;
+                    w["truncated"] = true;
+                }
+                w["data"] = d;
+                if (tp == "thinking" || tp == "reply")
+                {
+                    const string text = d.isString() ? d.asString()
+                                       : (d.isObject() ? d.get("text", "").asString() : string());
+                    if (!text.empty())
+                        w["chunk"] = text;
+                }
+            }
         }
         broadcastPageEvent("task", w);
     }
@@ -2607,6 +2618,7 @@ Json::Value JZAgentCliServer::taskUsageTurn(const TaskRecord &r) const
 // 对外只有这一种形状: A2A v1.0 Task。管理所需的额外信息一律放 metadata。
 Json::Value JZAgentCliServer::taskJson(const TaskRecord &r, int evLimit) const
 {
+    ensureTaskDetail(const_cast<TaskRecord &>(r));
     Json::Value j(Json::objectValue);
     j["id"] = r.taskId;
     j["contextId"] = r.contextId;
@@ -2646,7 +2658,7 @@ Json::Value JZAgentCliServer::taskJson(const TaskRecord &r, int evLimit) const
     meta["lastEventType"] = r.lastEventType;
     // 事件**全量落盘**, 但对外一次只回一页(默认最近 200 条, 起点对齐到 user_msg)。
     // 前端拿 eventsOffset > 0 就显示"加载更多", 走 /api/tasks/events 往前翻。
-    // evLimit <= 0 表示全量(落盘/重写 tasks.jsonl 时用)。
+    // evLimit <= 0 表示全量(写 payload_json 时用)。
     const size_t evTotal = r.events.size();
     const size_t evBegin = evLimit > 0 ? eventPageBegin(r.events, evTotal, (size_t)evLimit) : 0;
     meta["events"] = jsonStringArrayFrom(r.events, evBegin, evTotal);
@@ -2684,12 +2696,14 @@ Json::Value JZAgentCliServer::tasksJson(const string &agentId, const string &sta
             if (o != origin)
                 continue;
         }
-        // 没有 A2A history 的老记录/脏记录不进列表: 网页展示的会话必须和实际历史一致。
-        if (ti->second.history.empty())
+        // 列表按 history 过滤: SQLite 启动时只载摘要, 这里按需补出 history/events。
+        TaskRecord &rec = const_cast<TaskRecord &>(ti->second);
+        ensureTaskDetail(rec);
+        if (rec.history.empty())
             continue;
         // 列表只要"最近发生什么"给左栏/摘要用: 30 条足够, 整表体积从几百 KB 降到几十 KB
         // (选中某条时前端会再用 /api/tasks/detail 取完整一页)
-        arr.append(taskJson(ti->second, 30));
+        arr.append(taskJson(rec, 30));
         ++count;
     }
     return arr;
@@ -2728,6 +2742,7 @@ void JZAgentCliServer::onApiTaskDetail(JZHttpServerClient *client, const JZHttpR
         return;
     }
     SlowReqGuard slow("api/tasks/detail");
+    ensureTaskDetail(*r);
     flushOpenSegment(r);        // 正在攒的那段先落, 详情才是完整的
     respondJson(client, req, 200, taskJson(*r));
 }
@@ -2742,6 +2757,7 @@ void JZAgentCliServer::onApiTaskEvents(JZHttpServerClient *client, const JZHttpR
         return;
     }
     SlowReqGuard slow("api/tasks/events");
+    ensureTaskDetail(*r);
     flushOpenSegment(r);
 
     int limit = atoi(req.queryParam("limit").c_str());
@@ -2882,20 +2898,6 @@ Json::Value JZAgentCliServer::agentCardJson(const string &id) const
             if (!o.rootDir.empty()) rootDir = o.rootDir;
         }
     }
-    if (m_selfAgent && isSelfAgentId(id))
-    {
-        builtin = true;
-        online = true;
-        busy = m_selfAgent->busy();
-        taskId = m_selfAgent->taskId();
-        round = m_selfAgent->round();
-        version = "builtin";
-        rootDir = m_selfAgent->config().rootDir;
-        modelName = m_config.selfAgent.selectedModel;
-        description = "server 进程内置 agent(可管理集群)";
-        lastSeen = JZDateTime::currentMSecsSinceEpoch();
-    }
-
     card["name"] = name;
     card["description"] = description;
     card["version"] = version.empty() ? string("?") : version;
@@ -2925,21 +2927,6 @@ Json::Value JZAgentCliServer::agentCardJson(const string &id) const
     s["tags"].append(builtin ? "builtin" : "remote");
     skills.append(s);
 
-    // 内置 agent 真正加载到的 skill(项目 .jzagent/skills + 全局 ~/.jzagent/skills),
-    // 排障时一眼能看出"到底加载了哪些"
-    if (builtin && m_selfAgent)
-    {
-        for (const string &sn : m_selfAgent->skillNames())
-        {
-            Json::Value k(Json::objectValue);
-            k["id"] = "skill:" + sn;
-            k["name"] = sn;
-            k["description"] = "skill";
-            k["tags"] = Json::Value(Json::arrayValue);
-            k["tags"].append("skill");
-            skills.append(k);
-        }
-    }
     Json::Value nodes(Json::arrayValue);
     parseJsonText(nodesText, nodes);
     if (nodes.isArray())
@@ -2967,8 +2954,6 @@ Json::Value JZAgentCliServer::agentCardJson(const string &id) const
     meta["round"] = round;
     meta["rootDir"] = rootDir;
     meta["modelName"] = modelName;
-    if (builtin)
-        meta["modelList"] = selfModelListJson();
     meta["firstSeen"] = (Json::Int64)firstSeen;
     meta["lastSeen"] = (Json::Int64)lastSeen;
     meta["connects"] = connects;
@@ -2987,8 +2972,7 @@ void JZAgentCliServer::onApiAgentCard(JZHttpServerClient *client, const JZHttpRe
     }
     const bool exists = m_known.find(id) != m_known.end() ||
                         m_connByAgent.find(id) != m_connByAgent.end() ||
-                        m_agents.find(id) != m_agents.end() ||
-                        (m_selfAgent && isSelfAgentId(id));
+                        m_agents.find(id) != m_agents.end();
     if (!exists)
     {
         respondJson(client, req, 404, Json::Value("没有这个 agent: " + id));
@@ -3011,13 +2995,13 @@ void JZAgentCliServer::onApiFs(JZHttpServerClient *client, const JZHttpRequest &
     {
         Json::Value body(Json::objectValue);
         body["path"] = path;
-        body["defaultDir"] = m_selfAgent ? m_selfAgent->config().rootDir : string();
+        body["defaultDir"] = string();
         if (fsRoute(client, req, agentId, "list", body, "json") != 0)
             return;
     }
 
-    // 本机(内置 agent / 没指定 agentId / agent 已离线): 直接读盘
-    const string def = m_selfAgent ? m_selfAgent->config().rootDir : string();
+    // 本机(没指定 agentId / agent 已离线): 直接读盘
+    const string def;
     string error;
     Json::Value j = JZFileOps::list(path, def, error);
     if (j.isNull())
@@ -3173,12 +3157,6 @@ void JZAgentCliServer::onApiProjects(JZHttpServerClient *client, const JZHttpReq
         g.online = true;
         g.rootDir = a.rootDir.empty() ? a.project : a.rootDir;
     }
-    if (m_selfAgent)
-    {
-        Agg &g = aggs[m_config.selfAgentId];
-        g.online = true;
-        g.rootDir = m_selfAgent->config().rootDir;
-    }
     for (const auto &kv : m_tasks)
     {
         const TaskRecord &r = kv.second;
@@ -3322,8 +3300,6 @@ bool JZAgentCliServer::agentKnown(const string &id) const
 {
     if (id.empty())
         return false;
-    if (isSelfAgentId(id))
-        return true;
     for (auto it = m_onlineByConn.begin(); it != m_onlineByConn.end(); ++it)
     {
         if (it->second.agentId == id)
@@ -3347,12 +3323,6 @@ void JZAgentCliServer::onApiAgentForget(JZHttpServerClient *client, const JZHttp
     if (id.empty())
     {
         respondJson(client, req, 400, Json::Value("缺少 agentId"));
-        return;
-    }
-    if (isSelfAgentId(id))
-    {
-        respondJson(client, req, 400,
-                    Json::Value("内置 agent 不能删除(它跟着 selfAgent.enabled 一起存在)"));
         return;
     }
     if (m_connByAgent.find(id) != m_connByAgent.end())
@@ -3436,11 +3406,6 @@ void JZAgentCliServer::servePage(JZHttpServerClient *client, const JZHttpRequest
 //   返回 202 = 已接受(异步)
 //   返回 >=400 = 失败(ack 里有 error, 调用方直接回包)
 // ---------------------------------------------------------------------------
-bool JZAgentCliServer::isSelfAgentId(const string &id) const
-{
-    return m_selfAgent && !m_config.selfAgentId.empty() && id == m_config.selfAgentId;
-}
-
 int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *waiter,
                                  Json::Value &ack, string &error,
                                  const string &origin, const string &parentTaskId,
@@ -3459,12 +3424,11 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         return 400;
     }
     string agentId = body.get("agentId", "").asString();
-    if (agentId.empty() && m_onlineByConn.size() == 1 && !m_selfAgent)
+    if (agentId.empty() && m_onlineByConn.size() == 1)
         agentId = m_onlineByConn.begin()->second.agentId;   // 只有一台就默认它
     if (agentId.empty())
     {
-        error = "缺少 agentId(当前在线 " + to_string(m_onlineByConn.size()) + " 台"
-                + (m_selfAgent ? ", 另有内置 server agent" : "") + ")";
+        error = "缺少 agentId(当前在线 " + to_string(m_onlineByConn.size()) + " 台)";
         ack["error"] = error;
         return 400;
     }
@@ -3551,65 +3515,6 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         });
     }
 
-    // ---- 内置 agent: 任务在 server 进程内跑 ----
-    if (isSelfAgentId(agentId))
-    {
-        if (m_selfAgent->busy())
-        {
-            error = "内置 agent 正忙: " + m_selfAgent->taskId();
-            ack["error"] = error;
-            ack["taskId"] = m_selfAgent->taskId();
-            return 409;
-        }
-
-        // 内置 agent 的终端/工具绑在一个目录上: 目录变了要整体重建(忙时 setRootDir 会拒)
-        if (!wantRoot.empty())
-        {
-            string dirError;
-            if (!m_selfAgent->setRootDir(wantRoot, dirError))
-            {
-                error = dirError;
-                ack["error"] = error;
-                return 409;
-            }
-        }
-
-        // 模型切换同理: 只认 selfAgent.models 里配过的名字, 不改 url/token
-        if (!wantModel.empty())
-        {
-            string modelError;
-            if (!m_selfAgent->setModel(wantModel, modelError))
-            {
-                error = modelError;
-                ack["error"] = error;
-                return 400;
-            }
-            m_config.selfAgent.selectedModel = wantModel;   // 信息面板显示当前生效的模型
-        }
-
-        if (contRec)
-            recordContinue(taskId, body);
-        else
-            recordCreate(taskId, agentId, body, origin, parentTaskId);
-        PendingTask selfPending;
-        selfPending.taskId = taskId;
-        selfPending.agentId = agentId;
-        selfPending.client = waiter;
-        selfPending.startMs = JZDateTime::currentMSecsSinceEpoch();
-        selfPending.lastEventMs = JZPlatform::getTickCountMs();
-        selfPending.timeoutMs = timeoutMs;
-        selfPending.acceptEncoding = acceptEncoding;
-        m_pendingTasks[taskId] = selfPending;
-        // 续会话: 这条会话的上下文文件(没有 = 新会话, 从零开始)。
-        // contextId 由 recordCreate 定下来(请求没带就是 ctx-<taskId>), 所以从记录里取。
-        TaskRecord *rec = findTask(taskId);
-        m_selfAgent->submit(taskId, prompt, body.get("verifyCmd", "").asString(),
-                            loadContextFile(rec ? rec->contextId : string()));
-        ack = taskJson(*findTask(taskId));      // SendMessage 的回包就是一个 Task
-        jzInfo().noquote().nospace() << "任务下发(内置): " << taskId;
-        return waiter ? 200 : 202;
-    }
-
     // ---- 远端 cli: 走控制面 ----
     auto ai = m_connByAgent.find(agentId);
     if (ai == m_connByAgent.end())
@@ -3639,7 +3544,9 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
     Json::Value submitCtx;
     if (recCtx)
         submitCtx = loadContextFile(recCtx->contextId);
-    Json::Value originalCtx = submitCtx;
+    // 压缩只影响"发给模型的这一段": ctx 文件保留完整历史(聊天记录要用),
+    // 取上下文时从最后一条 summary 开始截 —— 摘要在内, 它前面的都是被压缩掉的旧消息。
+    trimHistoryToLastSummary(submitCtx);
 
     JZHubPackTaskSubmit submit;
     if (!fitTaskSubmitContext(submitCtx, cliBody, taskId, submit, error))
@@ -3649,12 +3556,6 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
         ack["taskId"] = taskId;
         recordFail(taskId, kStateFailed, error);
         return 413;
-    }
-    // 裁剪后的快照要写回, 否则网页历史和模型历史又不对口(下一次继续还是同一份超大 ctx)。
-    if (recCtx && Json::FastWriter().write(originalCtx) != Json::FastWriter().write(submitCtx))
-    {
-        saveContextFile(recCtx->contextId, submitCtx);
-        m_contextCache[recCtx->contextId] = submitCtx;
     }
     if (submitCtx.isObject())
         jzInfo() << "续会话: " << taskId << " 带上 " << submitCtx["history"].size() << " 条历史";
@@ -3682,50 +3583,8 @@ int JZAgentCliServer::submitTask(const Json::Value &body, JZHttpServerClient *wa
 
 int JZAgentCliServer::submitTaskForTool(const Json::Value &body, Json::Value &ack, string &error)
 {
-    // 内置 agent 用工具派出去的活: 记成 agent 来源, 并挂到当前这条任务(它才是用户看到的那条)
-    const string parent = m_selfAgent ? m_selfAgent->taskId() : string();
-    return submitTask(body, nullptr, ack, error, kOriginAgent, parent);
-}
-
-// 内置 agent 的事件流: done = 收口(落记录 + 回等待方), 其余只更新"最近事件"
-void JZAgentCliServer::onSelfAgentEvent(const JZServerAgentEvent &ev)
-{
-    if (ev.type == "context_history")
-    {
-        Json::Value msg;
-        if (parseJsonText(ev.data, msg))
-            applyContextMessage(ev.taskId, msg);
-        return;
-    }
-
-    if (ev.type == "done")
-    {
-        Json::Value result;
-        if (!parseJsonText(ev.data, result) || !result.isObject())
-        {
-            result = Json::Value(Json::objectValue);
-            result["status"] = "failed";
-            result["error"] = "内置 agent 的结果不是合法 JSON";
-        }
-        result["taskId"] = Json::Value(ev.taskId);
-        // 上下文已由 context_history 增量落盘; done 只负责收尾。
-        recordEnd(ev.taskId, result);
-
-        auto pit = m_pendingTasks.find(ev.taskId);
-        if (pit != m_pendingTasks.end())
-        {
-            PendingTask pt = pit->second;
-            m_pendingTasks.erase(pit);
-            TaskRecord *rec = findTask(ev.taskId);
-            respondJsonAsync(pt.client, 200, rec ? taskJson(*rec) : Json::Value(Json::objectValue),
-                             pt.acceptEncoding);
-        }
-        TaskRecord *rec = findTask(ev.taskId);
-        jzInfo().noquote().nospace() << "内置 agent 任务结束: " << ev.taskId
-                                     << "  state=" << (rec ? rec->state : string(kStateUnknown));
-        return;
-    }
-    recordEvent(ev.taskId, ev.type, ev.data);
+    // server_* 工具派出去的活: 记成 agent 来源, 不等回包。
+    return submitTask(body, nullptr, ack, error, kOriginAgent);
 }
 
 // ---------------------------------------------------------------------------
@@ -3786,20 +3645,12 @@ void JZAgentCliServer::onApiTaskCancel(JZHttpServerClient *client, const JZHttpR
         return;
     }
 
-    if (isSelfAgentId(pit->second.agentId))
+    auto ai = m_connByAgent.find(pit->second.agentId);
+    if (ai != m_connByAgent.end() && m_hub)
     {
-        if (m_selfAgent)
-            m_selfAgent->cancel();
-    }
-    else
-    {
-        auto ai = m_connByAgent.find(pit->second.agentId);
-        if (ai != m_connByAgent.end() && m_hub)
-        {
-            JZHubPackTaskCancel cancel;
-            cancel.taskId = taskId;
-            sendPack(ai->second, &cancel);
-        }
+        JZHubPackTaskCancel cancel;
+        cancel.taskId = taskId;
+        sendPack(ai->second, &cancel);
     }
 
     // A2A CancelTask: 返回更新后的 Task, 且**不保证真的取消成功**(可能刚好已跑完)。
@@ -3860,20 +3711,12 @@ void JZAgentCliServer::onApiTaskDelete(JZHttpServerClient *client, const JZHttpR
         {
             dropTaskStreams(tid);   // 先推 deleted 再取消: 取消可能同步收尾并关流
             const string agentId = it->second.agentId;
-            if (isSelfAgentId(agentId))
+            auto ai = m_connByAgent.find(agentId);
+            if (ai != m_connByAgent.end() && m_hub)
             {
-                if (m_selfAgent)
-                    m_selfAgent->cancel();
-            }
-            else
-            {
-                auto ai = m_connByAgent.find(agentId);
-                if (ai != m_connByAgent.end() && m_hub)
-                {
-                    JZHubPackTaskCancel cancel;
-                    cancel.taskId = tid;
-                    sendPack(ai->second, &cancel);
-                }
+                JZHubPackTaskCancel cancel;
+                cancel.taskId = tid;
+                sendPack(ai->second, &cancel);
             }
             ++canceled;
         }
@@ -4212,7 +4055,8 @@ bool JZAgentCliServer::spawnAgent(const string &name)
     inst->state = JZCliAgent_Starting;
     string err;
     if (!inst->inproc->startCli(cfgPath, inst->cfg.name,
-                                "127.0.0.1", m_config.hub.port, m_config.hub.token, err))
+                                "127.0.0.1", m_config.hub.port, m_config.hub.token,
+                                inst->cfg.tools, err))
     {
         inst->state = JZCliAgent_Stopped;
         appendLog(inst, "[error] 启动失败: " + err);

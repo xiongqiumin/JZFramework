@@ -152,7 +152,6 @@ static std::string logTextLine(const char *tag, const std::string &text)
 
 #include "JZHttpServer.h"     // HTTP 服务(路由 / JZHttpServerClient / JZHttpRespone)
 #include "JZHttpHandler.h"
-#include "JZHttpStaticFiles.h"
 
 #include "JZNet/JZNetPacket.h"  // JZNetPackInit(frpc 的 JZNetClient 依赖包注册)
 #include "JZAgentNodePacket.h"  // link 模式 node 的执行面协议(remote_ssh)
@@ -247,20 +246,6 @@ public:
     void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
     {
         m_cli->onTaskSubmit(client, req);
-    }
-private:
-    JZAgentCli *m_cli;
-};
-
-// 路由处理器: 列出工作区内可当验证脚本的文件, 供网页下拉选择
-// 网页: / 直接给对话页(index.html) —— 与 server 的 /agent 是同一份页面
-class DashboardHandler : public JZHttpHandler
-{
-public:
-    explicit DashboardHandler(JZAgentCli *cli) : m_cli(cli) {}
-    void handle(JZHttpServerClient *client, const JZHttpRequest &req) override
-    {
-        m_cli->onDashboard(client, req);
     }
 private:
     JZAgentCli *m_cli;
@@ -1147,16 +1132,6 @@ JZNodeLink *JZAgentCli::nodeLink(const std::string &name) const
 void JZAgentCli::startHttp()
 {
     m_http = new JZHttpServer(this);
-
-    // 网页控制台: / 直接是对话页(index.html), 其余静态资源从 httpDir 取。
-    //   ⚠ 页面(app.js/app.css/index.html)和 server 管理台是**同一份**, 不再各写一套。
-    //   默认目录 <exeDir>/webui (源目录 binary/agent_cli/webui)。
-    std::string httpDir = m_config.httpDir;
-    if (httpDir.empty())
-        httpDir = JZPlatform::applicationDirPath() + "/webui";
-    auto *staticFiles = new JZHttpStaticFiles(httpDir);
-    m_http->addRoute("/", new DashboardHandler(this));
-    m_http->addRoute("/<path:path>", staticFiles);
 
     // A2A 网页接口: 与 server 管理台同一套, 前端共用一份页面
     m_http->addRoute("/api/tasks", new ApiTasksHandler(this));
@@ -2232,34 +2207,6 @@ void JZAgentCli::onApiStatus(JZHttpServerClient *client, const JZHttpRequest &re
     j["online"] = arr;
     j["uptimeMs"] = 0;
     sendJson(client, 200, j);
-}
-
-void JZAgentCli::onDashboard(JZHttpServerClient *client, const JZHttpRequest &req)
-{
-    std::string dir = m_config.httpDir;
-    if (dir.empty())
-        dir = JZPlatform::applicationDirPath() + "/webui";
-    std::string file = dir + "/index.html";
-    std::ifstream ifs(file, std::ios::binary);
-    if (!ifs)
-    {
-        JZHttpRespone resp;
-        resp.setStatusCode(404);
-        resp.setContentType("text/plain; charset=utf-8");
-        resp.setBody("页面不存在: " + file);
-        client->response(resp, req);
-        return;
-    }
-    std::stringstream ss;
-    ss << ifs.rdbuf();
-    JZHttpRespone resp;
-    resp.setStatusCode(200);
-    resp.setContentType("text/html; charset=utf-8");
-    // 页面每次校验(no-cache): HTML 里只有 app.js/app.css 带 ?v=, 页面自己被缓存住了
-    // 就永远拿不到新的 ?v=(改完前端刷新无效, 还可能出现"新脚本配旧模板"的 null 报错)
-    resp.setHeader("Cache-Control", "no-cache");
-    resp.setBody(ss.str());
-    client->response(resp, req);
 }
 
 void JZAgentCli::removeEventClient(JZHttpServerClient *client)

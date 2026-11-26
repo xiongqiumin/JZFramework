@@ -1,5 +1,6 @@
 ﻿#ifndef JZ_LOG_H_
 #define JZ_LOG_H_
+#include <atomic>
 #include <memory>
 #include <vector>
 #include <string>
@@ -100,6 +101,16 @@ public:
     JZLogConfig config();
     void setConfig(JZLogConfig path);
 
+    // 全局最小输出等级(LOG_DEBUG..LOG_FATAL): 低于它的日志直接丢弃, 不进控制台/文件/观察者。
+    // 初值由环境变量决定, 进程启动时(JZLogManager 首次构造)只读一次:
+    //     JZ_LOG_LEVEL = 0|1|2|3|4         (0=debug, 1=info, 2=warn, 3=error, 4=fatal)
+    //     或 debug|info|warn|warning|error|fatal (不区分大小写)
+    //     未设置/认不出来 = debug, 即不过滤, 与旧行为一致。
+    // 运行中想改就调 setLogLevel()。
+    // ⚠ LOG_FATAL 不受该等级控制, 任何配置下都输出(崩溃前的最后一条)。
+    int logLevel();
+    void setLogLevel(int level);
+
     void addModule(int module, JZLogModuleConfig config);
     std::string moduleName(int module);
 
@@ -135,6 +146,7 @@ protected:
 
     std::map<int, JZLogModule*> m_modules;
     JZLogConfig m_config;
+    std::atomic<int> m_logLevel;    // 见 logLevel()/setLogLevel(); 热路径无锁读
     JZMutex m_lock;
     std::string m_fatalError;
     JZTimer *m_flushTimer = nullptr;

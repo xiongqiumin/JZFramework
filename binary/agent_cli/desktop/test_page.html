@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>JZ WebView2 smoke test</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+           font: 16px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+           background: #10141b; color: #e8edf5; }
+    .card { max-width: 640px; padding: 40px 48px; border-radius: 16px;
+            background: #1b2230; box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+    h1 { margin: 0 0 12px; font-size: 28px; }
+    code { color: #8fd3ff; }
+    button { margin-top: 24px; padding: 10px 18px; border: 0; border-radius: 8px;
+             background: #3a86ff; color: #fff; font-size: 15px; cursor: pointer; }
+    button:hover { background: #5598ff; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>WebView2 已打开</h1>
+    <p>看到这页说明 <code>code_agent</code> 已通过 COM 创建 WebView2 并加载本地页面。</p>
+    <p id="status">等待交互…</p>
+    <button id="ping" type="button">点一下</button>
+  </div>
+  <script>
+    document.getElementById('ping').addEventListener('click', function () {
+      document.getElementById('status').textContent =
+        '页面脚本正常 · ' + navigator.userAgent.slice(0, 60) + '…';
+    });
+  </script>
+</body>
+</html>

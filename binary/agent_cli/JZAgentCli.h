@@ -125,8 +125,6 @@ public:
     void onApiTaskSubscribe(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiAgent(JZHttpServerClient *client, const JZHttpRequest &req);
     void onApiStatus(JZHttpServerClient *client, const JZHttpRequest &req);
-    // 网页: <httpDir>/index.html(单 agent 的对话页; 与 server 的 /agent 是同一份)
-    void onDashboard(JZHttpServerClient *client, const JZHttpRequest &req);
 
     // 网页"后台任务"面板(给人看的, 不占模型的上下文):
     //   GET  /terminal              -> {running, session, cwd}

@@ -4,6 +4,9 @@
 
 覆盖 wait:false 的取消/超时、多队列 busy 聚合、managed reply 上行，以及
 server timeout 终态不被迟到的 taskEnd 覆盖。
+
+注: selfAgent / JZServerAgent 已于 2026-11-25 移除, 相关用例已删除; 本脚本只验 managed cli 链路,
+已不进 ctest。
 """
 from __future__ import annotations
 
@@ -194,8 +197,6 @@ def main(argv=None) -> int:
         "http": {"bind": "127.0.0.1", "port": port_http, "ssl": {"enabled": False}},
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": token},
         "agents": [],
-        "selfAgent": {"enabled": True, "agentId": "server", "rootDir": fwd(ws),
-                      "models": [{"name": "mock", "url": model_url, "contextWindow": 120000}]},
     })
 
     procs = []
@@ -249,48 +250,6 @@ def main(argv=None) -> int:
         time.sleep(2.2)
         assert state(detail(port_http, c)) == "TASK_STATE_FAILED", detail(port_http, c)
         log("returnImmediately 有 server 超时; 迟到 taskEnd 不覆盖终态")
-
-        # selfAgent.stop() 会同步发 done; 超时时也必须先落 failed, 不能变成 canceled。
-        self_task = submit_async(port_http, "SELF-TIMEOUT", timeout_ms=1000, agent_id="server")
-        self_rec = wait_status(port_http, self_task, {"TASK_STATE_FAILED"}, timeout=5)
-        assert "超时" in status_text(self_rec), self_rec
-        time.sleep(2.2)
-        assert state(detail(port_http, self_task)) == "TASK_STATE_FAILED", detail(port_http, self_task)
-        log("selfAgent 超时终态保持 FAILED")
-
-        # 相对路径必须按 selfAgent.rootDir 解析(区外只读本来就是允许的)。
-        inside = os.path.join(ws, "inside.txt")
-        with open(inside, "w", encoding="utf-8") as f:
-            f.write("INSIDE-SECRET")
-        ControlledLlm.outside_path = "inside.txt"
-        ControlledLlm.outside_secret = "INSIDE-SECRET"
-        ControlledLlm.outside_command = ""
-        ControlledLlm.outside_used = False
-        self_read = submit_async(port_http, "PERMISSION-CASE", agent_id="server")
-        self_read_rec = wait_status(
-            port_http, self_read, {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}, timeout=10)
-        assert state(self_read_rec) == "TASK_STATE_COMPLETED", self_read_rec
-        assert "OUTSIDE_READ_OK" in artifact_text(self_read_rec), self_read_rec
-
-        # 终端的区域外写入必须被拒绝; 不能选系统临时目录(那里本来就允许读写)。
-        escape = os.path.abspath("build/_self_agent_escape_%d.txt" % os.getpid())
-        if os.path.isfile(escape):
-            os.remove(escape)
-        ControlledLlm.outside_path = "enabled"
-        ControlledLlm.outside_secret = ""
-        ControlledLlm.outside_command = 'echo bad > "%s"' % fwd(escape)
-        ControlledLlm.outside_used = False
-        self_term = submit_async(port_http, "PERMISSION-CASE", agent_id="server")
-        self_term_rec = wait_status(
-            port_http, self_term, {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}, timeout=10)
-        assert state(self_term_rec) == "TASK_STATE_COMPLETED", self_term_rec
-        escaped = os.path.isfile(escape)
-        if escaped:
-            os.remove(escape)
-        assert not escaped, "selfAgent 终端写出了工作区"
-        ControlledLlm.outside_path = ""
-        ControlledLlm.outside_command = ""
-        log("selfAgent 相对路径解析与区外写入限制正常")
 
         # managed 没有本地 SSE, 但 reply 仍必须经 hub 上行。
         d = submit_async(port_http, "TASK-D")

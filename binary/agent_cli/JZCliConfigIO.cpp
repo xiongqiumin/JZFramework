@@ -204,6 +204,29 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
     cfg.str("agentName", config.agentName);
     cfg.str("version", config.version);
 
+    // extraTools[]: 按注册表挂载额外工具(内部 worker 的 server_* 工具等)。
+    // 也接受 tools[] 简写。注册表中不存在的名字只跳过, 不影响基础工具。
+    {
+        const Json::Value *extras = findConfigMember(root, "", "extraTools");
+        if (!extras)
+            extras = findConfigMember(root, "", "tools");
+        if (extras && extras->isArray()) {
+            for (Json::ArrayIndex i = 0; i < extras->size(); ++i) {
+                if (!(*extras)[i].isString())
+                    continue;
+                const std::string name = (*extras)[i].asString();
+                if (name.empty())
+                    continue;
+                bool exists = false;
+                for (const auto &old : config.extraTools) {
+                    if (old == name) { exists = true; break; }
+                }
+                if (!exists)
+                    config.extraTools.push_back(name);
+            }
+        }
+    }
+
     // llm.models 是唯一模型来源: 每项必须给 name + url + contextWindow, token 可空。
     // 没有全局 contextWindow 兜底; 默认模型 = 第一项; 网页只拿名字与窗口, 不输出 token。
     {
@@ -520,7 +543,6 @@ bool jzCliParseConfig(const Json::Value &root, JZCliConfig &config, string &erro
     cfg.str("http.bind", config.httpBind);
     cfg.i32("http.port", config.httpPort);
     cfg.str("http.token", config.httpToken);
-    cfg.str("http.dir", config.httpDir);
 
     // 控制面(managed 模式): server.host 非空即受 server 调度
     //   ⚠ 这是**模式开关**, 不是可选项: managed 时不起 HTTP(见 startServerLink)。

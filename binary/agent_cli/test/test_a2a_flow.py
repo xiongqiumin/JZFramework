@@ -14,6 +14,8 @@
 验证: SendMessage(202 Task) → AgentCard → SubscribeToTask(SSE 首帧/终态帧) →
 GetTask(TaskState / history / artifacts / events) → ListTasks(contextId 过滤) →
 三个静态页。假 LLM 一律回「任务已成功」, 所以终态必须是 success。
+
+注: selfAgent / JZServerAgent 已于 2026-11-25 移除; 本脚本只验 managed cli 链路, 不进 ctest。
 """
 from __future__ import annotations
 
@@ -154,8 +156,6 @@ def main(argv=None) -> int:
         "http": {"bind": "127.0.0.1", "port": port_http, "ssl": {"enabled": False}},
         "hub": {"bind": "127.0.0.1", "port": port_hub, "token": token},
         "agents": [],
-        "selfAgent": {"enabled": True, "agentId": "server", "rootDir": fwd(ws),
-                      "modelUrl": model_url, "modelName": "fake"},
     })
 
     base = "http://127.0.0.1:%d" % port_http

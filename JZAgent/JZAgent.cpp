@@ -17,6 +17,12 @@
 #include "JZStd.h"
 #include "JZPlatform.h"
 
+// 展示用时间戳: 写进 LLMHistory::at, 落进 ctx 存档后供 server 重建聊天记录(不发给模型)。
+static int64_t jzAgentNowMs()
+{
+    return (int64_t)JZDateTime::currentMSecsSinceEpoch();
+}
+
 
 class ReadSkillTool : public JZAgentTool
 {
@@ -170,6 +176,7 @@ void JZAgent::reset()
     }
 
     m_state = State::Inactive;
+    m_historyIdSeed = 0;
     m_currentRound = -1;
     m_isActive = false;
     m_inTransaction = false;
@@ -266,6 +273,15 @@ void JZAgent::loadContext(const LLMContext &ctx)
     // 与 saveContext 对称: 载入后同样裁到自洽, 防止脏存档把不一致的历史发给大模型
     trimIncompleteHistory(m_context);
     m_context.recalcUsage();
+
+    // 续聊 / 重启恢复: 把 id 发号器抬到历史最大值 + 1, 新消息不会和旧 id 撞车
+    int64_t max_id = 0;
+    for (const auto &h : m_context.history)
+    {
+        if (h && h->id >= max_id)
+            max_id = h->id + 1;
+    }
+    m_historyIdSeed = max_id;
 }
 
 void JZAgent::init(JZAgentConfig config)
@@ -623,9 +639,17 @@ Json::Value JZAgent::buildContext()
     size_t start = 0;
     for (size_t i = start; i < m_context.history.size(); i++)
     {
-        Json::Value history_msg = m_context.history[i]->toJson();
-        // kind 是内部标记（持久化/界面判断用），不发给大模型
+        const auto &h = m_context.history[i];
+        if (!h)
+            continue;
+        // role=thinking / error 是纯存档消息(只给界面/重建聊天记录看), 不发给模型
+        if (h->role == LLMHistory::Thinking || h->role == LLMHistory::Error)
+            continue;
+        Json::Value history_msg = h->toJson();
+        // id / kind / at 都是内部标记（持久化/界面判断用），不发给大模型
+        history_msg.removeMember("id");
         history_msg.removeMember("kind");
+        history_msg.removeMember("at");
         messages.append(history_msg);
     }
 
@@ -817,6 +841,8 @@ std::string LLMHistory::roleToString(Role r)
     case Assistant:  return "assistant";
     case System:     return "system";
     case Tool:       return "tool";
+    case Thinking:   return "thinking";
+    case Error:      return "error";
     }
     JZ_UNREACHABLE();
     return "";
@@ -833,6 +859,10 @@ bool LLMHistory::parseRole(const Json::Value& root)
         role = System;
     else if (role_str == "tool")
         role = Tool;
+    else if (role_str == "thinking")
+        role = Thinking;
+    else if (role_str == "error")
+        role = Error;
     else
         return false;
     return true;
@@ -931,6 +961,12 @@ Json::Value LLMHistory::toJson() const
 
     // 内部标记(消息性质), 发请求前会被移除, 见 buildContext()
     history_msg["kind"] = kindToString(kind);
+    history_msg["id"] = (Json::Int64)id;
+    // 展示用元数据: 落进 ctx 存档后, server 靠它把上下文历史重建回聊天记录。
+    // 同样不发给模型, 见 buildContext()。
+    // 思考/错误各自是独立的一条历史(role=thinking / error, content 就是正文),
+    // 不再挂在 assistant 的 thinking 字段上。
+    history_msg["at"] = (Json::Int64)at;
     return history_msg;
 }
 
@@ -943,6 +979,8 @@ bool LLMHistory::fromJson(const Json::Value& root)
     images.clear();
     toolRequest.clear();
     toolResponseId.clear();
+    at = 0;
+    thinking.clear();
 
     if (!parseRole(root))
         return false;
@@ -987,6 +1025,11 @@ bool LLMHistory::fromJson(const Json::Value& root)
     }
 
     parseKind(root);
+
+    // 展示用元数据(见 toJson)
+    at = (int64_t)root.get("at", (Json::Int64)0).asInt64();
+    id = (int64_t)root.get("id", (Json::Int64)0).asInt64();
+    
     return true;
 }
 
@@ -1499,8 +1542,9 @@ void JZAgent::finalizeResponse()
     {
         if (!reply->content.empty())
         {
-            m_context.history.push_back(reply);
-            sigLLMHistory.emit(reply);   // 增量通知
+            emitThinkingHistory(reply);   // 思考先单独入一条历史(不发给模型)
+            reply->at = jzAgentNowMs();
+            pushHistory(reply);
         }
 
         m_context.recalcUsage();  // reply 已并入历史，重算累计 usage
@@ -1598,22 +1642,45 @@ void JZAgent::onCompressFinished()
     sum->role = LLMHistory::User;
     sum->content = summary;
     sum->kind = LLMHistory::Summary;   // 内部摘要: 不进界面, 但同样是新的上下文起点
+    sum->at = jzAgentNowMs();
 
     // 清空 history 前把压缩前用量快照发出去: task_end 里的 usage 只是压缩后的那一段,
     // 计费侧把本事件与终态 usage 相加才是整任务用量。
     sigContextCompress.emit(m_context.usage);
 
     hist.clear();
-    hist.push_back(sum);    
+    pushHistory(sum);         // 摘要也是一条新入历史的消息(同时是新上下文起点)
 
     m_context.recalcUsage();  // 历史已压缩，重算累计 usage 使其回落
-    sigLLMHistory.emit(sum);  // 这条摘要也是一条新入历史的消息(同时是新上下文起点)
 
     int window_tokens = windowTokens();
     if (window_tokens > m_config.maxToken)
         llmError(MaxTokenError, "上下文压缩失败,还剩余" + std::to_string(window_tokens));
     else
         llmLoop();                // 重新进入循环：若仍超预算会继续压缩，否则走正常请求流程
+}
+
+// 思考过程单独存一条历史消息(kind=Thinking): 只给界面/聊天记录重建用, 不发给模型。
+// 存完把 assistant 上的 thinking 清掉, 免得同一段思考在存档里出现两份。
+void JZAgent::pushHistory(const std::shared_ptr<LLMHistory> &h)
+{
+    if (!h)
+        return;
+    h->id = m_historyIdSeed++;
+    m_context.history.push_back(h);
+    sigLLMHistory.emit(h);
+}
+
+void JZAgent::emitThinkingHistory(const std::shared_ptr<LLMHistory> &reply)
+{
+    if (!reply || reply->thinking.empty())
+        return;
+    auto t = std::make_shared<LLMHistory>();
+    t->role = LLMHistory::Thinking;   // 独立 role: content 直接就是思考全文
+    t->content = reply->thinking;
+    t->at = jzAgentNowMs();
+    reply->thinking.clear();
+    pushHistory(t);
 }
 
 void JZAgent::llmLoop()
@@ -1637,13 +1704,14 @@ void JZAgent::llmLoop()
     if (m_pendingToolRound && m_pendingToolRound->complete())
     {
         auto batch = m_pendingToolRound;
-        m_context.history.push_back(batch->assistant);
-        sigLLMHistory.emit(batch->assistant);
+        emitThinkingHistory(batch->assistant);   // 思考先单独入一条历史(不发给模型)
+        batch->assistant->at = jzAgentNowMs();
+        pushHistory(batch->assistant);
         for (const auto &r : batch->results)
         {
-            m_context.history.push_back(r);
+            r->at = jzAgentNowMs();
+            pushHistory(r);
             flushedToolIds.insert(r->toolResponseId);
-            sigLLMHistory.emit(r);
         }
         m_context.recalcUsage();
         m_pendingToolRound.reset();
@@ -1730,8 +1798,8 @@ void JZAgent::llmLoop()
                 JZ_UNREACHABLE();
             }
 
-            m_context.history.push_back(chat);
-            sigLLMHistory.emit(chat);   // 增量通知(用户 / 系统 / 工具返回消息)
+            chat->at = jzAgentNowMs();
+            pushHistory(chat);   // 增量通知(用户 / 系统 / 工具返回消息)
         }
 
         llmRequest();

@@ -6,6 +6,13 @@
 #include <memory>
 #include "JZLog.h"
 
+// JZDebug: 流式日志门面(jzDebug() / jzInfo() / jzWarning() / jzError()).
+//
+// 输出等级统一由 JZLogManager 管(JZLogManager::logLevel()/setLogLevel()):
+//     环境变量 JZ_LOG_LEVEL = 0|1|2|3|4 (0=debug, 1=info, 2=warn, 3=error, 4=fatal)
+//     或 debug|info|warn|warning|error|fatal (不区分大小写), 进程启动时读一次。
+// 低于该等级的语句在这里就早退(见 append()), 连字符串都不拼; JZLogManager::log() 里还有同样的兜底。
+// 未设置/无法识别 = debug, 即不过滤, 与旧行为一致。LOG_FATAL 不受等级控制, 一定输出。
 class JZFRAMEWORK_API JZDebug
 {
 public:
@@ -47,6 +54,7 @@ protected:
         int logLevel;
         bool isSpace;
         bool isQuote;
+        bool enabled;       // 等级低于 JZLogManager::logLevel() 时为 false: 不拼串也不输出
         std::string  message;
     };
 

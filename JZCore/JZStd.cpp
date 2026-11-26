@@ -4,6 +4,9 @@
 
 #include <string>
 #include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <cerrno>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
@@ -308,104 +311,138 @@ int str_lastIndexOf(const string &str, const string &substr, int pos, bool caseS
     }
 }
 
+// 整数解析的公共准备: 校验进制, 去掉首尾空白(两边一致 —— 老实现只忍首部空白).
+// 返回 false 表示这一串肯定解析不出东西。
+static bool str_prepareNumber(const string& str, int base, string* out)
+{
+    if (base != 0 && (base < 2 || base > 36))
+        return false;
+
+    *out = str_trimmed(str);
+    return !out->empty();
+}
+
+// 整串是否都被消费掉(不允许 "12abc" 这种尾巴)
+static bool str_numberDone(const string& s, const char* end_ptr)
+{
+    return end_ptr != s.c_str() && *end_ptr == '\0';
+}
+
 int str_toInt(const string& str, bool* ok, int base)
 {
-    // 初始化转换状态（仅当ok不为空时操作）
     if (ok != nullptr)
-    {
         *ok = false;
-    }
 
-    // 空字符串直接返回失败
-    if (str.empty())
-    {
+    string s;
+    if (!str_prepareNumber(str, base, &s))
         return 0;
-    }
 
-    // 重置errno，避免之前的错误影响
+    // 统一用 strtoll: Windows 的 long 只有 32 位, 用 strtol 会在 64 位平台上行为不一致
     errno = 0;
     char* end_ptr = nullptr;
-
-    // 核心转换逻辑（十进制）
-    long int value = strtol(str.c_str(), &end_ptr, base);
-
-    // 检查转换错误场景
-    bool conversion_success = true;
-    if (errno != 0 || end_ptr == str.c_str() || *end_ptr != '\0')
-    {
-        conversion_success = false;
-    }
-    // 检查long转int的溢出
-    else if (value < INT_MIN || value > INT_MAX)
-    {
-        conversion_success = false;
-    }
-
-    // 转换失败则返回0
-    if (!conversion_success)
-    {
+    long long value = strtoll(s.c_str(), &end_ptr, base);
+    if (errno != 0 || !str_numberDone(s, end_ptr))
         return 0;
-    }
+    if (value < INT_MIN || value > INT_MAX)
+        return 0;
 
-    // 转换成功，更新ok状态（仅当ok不为空时）
     if (ok != nullptr)
-    {
         *ok = true;
-    }
-
-    // 返回转换后的整数值
     return static_cast<int>(value);
+}
+
+unsigned int str_toUInt(const string& str, bool* ok, int base)
+{
+    if (ok != nullptr)
+        *ok = false;
+
+    string s;
+    if (!str_prepareNumber(str, base, &s))
+        return 0;
+
+    // strtoull 会把 "-1" 回绕成 ULLONG_MAX 且不报错, 必须自己挡住负号
+    if (s[0] == '-')
+        return 0;
+
+    errno = 0;
+    char* end_ptr = nullptr;
+    unsigned long long value = strtoull(s.c_str(), &end_ptr, base);
+    if (errno != 0 || !str_numberDone(s, end_ptr))
+        return 0;
+    if (value > UINT_MAX)
+        return 0;
+
+    if (ok != nullptr)
+        *ok = true;
+    return static_cast<unsigned int>(value);
+}
+
+int64_t str_toInt64(const string& str, bool* ok, int base)
+{
+    if (ok != nullptr)
+        *ok = false;
+
+    string s;
+    if (!str_prepareNumber(str, base, &s))
+        return 0;
+
+    errno = 0;
+    char* end_ptr = nullptr;
+    long long value = strtoll(s.c_str(), &end_ptr, base);
+    if (errno != 0 || !str_numberDone(s, end_ptr))
+        return 0;   // 越界由 ERANGE 兜住
+
+    if (ok != nullptr)
+        *ok = true;
+    return static_cast<int64_t>(value);
+}
+
+uint64_t str_toUInt64(const string& str, bool* ok, int base)
+{
+    if (ok != nullptr)
+        *ok = false;
+
+    string s;
+    if (!str_prepareNumber(str, base, &s))
+        return 0;
+
+    // 同 str_toUInt: 负号会被回绕, 直接判失败
+    if (s[0] == '-')
+        return 0;
+
+    errno = 0;
+    char* end_ptr = nullptr;
+    unsigned long long value = strtoull(s.c_str(), &end_ptr, base);
+    if (errno != 0 || !str_numberDone(s, end_ptr))
+        return 0;
+
+    if (ok != nullptr)
+        *ok = true;
+    return static_cast<uint64_t>(value);
 }
 
 double str_toDouble(const string& str, bool* ok)
 {
-    // 初始化转换状态
     if (ok != nullptr)
-    {
         *ok = false;
-    }
 
-    // 空字符串直接返回失败
-    if (str.empty())
-    {
+    string s = str_trimmed(str);
+    if (s.empty())
         return 0.0;
-    }
 
-    // 重置错误码
     errno = 0;
     char* end_ptr = nullptr;
+    double value = strtod(s.c_str(), &end_ptr);
 
-    // 核心：字符串转 double（十进制）
-    double value = strtod(str.c_str(), &end_ptr);
-
-    bool conversion_success = true;
-
-    // 浮点数转换错误检查
-    if (errno != 0)          // 发生溢出/其他系统错误
-    {
-        conversion_success = false;
-    }
-    else if (end_ptr == str.c_str())  // 没有任何字符被转换
-    {
-        conversion_success = false;
-    }
-    else if (*end_ptr != '\0')       // 字符串末尾有无效字符（如 "123abc"）
-    {
-        conversion_success = false;
-    }
-
-    // 转换失败返回 0.0
-    if (!conversion_success)
-    {
+    // 三个失败条件一次判完:
+    //   errno      -> 上溢("1e999")/下溢
+    //   没吃完     -> 空串 / "123abc"
+    //   !isfinite  -> strtod 对 "inf"/"nan" 不设 errno, 会当成成功, 这类值一律不要
+    if (errno != 0 || !str_numberDone(s, end_ptr) || !std::isfinite(value))
         return 0.0;
-    }
 
-    // 转换成功，更新状态
     if (ok != nullptr)
-    {
         *ok = true;
-    }
-
     return value;
 }
 
@@ -490,6 +527,8 @@ int read_fixed_hex(const string& src, size_t& idx, size_t len)
 
 } // anonymous namespace
 
+// 任何语法错误(孤立反斜杠 / 越界 / 不完整 / 不认识的转义)一律 jzWarning + 返回空串,
+// 不做"保留原文继续跑"的兜底 —— 调用方拿到空串即视为整串非法。
 string str_unescape(const string& src)
 {
     string dst;
@@ -510,8 +549,7 @@ string str_unescape(const string& src)
         if (i >= len)
         {
             jzWarning("unescape warning: trailing backslash at index %zu", i - 1);
-            dst.push_back('\\');
-            continue;
+            return string();
         }
 
         const size_t esc_pos = i - 1;
@@ -537,9 +575,10 @@ string str_unescape(const string& src)
             }
             if (val > 0xFF)
             {
-                jzWarning("unescape warning: octal escape \\%o overflow (val=%u), truncate to 0xFF at index %zu", val, val, esc_pos);
+                jzWarning("unescape warning: octal escape \\%o overflow (val=%u) at index %zu", val, val, esc_pos);
+                return string();
             }
-            dst.push_back(static_cast<char>(static_cast<uint8_t>(val & 0xFF)));
+            dst.push_back(static_cast<char>(static_cast<uint8_t>(val)));
             continue;
         }
 
@@ -561,17 +600,14 @@ string str_unescape(const string& src)
             if (!has_digit)
             {
                 jzWarning("unescape warning: incomplete hex escape \\x at index %zu", esc_pos);
-                dst.push_back('\\');
-                dst.push_back('x');
+                return string();
             }
-            else
+            if (val > 0xFF)
             {
-                if (val > 0xFF)
-                {
-                    jzWarning("unescape warning: hex escape overflow 0x%X, truncate to 0xFF at index %zu", val, esc_pos);
-                }
-                dst.push_back(static_cast<char>(static_cast<uint8_t>(val & 0xFF)));
+                jzWarning("unescape warning: hex escape overflow 0x%X at index %zu", val, esc_pos);
+                return string();
             }
+            dst.push_back(static_cast<char>(static_cast<uint8_t>(val)));
             continue;
         }
 
@@ -583,10 +619,7 @@ string str_unescape(const string& src)
             if (cp == -1)
             {
                 jzWarning("unescape warning: incomplete \\uXXXX escape at index %zu", esc_pos);
-                dst.push_back('\\');
-                dst.push_back('u');
-                // 注意：此时 i 未被修改，已读的字符未被消耗，后续循环会正常输出它们
-                continue;
+                return string();
             }
             codepoint_to_utf8(dst, static_cast<char32_t>(cp));
             continue;
@@ -598,9 +631,7 @@ string str_unescape(const string& src)
             if (cp == -1)
             {
                 jzWarning("unescape warning: incomplete \\UXXXXXXXX escape at index %zu", esc_pos);
-                dst.push_back('\\');
-                dst.push_back('U');
-                continue;
+                return string();
             }
             codepoint_to_utf8(dst, static_cast<char32_t>(static_cast<uint32_t>(cp)));
             continue;
@@ -622,9 +653,7 @@ string str_unescape(const string& src)
         case 'v':  dst.push_back('\v'); break;
         default:
             jzWarning("unescape warning: invalid escape sequence \\%c at index %zu", esc_c, esc_pos);
-            dst.push_back('\\');
-            dst.push_back(esc_c);
-            break;
+            return string();
         }
     }
 

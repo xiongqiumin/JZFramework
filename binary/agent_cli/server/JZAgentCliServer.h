@@ -357,6 +357,14 @@ private:
     //   聊天记录 = 上下文历史(user/assistant/tool) + 任务生命周期(submitted/task_start/task_end)。
     // 运行中的事件只在内存里(SSE/网页实时), 不再落盘; 重启后靠这里恢复。
     Json::Value eventsFromContext(const TaskRecord &r) const;
+    // 这条任务的会话历史最后一条消息(role + error 分类)。
+    // 终态按它定: role=error && error=="cancel" 是取消, 其余 error 是失败。
+    struct LastMessage
+    {
+        std::string role;
+        std::string error;
+    };
+    LastMessage lastHistory(const TaskRecord &r) const;
     void upsertTaskRecord(TaskRecord &r);
     void pruneTaskStore();                          // 删除已被裁掉/删掉的任务行
     void saveTaskRecord(TaskRecord &r);             // upsert 一行到 SQLite
@@ -369,6 +377,7 @@ private:
     void recordEnd(const std::string &taskId, const Json::Value &result);
     void recordFail(const std::string &taskId, const std::string &state, const std::string &error);
     void recordEvent(const std::string &taskId, const std::string &type, const std::string &data);
+    // 事件身份在 data 里: 消息类(id 由 ctx 归档时才有) / tool 类(data["id"] 就是 ToolCall.id)。
     void appendTaskEvent(TaskRecord *r, const std::string &type, const Json::Value &data);
     // 把正在累积的 reply/thinking 段落写成一条事件(类型切换/超长/收尾时调用)
     void flushOpenSegment(TaskRecord *r);

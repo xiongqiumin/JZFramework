@@ -354,20 +354,22 @@ bool JZAgentCliTask::cancelLocalTask(const std::string &reason)
     m_cli->m_cancelling = true;
     m_loopActive = false;
     m_busy = false;
+    // 先让 agent 收尾: cancel() 会把 "cancel" 写进历史并发出 sigError(带 canceled 标志),
+    // 且发生在 taskEnd 之前, 服务端才能按历史最后一条把终态判成取消。
+    if (m_agent)
+        m_agent->cancel(reason);
     respondTask("cancelled", m_loopRound, m_accumReply, m_lastVerifyOutput, reason);
     endLoop();
-    resetSession(true);
+    resetSession();
     m_cli->m_cancelling = false;
     m_cli->pumpQueue();
     return true;
 }
 
-void JZAgentCliTask::resetSession(bool cancelRunning)
+void JZAgentCliTask::resetSession()
 {
     m_loopEpoch++;
     killVerify();
-    if (cancelRunning && m_agent)
-        m_agent->stop();
     if (m_agent)
         m_agent->reset();
     m_loopActive = false;
@@ -431,7 +433,7 @@ void JZAgentCliTask::onToolCall(const ToolCall &call)
         return;
 
     Json::Value d;
-    d["id"] = call.id;
+    d["id"] = call.id;      // provider 的 tool call id: 实时/归档/重建都用它配对, 不再另发
     d["name"] = call.function_name;
     d["args"] = call.function_args;
     pushEvent("tool_call", d);
@@ -466,7 +468,7 @@ void JZAgentCliTask::onToolResult(const ToolCallResult &result)
         return;
 
     Json::Value d;
-    d["id"] = result.id;
+    d["id"] = result.id;    // 与 tool_call 同一个 id: 网页靠它把结果填回那一行
     // 不再带 ok: 成功/失败由错误事件(role=error 的历史)体现, 实时和重建两边的形状保持一致
     d["result"] = result.result;
     pushEvent("tool_result", d);
@@ -882,12 +884,15 @@ static std::string clipForModel(const std::string& out)
 
 void JZAgentCliTask::onLoopFinished()
 {
-    // 1) 无验证命令 = 无验证: 没有判定标准, 直接按"通过"收尾。
-    //    agent 自身的报错只当提示带回去(网页显示成一行提示), 不把整个任务判成"失败"——
-    //    任务本身没有可失败的验收项, 失败徽标只会误导(模型答完还在闲聊/轮次用尽很常见)。
+    // 1) 无验证命令 = 无验证: 没有判定标准, 默认按"通过"收尾。
+    //    但**一个字都没输出**还带错误, 说明这轮根本没跑成(连不上模型/重试耗尽),
+    //    必须判 failed —— 否则终态是"已完成 + error + 无回复", 自相矛盾。
+    //    有输出时仍按成功收尾: 中间的错误只当提示(模型答完还在闲聊/轮次用尽很常见)。
     if (m_verifyCmd.empty())
     {
-        respondTask("success", m_loopRound, m_accumReply, "", m_failed ? m_lastError : "");
+        const bool ok = !m_failed || !m_accumReply.empty();
+        respondTask(ok ? "success" : "failed", m_loopRound, m_accumReply, "",
+                    m_failed ? m_lastError : "");
         endLoop();
         return;
     }
@@ -949,6 +954,14 @@ void JZAgentCliTask::onVerifyDone(int exitCode, const std::string& out)
     m_loopRound++;
     if (m_loopRound >= m_maxLoopRounds)
     {
+        // 外部判定的失败: 记一条 custom error 历史, 服务端按"历史最后一条是 error"判 FAILED。
+        // stop() 会像普通错误一样发 sigError/sigFinished; 验证阶段不能再触发一轮验证,
+        // 所以自己屏蔽 onFinished(错误事件仍照常推给网页)。
+        m_suppressFinish = true;
+        if (m_agent)
+            m_agent->stop(JZAgent::CustomError,
+                          "验证失败: " + logSummary(out, kToolResultBytes));
+        m_suppressFinish = false;
         respondTask("failed", m_loopRound, m_accumReply, out,
             "验证脚本在达到最大轮次(" + std::to_string(m_maxLoopRounds) + ")后仍失败");
         endLoop();
@@ -1724,6 +1737,7 @@ JZAgentCliTask::RetryMode JZAgentCliTask::classifyError(JZAgent::AgentError code
             // 在原地打转(工具反复相同调用 / 思考回复复读), 已被循环检测中止: 原样重发
             // 必然接着打转, 但"换做法"通常能解 —— 归可修复(预算受 maxFixRetries 约束)。
             return RetryFix;
+        case JZAgent::CustomError:      // 外部判定的失败(验证不过等): 重试救不了
         default:                        // None / UserCancelError
             return RetryNone;
     }
@@ -1750,17 +1764,10 @@ void JZAgentCliTask::onError(const std::string &err)
     d["retry"] = (mode == RetryFix) ? m_fixRetries : m_errorRetries;   // 该档已用掉的重试次数
     d["retry_mode"] = (mode == RetryFix) ? "fix" : (mode == RetryTransient ? "continue" : "none");
     d["retryable"] = retryable;          // 还会自动重试吗(网页据此提示"将自动重试")
+    d["canceled"] = (m_lastErrorCode == JZAgent::UserCancelError);   // 取消: 网页显示"取消"
     pushEvent("error", d);
 
-    // 错误也留一条历史(role=error, 只存不发给模型): 聊天记录从上下文重建时
-    // 天然还原成一条 error 事件, 不必再单独持久化过程事件(见 JZAgentCliServer::eventsFromContext)。
-    {
-        Json::Value m;
-        m["role"] = "error";
-        m["content"] = err;
-        m["at"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
-        pushEvent("context_history", m);
-    }
+    // 历史里的 error 由 JZAgent::llmError() 统一记(见 pushErrorHistory), 这里只推实时事件。
 }
 
 void JZAgentCliTask::onContextCompress(const JZAgentTokenUsage &u)
@@ -1781,6 +1788,9 @@ void JZAgentCliTask::onFinished()
 {
     // 任务被取消 / 客户端断开时不跑验证
     if (!m_loopActive)
+        return;
+    // 外部 stop() 触发的收尾(如验证判失败): 不能再重入重试/验证
+    if (m_suppressFinish)
         return;
 
     // 本轮 LLM 生成结束: 记 think / reply 摘要(一条一条; think 若已写则不重复)

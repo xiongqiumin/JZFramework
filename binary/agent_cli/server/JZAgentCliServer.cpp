@@ -1661,12 +1661,14 @@ Json::Value JZAgentCliServer::eventsFromContext(const TaskRecord &r) const
     if (!hist.isArray())
         return out;
 
-    auto pushEvent = [&out](const char *type, Json::Value data, Json::Int64 at)
+    // id = 这条内容的身份: 消息用历史 id(数字), tool 用 ToolCall.id(字符串)。
+    auto pushEvent = [&out](const char *type, Json::Value data, Json::Int64 at, const Json::Value &id)
     {
         Json::Value e(Json::objectValue);
         e["seq"] = (int)out.size() + 1;
         e["at"] = at;
         e["type"] = type;
+        e["id"] = id;
         e["data"] = data;
         out.append(e);
     };
@@ -1684,20 +1686,27 @@ Json::Value JZAgentCliServer::eventsFromContext(const TaskRecord &r) const
             continue;   // 压缩摘要是内部消息, 不进界面
         const string role = m.get("role", "").asString();
         const Json::Int64 at = m.get("at", (Json::Int64)0).asInt64();
+        const Json::Int64 mid = m.get("id", (Json::Int64)0).asInt64();
 
         // 思考 / 错误各自是一条独立历史(role=thinking / error), 直接映射成一条事件
         if (role == "thinking")
         {
             Json::Value d(Json::objectValue);
             d["text"] = m.get("content", "").asString();
-            pushEvent("thinking", d, at);
+            pushEvent("thinking", d, at, mid);
             continue;
         }
         if (role == "error")
         {
             Json::Value d(Json::objectValue);
             d["text"] = m.get("content", "").asString();
-            pushEvent("error", d, at);
+            // 取消也是 error 的一种分类, 前端据此显示"取消"而不是"错误"
+            const string code = m.get("error", "").asString();
+            if (!code.empty())
+                d["code"] = code;
+            if (code == "cancel")
+                d["canceled"] = true;
+            pushEvent("error", d, at, mid);
             continue;
         }
 
@@ -1705,7 +1714,7 @@ Json::Value JZAgentCliServer::eventsFromContext(const TaskRecord &r) const
         {
             Json::Value d(Json::objectValue);
             d["text"] = m.get("content", "").asString();
-            pushEvent("user_msg", d, at);
+            pushEvent("user_msg", d, at, mid);
             continue;
         }
         if (role == "assistant")
@@ -1715,19 +1724,22 @@ Json::Value JZAgentCliServer::eventsFromContext(const TaskRecord &r) const
             {
                 Json::Value d(Json::objectValue);
                 d["text"] = content;
-                pushEvent("reply", d, at);
+                pushEvent("reply", d, at, mid);
             }
             const Json::Value &calls = m["tool_calls"];
             if (calls.isArray())
             {
+                // 一个 assistant 带 N 个 tool_calls: 一条历史在界面上展开成 N 行,
+                // 每行用 ToolCall 自己的 id(实时推送同值, 结果也按它填回来)。
                 for (const auto &tc : calls)
                 {
                     Json::Value d(Json::objectValue);
-                    d["id"] = tc.get("id", "").asString();
+                    Json::Value tcid = tc.get("id", "");
+                    d["id"] = tcid.asString();
                     const Json::Value &fn = tc["function"];
                     d["name"] = fn.get("name", "").asString();
                     d["args"] = fn.get("arguments", "").asString();
-                    pushEvent("tool_call", d, at);
+                    pushEvent("tool_call", d, at, tcid);
                 }
             }
             continue;
@@ -1735,13 +1747,47 @@ Json::Value JZAgentCliServer::eventsFromContext(const TaskRecord &r) const
         if (role == "tool")
         {
             Json::Value d(Json::objectValue);
-            d["id"] = m.get("tool_call_id", "").asString();
+            Json::Value tcid = m.get("tool_call_id", "");
+            d["id"] = tcid.asString();
             d["result"] = m.get("content", "").asString();
-            pushEvent("tool_result", d, at);
+            pushEvent("tool_result", d, at, tcid);
             continue;
         }
     }
 
+    return out;
+}
+
+// 任务的"最后一句话": role + error 分类。终态靠它定:
+// role=error 且 error=="cancel" -> 取消; 其余 error -> 失败。
+// 只看属于这条任务、且不是压缩摘要的消息。
+JZAgentCliServer::LastMessage JZAgentCliServer::lastHistory(const TaskRecord &r) const
+{
+    LastMessage out;
+    Json::Value ctx;
+    auto it = m_contextCache.find(r.contextId);
+    if (it != m_contextCache.end())
+        ctx = it->second;
+    else if (!r.contextId.empty())
+        ctx = loadContextFile(r.contextId);
+    if (!ctx.isObject())
+        return out;
+    const Json::Value &hist = ctx["history"];
+    if (!hist.isArray())
+        return out;
+    for (int i = (int)hist.size() - 1; i >= 0; --i)
+    {
+        const Json::Value &m = hist[i];
+        if (!m.isObject())
+            continue;
+        if (m.get("taskId", "").asString() != r.taskId)
+            continue;
+        if (m.get("kind", "").asString() == "summary")
+            continue;
+        out.role = m.get("role", "").asString();
+        out.error = m.get("error", "").asString();
+        return out;
+    }
     return out;
 }
 
@@ -2161,7 +2207,13 @@ void JZAgentCliServer::recordEnd(const string &taskId, const Json::Value &result
     ensureTaskDetail(*r);
     flushOpenSegment(r);        // 收尾前把正在攒的 reply/thinking 段落成一条
     const string reply = result.get("agent_reply", "").asString();
-    r->state = stateFromResult(result.get("status", "").asString());
+    // 终态以会话历史最后一条为准: 结束在 error 上就是失败(分类是 cancel 则取消),
+    // 其余才看 cli 上报的 status。这样"答完了但最后一条是错误"也会显示失败。
+    const LastMessage last = lastHistory(*r);
+    if (last.role == "error")
+        r->state = (last.error == "cancel") ? kStateCanceled : kStateFailed;
+    else
+        r->state = stateFromResult(result.get("status", "").asString());
     r->rounds = result.get("verify_rounds", 0).asInt();
     r->error = result.get("error", "").asString();
     r->usage = result.get("usage", Json::Value());
@@ -2281,6 +2333,9 @@ void JZAgentCliServer::appendTaskEvent(TaskRecord *r, const string &type, const 
     e["seq"] = ++r->eventSeq;
     e["at"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
     e["type"] = type;
+    // tool_call/tool_result: 直接就是 ToolCall 自己的 id; thinking/reply 等归档成历史后才有 id。
+    if (data.isObject() && data["id"].isString() && !data["id"].asString().empty())
+        e["id"] = data["id"];
     e["data"] = data;
     r->events.push_back(toJsonLine(e));
     r->lastEventType = type;
@@ -2315,15 +2370,16 @@ void JZAgentCliServer::recordEvent(const string &taskId, const string &type, con
     wire["seq"] = r->eventSeq;
     wire["at"] = (Json::Int64)JZDateTime::currentMSecsSinceEpoch();
     wire["type"] = type;
+    if (v.isObject() && v["id"].isString() && !v["id"].asString().empty())
+        wire["id"] = v["id"];   // tool_call/tool_result: ToolCall 的 id
     wire["data"] = v;
     broadcastTaskEvent(taskId, "status_update", toJsonLine(wire), r->eventSeq);
     // 每 20 条 + 终态各存一次 SQLite; 中途 crash 只丢尾部过程。
     // 落盘前先把正在攒的 reply/thinking 落成一条, 否则文件里一直是"上一次 flush 的状态"。
+    // 只落盘, **不落段**: 一落段就会给同一条历史再发一个 seq/id(半段一条), 网页按 id
+    // 合并时两段会互相覆盖。段只在类型切换/收尾时落(见 appendTaskEvent 顶部)。
     if (r->eventSeq % 20 == 0)
-    {
-        flushOpenSegment(r);
         saveTaskRecord(*r);
-    }
 }
 
 // ---- SSE 订阅者 ----
@@ -2371,6 +2427,9 @@ void JZAgentCliServer::broadcastTaskEvent(const string &taskId, const string &ev
                 const string tp = ev.get("type", "").asString();
                 w["type"] = tp;
                 w["at"] = ev.get("at", (Json::Int64)0);
+                // 历史 id: 网页按它落位(流式分片也带), 不再靠 seq 猜。
+                if (ev.isMember("id"))
+                    w["id"] = ev["id"];
                 Json::Value d = ev["data"];
                 static const size_t kInlineMax = 4096;     // 超过这个字节数就不整条推
                 static const size_t kPreviewBytes = 512;   // 推下去的预览长度(utf8 字节)
@@ -2664,6 +2723,16 @@ Json::Value JZAgentCliServer::taskJson(const TaskRecord &r, int evLimit) const
     meta["events"] = jsonStringArrayFrom(r.events, evBegin, evTotal);
     meta["eventsTotal"] = (int)evTotal;
     meta["eventsOffset"] = (int)evBegin;
+    // 正在攒的 thinking/reply 还没落成事件: 单独给网页, 它塞进实时缓冲接着显示。
+    // (读接口故意不落段 —— 落段会让同一段内容先后拿到两个 seq, 收尾时互相覆盖)
+    if (!r.openKind.empty() && evLimit > 0)
+    {
+        Json::Value op(Json::objectValue);
+        op["kind"] = r.openKind;
+        op["text"] = r.openText;
+        op["at"] = (Json::Int64)r.openAt;
+        meta["open"] = op;
+    }
     meta["eventSeq"] = r.eventSeq;
     meta["startMs"] = (Json::Int64)r.startMs;
     meta["endMs"] = (Json::Int64)r.endMs;
@@ -2743,7 +2812,21 @@ void JZAgentCliServer::onApiTaskDetail(JZHttpServerClient *client, const JZHttpR
     }
     SlowReqGuard slow("api/tasks/detail");
     ensureTaskDetail(*r);
-    flushOpenSegment(r);        // 正在攒的那段先落, 详情才是完整的
+    // 历史结束在 error 的任务不能显示"已完成"(老记录在这里一次性纠正并落盘)。
+    if (r->state == kStateCompleted)
+    {
+        const LastMessage last = lastHistory(*r);
+        string want;
+        if (last.role == "error")
+            want = (last.error == "cancel") ? kStateCanceled : kStateFailed;
+        if (!want.empty())
+        {
+            r->state = want;
+            saveTaskRecord(*r);
+        }
+    }
+    // 不落段: 正在攒的 thinking/reply 以 metadata.open 的形式带给网页(它按实时缓冲接着显示),
+    // 落成事件会让同一段内容出现两个 id, 收尾时反而覆盖。
     respondJson(client, req, 200, taskJson(*r));
 }
 
@@ -2758,7 +2841,7 @@ void JZAgentCliServer::onApiTaskEvents(JZHttpServerClient *client, const JZHttpR
     }
     SlowReqGuard slow("api/tasks/events");
     ensureTaskDetail(*r);
-    flushOpenSegment(r);
+    // 正在攒的段不在 r.events 里(见 appendTaskEvent): 网页靠 SSE 分片继续显示, 这里不落段。
 
     int limit = atoi(req.queryParam("limit").c_str());
     if (limit <= 0 || limit > 2000)

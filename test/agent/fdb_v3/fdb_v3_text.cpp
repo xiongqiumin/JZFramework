@@ -552,7 +552,6 @@ public:
     {
         if (m_agent)
         {
-            m_agent->stop();
             delete m_agent;
             m_agent = nullptr;
         }

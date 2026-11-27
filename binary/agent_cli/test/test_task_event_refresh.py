@@ -221,7 +221,9 @@ def main(argv=None) -> int:
 
         # 大上下文「继续」: ctx 约 1.45MB, 远低于新的 10MB 单包上限。server 走 zlib 后应完整送达,
         # 不能 FATAL abort, 也不能靠裁剪丢掉最老一轮(用 fake LLM 收到的 BIGCTX-0- 验证)。
-        done = wait_status(port_http, task_id, {"TASK_STATE_COMPLETED"}, 20.0)
+        # 假 LLM 会一直复读, 最后被循环检测中止 -> 历史结束在 error, 终态是 FAILED;
+        # 这里只关心"任务跑完了且大回复完整送达"。
+        done = wait_status(port_http, task_id, {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}, 20.0)
         assert "Z" * 1000 in artifact_text(done), "大回复经 taskEvent/taskEnd 压缩后丢失"
         big = "x" * 9000
         big_history = []
@@ -241,7 +243,7 @@ def main(argv=None) -> int:
             "taskTimeoutMs": 30000,
         }, 3.0)
         assert cont.get("id") == task_id and state(cont) in WORKING, cont
-        wait_status(port_http, task_id, {"TASK_STATE_COMPLETED"}, 20.0)
+        wait_status(port_http, task_id, {"TASK_STATE_COMPLETED", "TASK_STATE_FAILED"}, 20.0)
         assert ManyEventsLlm.saw_big_ctx, "大 ctx 没有完整送达模型(压缩/续聊断链)"
         log("大 ctx 继续: 压缩后完整送达, fake LLM 看到 BIGCTX-0-")
         return 0

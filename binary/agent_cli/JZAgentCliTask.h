@@ -323,7 +323,7 @@ protected:
     void respondTask(const std::string &status, int rounds, const std::string &reply,
                      const std::string &verifyOut, const std::string &err);
     void endLoop();
-    void resetSession(bool cancelRunning);
+    void resetSession();
     bool cancelLocalTask(const std::string &reason);
     void resetHistory();
     void pushHistory(const std::string &prompt, const std::string &verifyCmd);
@@ -384,6 +384,8 @@ protected:
     int m_loopEpoch = 0;
 
     bool m_loopActive = false;
+    // 外部 stop() 期间屏蔽 onFinished(避免重入重试/验证); sigError 仍照常推事件。
+    bool m_suppressFinish = false;
     int m_loopRound = 0;
     int m_maxLoopRounds = 10;
     std::string m_verifyCmd;

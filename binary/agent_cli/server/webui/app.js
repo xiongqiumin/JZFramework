@@ -626,7 +626,7 @@ const AG = {
 
 const STEP_LABEL = {
   thinking: '思考', reply: '输出', tool_call: '工具', tool_result: '返回',
-  verify: '验证', retry: '重试', error: '错误', terminal_cleanup: '终端'
+  verify: '验证', retry: '重试', error: '错误', canceled: '取消', terminal_cleanup: '终端'
 };
 function dotClass(t) {
   const s = stateOf(t).replace('TASK_STATE_', '');
@@ -653,6 +653,7 @@ function stepText(e) {
   // 后端 retry 事件里字段名是 retry(不是 attempt); attempt 留着兼容旧记录
   else if (type === 'retry') s = '第 ' + (pick('retry') || pick('attempt') || '?') + ' 次重试 · ' + (pick('reason') || pick('error') || '');
   else if (type === 'error') s = pick('message') || pick('error') || pick('text') || jsonText(d);
+  else if (type === 'canceled') s = pick('text') || '已取消';
   else s = jsonText(d);
   // ⚠ thinking/reply 是**流式增量**: 这里绝不能 trim/截断, 否则每个分片末尾的空格和换行
   //   会被吃掉, 拼起来就是"4个 node"、"| 文件位置"这种粘连文本。
@@ -662,41 +663,64 @@ function stepText(e) {
    一条任务 = 一个任务队列(一次提交)。队列内部有很多轮:
    思考 → 工具 → 回复 → 验证 → 重试…  按事件顺序展开成一段对话。
    =========================================================================== */
+/* 一条消息的展示身份: 有 id 就用 id(消息=历史 id, tool=ToolCall.id),
+   没有 id 的过程事件用 seq —— 实时推送、详情拉取、重启后重建都是同一个号。 */
+function evKey(e) {
+  if (!e) return '';
+  const t = e.type || '';
+  if (typeof e.id === 'string' && e.id) return 't' + e.id + ':' + t;   // tool: 就是 ToolCall.id
+  const h = Number(e.id);
+  if (h > 0) return 'h' + h + ':' + t;                                // 消息: 上下文历史 id
+  return e.seq ? 's' + e.seq : '';
+}
+/* 这一段已经落成事件了才清实时缓冲: 别的任务/别的类型的事件(如工具返回)不该把
+   正在流式输出的那段冲掉。 */
+function dropLiveIfArchived(tid, evs) {
+  const live = AG.liveText[tid];
+  if (!live) return;
+  if ((evs || []).some(e => e && e.type === live.kind)) delete AG.liveText[tid];
+}
 function groupEvents(t) {
   // start/task_start/task_end 不是对话内容; 老记录里还有叫 start 的事件
   const evs = taskEvents(t).filter(e => e && ['submitted', 'start', 'task_start', 'task_end'].indexOf(e.type) < 0);
   const out = [];
   for (let i = 0; i < evs.length; i++) {
     const e = evs[i], d = e.data || {}, type = e.type || '';
+    const key = evKey(e);
     const last = out[out.length - 1];
     if (type === 'thinking' || type === 'reply') {
       const txt = stepText(e);
       const trunc = !!(d && d.truncated);
-      if (last && last.kind === type) {          // 流式增量: 同一轮拼成一段
+      const hid = Number(e.id) || 0;
+      // 同一条历史的增量拼成一段(归档后一条历史一个 id)。
+      const same = last && last.kind === type && last.hid === hid;
+      if (same) {
         last.text += txt;
         last.truncated = last.truncated || trunc;
       } else {
-        out.push({ kind: type, text: txt, key: e.seq, seq: e.seq,
-                   truncated: trunc, bytes: (d && d.full_bytes) || 0 });
+        out.push({ kind: type, text: txt, key: hid ? ('h' + hid) : ('s' + e.seq), seq: e.seq,
+                   hid: hid, truncated: trunc, bytes: (d && d.full_bytes) || 0 });
       }
       continue;
     }
     if (type === 'user_msg') {
       // 每一轮用户说了什么(同一条任务里"接着说"会追加多条)
-      out.push({ kind: 'user', text: (d && d.text) || stepText(e) || '', key: e.seq });
+      out.push({ kind: 'user', text: (d && d.text) || stepText(e) || '', key: key || ('s' + e.seq), seq: e.seq });
       continue;
     }
     if (type === 'tool_call') {
+      // 一行 = 一次 ToolCall, 身份就是它自己的 id(实时/归档/重建同一个值)。
+      const tid = (d && typeof d.id === 'string') ? d.id : '';
       out.push({ kind: 'tool', name: (d && d.name) || 'tool',
-                 args: (d && d.args) || '', result: null, ok: null, key: e.seq,
+                 args: (d && d.args) || '', result: null, ok: null,
+                 key: tid ? ('t' + tid) : ('s' + e.seq), tid: tid,
                  seq: e.seq, truncated: !!(d && d.truncated), bytes: (d && d.full_bytes) || 0 });
       continue;
     }
     if (type === 'tool_result') {
-      let target = null;
-      for (let k = out.length - 1; k >= 0; k--) {
-        if (out[k].kind === 'tool' && out[k].result === null) { target = out[k]; break; }
-      }
+      const tid = (d && typeof d.id === 'string') ? d.id : '';
+      // 结果按同一个 ToolCall.id 填回那一行。
+      const target = tid ? out.filter(b => b.kind === 'tool' && b.tid === tid)[0] : null;
       const res = (d && d.result != null) ? jsonText(d.result) : jsonText(d);
       const trunc = !!(d && d.truncated), bytes = (d && d.full_bytes) || 0;
       if (target) {
@@ -705,21 +729,24 @@ function groupEvents(t) {
         target.resultSeq = e.seq;      // 截断的是"结果"那条, 点开时按这个 seq 取
       } else {
         out.push({ kind: 'tool', name: '', args: '', result: res,
-                   ok: !(d && d.ok === false), key: e.seq, seq: e.seq,
-                   truncated: trunc, bytes: bytes });
+                   ok: !(d && d.ok === false),
+                   key: tid ? ('t' + tid) : ('s' + e.seq), tid: tid,
+                   seq: e.seq, truncated: trunc, bytes: bytes });
       }
       continue;
     }
     if (type === 'verify') {
       out.push({ kind: 'verify', round: (d && d.round) || 0, cmd: (d && d.cmd) || '',
                  passed: !!(d && d.passed), exit: (d && d.exit_code),
-                 output: (d && d.output) || '', key: e.seq });
+                 output: (d && d.output) || '', key: key || ('s' + e.seq) });
       continue;
     }
-    out.push({ kind: 'sys', type: type, text: stepText(e), key: e.seq });
+    // 取消在底层就是一条 error(error 分类 = "cancel"), 显示成"取消"
+    const et = (type === 'error' && d && d.canceled) ? 'canceled' : type;
+    out.push({ kind: 'sys', type: et, text: stepText(e), key: key || ('s' + e.seq) });
   }
   // 正在生成的那一段: 事件要等整段结束才落盘, 期间用 SSE 带来的分片文本补在末尾。
-  // 落盘后 refreshNewEvents 会清掉这个缓冲, 不会重复。
+  // 实时内容总在最后, 不需要提前知道它将来归档成哪条历史。
   const live = AG.liveText[taskId(t)];
   if (live && live.text) {
     const last = out[out.length - 1];
@@ -1499,7 +1526,11 @@ async function loadDetail(id) {
   try {
     const t = await getJson(api('tasks/detail?id=' + encodeURIComponent(id)));
     const i = AG.tasks.findIndex(x => taskId(x) === id);
+    mergeNewerEvents(t, i >= 0 ? AG.tasks[i] : null);
     if (i >= 0) AG.tasks[i] = t; else AG.tasks.push(t);
+    const op = meta(t).open;
+    if (op && op.kind && op.text)
+      AG.liveText[id] = { kind: op.kind, text: op.text };
     AG.busy = AG.tasks.some(isRunning);
     renderHead(); renderSide(); syncComposer();
     if (id === AG.sel) renderTask(false, isRunning(t) ? 'bottom' : '');
@@ -1548,20 +1579,39 @@ async function loadFullEvent(tid, seq) {
 /* 服务端把事件**整条推过来**(帧里带 type/data/at): 直接落进本地事件表,
    不再为每条事件回拉 /api/tasks/events。返回是否真的新增了事件(按 seq 去重)。 */
 function applyPushedEvent(t, m) {
-  if (!t || !m || !m.seq || !m.type) return false;
+  if (!t || !m || !m.type) return false;
   const id = taskId(t);
   const u = meta(t);
   const arr = u.events || (u.events = []);
-  if (!arr.some(e => e && Number(e.seq) === Number(m.seq))) {
-    arr.push({ seq: m.seq, at: m.at || Date.now(), type: m.type, data: m.data });
+  const key = evKey(m);
+  const seq = Number(m.seq) || 0;
+  const hit = key ? arr.filter(e => evKey(e) === key)[0] : null;
+  if (hit) {                            // 同一条(重推/补拉): 合并字段, 不追加
+    hit.data = m.data;
+    if (m.at) hit.at = m.at;
+    if (seq) hit.seq = seq;
+  } else {
+    const ev = { seq: seq, at: m.at || Date.now(), type: m.type, data: m.data };
+    if (m.id !== undefined && m.id !== null) ev.id = m.id;
+    arr.push(ev);
     // 本地只留最近一段, 更早的靠"加载更多"按 seq 往前翻
     if (arr.length > 2000) arr.splice(0, arr.length - 2000);
   }
-  u.eventSeq = Math.max(Number(u.eventSeq) || 0, Number(m.seq) || 0);
-  AG.renderedSeq[id] = Math.max(Number(AG.renderedSeq[id]) || 0, Number(m.seq) || 0);
-  // 事件已落盘(整段一条), 实时缓冲作废
-  delete AG.liveText[id];
+  u.eventSeq = Math.max(Number(u.eventSeq) || 0, seq);
+  AG.renderedSeq[id] = Math.max(Number(AG.renderedSeq[id]) || 0, seq);
+  // 这段内容已落盘(整段一条)才清实时缓冲; 工具/状态事件不影响别的段
+  dropLiveIfArchived(id, [m]);
   return true;
+}
+/* 拉回来的详情是"请求发起那一刻"的快照: 把本地有、快照里没有的事件(快照之后推来的)
+   补回去, 避免慢响应把刚推到的内容盖掉。 */
+function mergeNewerEvents(snap, old) {
+  const oe = (old && meta(old).events) || [];
+  if (!oe.length) return;
+  const se = meta(snap).events || (meta(snap).events = []);
+  const seen = new Set(se.map(evKey));
+  const extra = oe.filter(e => e && !seen.has(evKey(e)));
+  if (extra.length) se.push(...extra);
 }
 function maxEventSeq(t) {
   let n = Number((meta(t) || {}).eventSeq) || 0;
@@ -1575,9 +1625,13 @@ async function loadChatDetail(id, force) {
   try {
     const t = await getJson(api('tasks/detail?id=' + encodeURIComponent(id)));
     const i = AG.tasks.findIndex(x => taskId(x) === id);
+    mergeNewerEvents(t, i >= 0 ? AG.tasks[i] : null);   // 别把响应飞行期间推到的事件盖掉
     if (i >= 0) AG.tasks[i] = t; else AG.tasks.push(t);
+    const op = meta(t).open;    // 正在流式输出、还没落盘的那一段: 接着显示
+    if (op && op.kind && op.text)
+      AG.liveText[id] = { kind: op.kind, text: op.text };
     AG.detailLoaded[id] = true;
-    AG.renderedSeq[id] = maxEventSeq(t);
+    AG.renderedSeq[id] = Math.max(Number(AG.renderedSeq[id]) || 0, maxEventSeq(t));
     AG.busy = AG.tasks.some(isRunning);
     renderHead(); renderSide(); syncComposer();
     if (id === AG.sel) { AG.sig = ''; renderTask(true, ''); }
@@ -1614,13 +1668,14 @@ async function refreshNewEvents(id, m) {
     const evs = d.events || [];
     if (evs.length) {
       // 这一段已经落盘成事件了, 实时缓冲作废(否则末尾会重复显示一遍)
-      delete AG.liveText[id];
+      dropLiveIfArchived(id, evs);
       const u = meta(t);
       const arr = u.events || (u.events = []);
       const seen = {};
-      arr.forEach(e => { if (e && e.seq) seen[e.seq] = 1; });
+      arr.forEach(e => { const k = evKey(e); if (k) seen[k] = 1; });
       evs.forEach(e => {
-        if (e && e.seq && !seen[e.seq]) { arr.push(e); seen[e.seq] = 1; }
+        const k = evKey(e);
+        if (k && !seen[k]) { arr.push(e); seen[k] = 1; }
       });
       AG.renderedSeq[id] = Math.max(last, ...evs.map(e => Number(e && e.seq) || 0));
       u.eventSeq = Math.max(Number(u.eventSeq) || 0, AG.renderedSeq[id]);

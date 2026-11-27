@@ -89,7 +89,7 @@ public:
         // 下面两种是"只存档、只给界面看"的历史消息: 聊天记录从上下文重建时就靠它们,
         // 但**永远不发给模型**(见 buildContext)。
         Thinking,   // 某一轮 assistant 的思考过程(单独一条, content 就是思考全文)
-        Error,      // 任务中途的错误(LLM 失败/循环检测/取消等), 重建后就是一条 error 事件
+        Error,      // 错误/取消(单独一条, content 是说明, error 是分类: cancel/custom/...)
     };
 
     // 消息性质：普通对话消息 / 上下文起点 / 压缩摘要。
@@ -113,10 +113,9 @@ public:
     Role role;
     Kind kind = Kind::Message;
     std::string content;
-    // 推理/思考过程的**临时累加器**(reasoning_content/thinking)。只在流式累积期间暂放在
-    // assistant 上; 入历史前被 emitThinkingHistory() 抽成独立一条 role=Thinking 的消息。
-    // 不参与序列化。
-    std::string thinking;
+    // 仅 role=Error: 错误分类, 持久化成稳定字符串("cancel"/"connect"/"http"/"timeout"/
+    // "tool"/"loop"/"maxRound"/"maxToken"/"custom"/"none"), 界面/终态判定据此区分取消与失败。
+    std::string error;
     // 毫秒时间戳, **仅展示/存档用**: 落进 ctx 存档后, server 靠它从上下文历史重建聊天记录
     // (见 JZAgentCliServer::eventsFromContext)。发模型前会剔除, 见 buildContext()。
     int64_t at = 0;
@@ -266,6 +265,7 @@ public:
         MaxRoundError,   // 达到最大对话轮次
         MaxTokenError,   // token 预算超出
         LoopError,       // 工具调用在原地打转(同签名重复), 已被循环检测中止
+        CustomError,     // 外部判定的失败(如验证脚本不过), 由调用方给定说明
     };
 
     JZAgent(JZObject* parent = nullptr);
@@ -281,7 +281,7 @@ public:
     //        + 锚点之后新增的消息(工具返回等)
     //        + m_requests 里待发的消息
     //        没有锚点时(首轮/服务端不下发 usage/历史刚载入)退回全量估算(system+工具+历史+待发)。
-    //   ⚠ 计数**不含思考 token**: 思考只实时上抛、不回写上下文(见 LLMHistory::thinking)。
+    //   ⚠ 计数**不含思考 token**: 思考只实时上抛、不回写上下文(见 m_thinkingHistory)。
     //   以前这里用的是 prompt+completion, 会把上一轮的思考也算进上下文 ⇒ 高估
     //   (实测 prompt=6378/completion=2878 而下一轮真实 prompt 只到 6624, 高估 ~40%),
     //   预算被虚占、压缩提前。
@@ -348,7 +348,17 @@ public:
 
     void compressHistory();
 
-    void stop();
+    // 外部要求结束: 和内部错误走同一条路 —— 记一条 error 历史 + sigError + llmEnd(sigFinished)。
+    // 不想被通知的调用方自己屏蔽回调(如验证阶段, 见 JZAgentCliTask::onVerifyDone)。
+    // 终态由"历史最后一条"判定, 所以要在回 taskEnd 之前调用。
+    void stop(AgentError code, const std::string &reason = std::string());
+
+    // 取消 = stop(UserCancelError, reason)
+    void cancel(const std::string &reason = std::string());
+
+    // 错误分类 -> 持久化字符串("cancel"/"connect"/"http"/"timeout"/"tool"/"loop"/
+    // "maxRound"/"maxToken"/"custom"/"none"), 界面/终态判定用。
+    static const char *agentErrorName(AgentError e);
 
     // 一轮对话结束(Idle)后重开新任务: 把 agent 重置回 Inactive, 清空对话历史/用量/待发请求。
     // 保留已注册的 system prompt / tools / skills 配置, 重置后即可 setSystemPrompt/addTool 或直接 request。
@@ -449,15 +459,18 @@ protected:
     void llmLoop();
 
     // 入历史唯一入口: 分配自增 id, push 进 m_context.history 并增量通知。
-    // id 只在这里发, 所以它严格按入历史顺序递增(不是按对象构造顺序)。
+    // 已有 id 的(存档读回)沿用, 不重新发号。
     void pushHistory(const std::shared_ptr<LLMHistory> &h);
     // 历史消息 id 发号器: 每个 agent 一份; loadContext() 载入存档后抬到 max(id)+1。
     int64_t m_historyIdSeed = 1;
 
-    // 把本轮 assistant 的思考过程作为**独立一条历史消息**(kind=Thinking)存档:
-    // 只给界面 / 聊天记录重建用, 不发给模型(见 buildContext)。存完清掉 assistant 上的 thinking,
-    // 免得存档里两份。reply 为空或没有思考时什么都不做。
-    void emitThinkingHistory(const std::shared_ptr<LLMHistory> &reply);
+    // 把本轮累积的思考过程作为**独立一条历史消息**(role=Thinking)存档:
+    // 只给界面 / 聊天记录重建用, 不发给模型(见 buildContext)。存完释放,
+    // 免得同一段思考在存档里出现两份。没有思考时什么都不做。
+    void emitThinkingHistory();
+    // 思考增量: 和回复对称 —— 流式期间各攒一条 LLMHistory(思考一条、assistant 一条),
+    // 收尾时 thinking 先入历史、assistant 后入。首次收到思考分片时创建。
+    std::shared_ptr<LLMHistory> m_thinkingHistory;
 
     // 超出预算时把最旧一段历史发给大模型做摘要压缩，用一条摘要消息替换原消息。
     // 成功发起异步压缩返回 true；无可压缩项(策略不支持/已无可压)返回 false。
@@ -465,7 +478,13 @@ protected:
     void onCompressFinished();
 
     void llmError(AgentError error, std::string error_string = std::string());
-    void llmEnd();
+    // notify=false: 只做清理, 不发 sigFinished。
+    void llmEnd(bool notify = true);
+    // 硬中止: 关掉在途请求, 不记历史、不发信号(销毁/丢弃会话这类场景用)。
+    void abortRun();
+
+    // 往历史里记一条 error(只发 sigLLMHistory)。一轮只记一条, 重复调用忽略。
+    void pushErrorHistory(AgentError code, const std::string &reason);
 
     std::string m_systemPrompt;
     std::vector<JZAgentTool*> m_tools;

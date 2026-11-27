@@ -148,7 +148,8 @@ JZAgent::JZAgent(JZObject* parent) : JZObject(parent),
 }
 
 JZAgent::~JZAgent()
-{    
+{
+    abortRun();   // 销毁时关掉在途请求: 不记历史、不发信号
 }
 
 // 一轮对话结束(Idle)后重开新任务: 仅 Idle 允许, 复位到 Inactive 并清空对话历史。
@@ -176,7 +177,7 @@ void JZAgent::reset()
     }
 
     m_state = State::Inactive;
-    m_historyIdSeed = 0;
+    m_historyIdSeed = 1;   // 历史 id 从 1 起(0 = 没有 id)
     m_currentRound = -1;
     m_isActive = false;
     m_inTransaction = false;
@@ -185,6 +186,7 @@ void JZAgent::reset()
     m_error.clear();
     m_errorCode = AgentError::None;  // 未设置错误时为 None
     m_replyHistory = std::shared_ptr<LLMHistory>();
+    m_thinkingHistory.reset();
 
     m_context.clear();  // 清空对话历史与累计 usage
     m_requests.clear();
@@ -509,9 +511,55 @@ void JZAgent::compressHistory()
     startCompressHistory();
 }
 
-void JZAgent::stop()
+const char *JZAgent::agentErrorName(AgentError e)
 {
-    llmError(UserCancelError, "user cancel");
+    switch (e)
+    {
+    case None:            return "none";
+    case NoError:         return "none";
+    case ConnectError:    return "connect";
+    case HttpError:       return "http";
+    case TimeOutError:    return "timeout";
+    case ToolCallError:   return "tool";
+    case UserCancelError: return "cancel";
+    case MaxRoundError:   return "maxRound";
+    case MaxTokenError:   return "maxToken";
+    case LoopError:       return "loop";
+    case CustomError:     return "custom";
+    }
+    return "none";
+}
+
+void JZAgent::pushErrorHistory(AgentError code, const std::string &reason)
+{
+    if (m_errorCode != AgentError::None)   // 一轮只记一条
+        return;
+    m_errorCode = code;
+    m_error = reason;
+    auto h = std::make_shared<LLMHistory>();
+    h->role = LLMHistory::Error;
+    h->content = reason;
+    h->error = agentErrorName(code);
+    h->at = jzAgentNowMs();
+    pushHistory(h);        // 只发 sigLLMHistory: 服务端据此重建/判终态
+}
+
+void JZAgent::abortRun()
+{
+    // 硬中止: 关掉在途请求, 不记历史、不发信号。
+    llmEnd(false);
+}
+
+void JZAgent::stop(AgentError code, const std::string &reason)
+{
+    // 外部停止和内部错误走同一条路: 记历史 + sigError + llmEnd(sigFinished)。
+    // 不想被通知的调用方(如验证阶段)自己屏蔽回调。
+    llmError(code, reason);
+}
+
+void JZAgent::cancel(const std::string &reason)
+{
+    stop(UserCancelError, reason.empty() ? std::string("user cancel") : reason);
 }
 
 std::string JZAgent::errorString()
@@ -714,7 +762,8 @@ void JZAgent::llmRequest()
     }
 
     // 每次请求重新累积（流式与非流式统一）
-    m_replyHistory = std::shared_ptr<LLMHistory>();    
+    m_replyHistory = std::shared_ptr<LLMHistory>();
+    m_thinkingHistory.reset();   // 新的一轮重新攒思考(上一轮的已在收尾时落成历史)    
 
     // 设置 model 字段
     Json::Value request_body;
@@ -959,13 +1008,17 @@ Json::Value LLMHistory::toJson() const
     if (role == LLMHistory::Tool && !toolResponseId.empty())
         history_msg["tool_call_id"] = toolResponseId;
 
+    // 错误的分类(cancel/custom/...): 界面据此区分"取消"与"失败", 不发给模型
+    if (role == LLMHistory::Error && !error.empty())
+        history_msg["error"] = error;
+
     // 内部标记(消息性质), 发请求前会被移除, 见 buildContext()
     history_msg["kind"] = kindToString(kind);
     history_msg["id"] = (Json::Int64)id;
     // 展示用元数据: 落进 ctx 存档后, server 靠它把上下文历史重建回聊天记录。
     // 同样不发给模型, 见 buildContext()。
-    // 思考/错误各自是独立的一条历史(role=thinking / error, content 就是正文),
-    // 不再挂在 assistant 的 thinking 字段上。
+    // 思考/错误/取消各自是独立的一条历史(role=thinking / error / canceled, content 就是正文),
+    // 不挂在 assistant 上。
     history_msg["at"] = (Json::Int64)at;
     return history_msg;
 }
@@ -976,11 +1029,11 @@ bool LLMHistory::fromJson(const Json::Value& root)
         return false;
 
     content.clear();
+    error.clear();
     images.clear();
     toolRequest.clear();
     toolResponseId.clear();
     at = 0;
-    thinking.clear();
 
     if (!parseRole(root))
         return false;
@@ -1029,6 +1082,7 @@ bool LLMHistory::fromJson(const Json::Value& root)
     // 展示用元数据(见 toJson)
     at = (int64_t)root.get("at", (Json::Int64)0).asInt64();
     id = (int64_t)root.get("id", (Json::Int64)0).asInt64();
+    error = root.get("error", "").asString();
     
     return true;
 }
@@ -1375,19 +1429,17 @@ const SkillDefine* JZAgent::skill(const std::string& name)
 
 void JZAgent::llmError(AgentError error, std::string error_string)
 {
-    if(m_errorCode == AgentError::None)
-    {
-        m_errorCode = error;
-        m_error = error_string;
-        sigError.emit(error_string);
+    if (m_errorCode != AgentError::None)
+        return;
+    pushErrorHistory(error, error_string);   // 设置 m_errorCode/m_error 并记一条历史(只发 sigLLMHistory)
+    sigError.emit(error_string);
 
-        m_pendingToolRound.reset();          // assistant 还没入 history, 整批丢弃即可
-        trimIncompleteHistory(m_context);   // 出错后裁掉不自洽的末尾, 避免下次把坏历史发出去
-        llmEnd();
-    }
+    m_pendingToolRound.reset();          // assistant 还没入 history, 整批丢弃即可
+    trimIncompleteHistory(m_context);   // 出错后裁掉不自洽的末尾, 避免下次把坏历史发出去
+    llmEnd();
 }
 
-void JZAgent::llmEnd()
+void JZAgent::llmEnd(bool notify)
 {
     auto tool_it = m_pendingTools.begin();
     while(tool_it != m_pendingTools.end())
@@ -1426,7 +1478,8 @@ void JZAgent::llmEnd()
     m_pendingToolRound.reset();
 
     m_state = State::Idle;
-    sigFinished.emit();
+    if (notify)
+        sigFinished.emit();
 }
 
 // 统一的响应增量处理
@@ -1451,11 +1504,17 @@ void JZAgent::processResponseDelta(const std::string &content,
     // 非流式单包也借此保证 thinking 排在 content 之前（首个 sigReply 即代表思考结束）。
     if (!thinking.empty())
     {
-        reply.thinking += thinking;
+        // 与回复对称: 思考也先攒成一条 LLMHistory(role=Thinking), 收尾时整条入历史。
+        if (!m_thinkingHistory)
+        {
+            m_thinkingHistory = std::make_shared<LLMHistory>();
+            m_thinkingHistory->role = LLMHistory::Thinking;
+        }
+        m_thinkingHistory->content += thinking;
         sigThinking.emit(thinking);   // 思考过程实时增量上抛（与 sigReply 并行）
 
         // 思考在原地打转(同一句翻来覆去): 让它继续只会白烧输出 token —— 直接中止本轮。
-        JZTextLoopEvent ev = m_textLoop.check(reply.thinking, "思考");
+        JZTextLoopEvent ev = m_textLoop.check(m_thinkingHistory->content, "思考");
         if (ev.loop)
         {
             jzWarning() << "JZAgent: " << ev.message;
@@ -1542,7 +1601,7 @@ void JZAgent::finalizeResponse()
     {
         if (!reply->content.empty())
         {
-            emitThinkingHistory(reply);   // 思考先单独入一条历史(不发给模型)
+            emitThinkingHistory();   // 思考先单独入一条历史(不发给模型)
             reply->at = jzAgentNowMs();
             pushHistory(reply);
         }
@@ -1666,21 +1725,23 @@ void JZAgent::pushHistory(const std::shared_ptr<LLMHistory> &h)
 {
     if (!h)
         return;
-    h->id = m_historyIdSeed++;
+    // 已有 id 的(从 ctx 存档读回)沿用原号, 新消息才发号 —— 发号器只增不减。
+    if (h->id <= 0)
+        h->id = m_historyIdSeed++;
     m_context.history.push_back(h);
     sigLLMHistory.emit(h);
 }
 
-void JZAgent::emitThinkingHistory(const std::shared_ptr<LLMHistory> &reply)
+void JZAgent::emitThinkingHistory()
 {
-    if (!reply || reply->thinking.empty())
+    if (!m_thinkingHistory || m_thinkingHistory->content.empty())
+    {
+        m_thinkingHistory.reset();
         return;
-    auto t = std::make_shared<LLMHistory>();
-    t->role = LLMHistory::Thinking;   // 独立 role: content 直接就是思考全文
-    t->content = reply->thinking;
-    t->at = jzAgentNowMs();
-    reply->thinking.clear();
-    pushHistory(t);
+    }
+    m_thinkingHistory->at = jzAgentNowMs();
+    pushHistory(m_thinkingHistory);   // 独立 role=Thinking: content 就是思考全文
+    m_thinkingHistory.reset();
 }
 
 void JZAgent::llmLoop()
@@ -1704,7 +1765,7 @@ void JZAgent::llmLoop()
     if (m_pendingToolRound && m_pendingToolRound->complete())
     {
         auto batch = m_pendingToolRound;
-        emitThinkingHistory(batch->assistant);   // 思考先单独入一条历史(不发给模型)
+        emitThinkingHistory();   // 思考先单独入一条历史(不发给模型)
         batch->assistant->at = jzAgentNowMs();
         pushHistory(batch->assistant);
         for (const auto &r : batch->results)

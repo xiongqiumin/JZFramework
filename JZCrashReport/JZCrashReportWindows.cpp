@@ -51,19 +51,58 @@ static std::string makeName(const char *tag, const char *ext)
     return std::string(path);
 }
 
+// DbgHelp 不可用时的退路: 只给 [模块名+偏移], 事后用 pdb/dumpbin 定位。
+// 典型场景: 进程正在退出 (main 已返回), 这时 SymInitialize 会以 87
+// (ERROR_INVALID_PARAMETER) 失败 —— 但地址本身仍然有意义。
+static std::string rawStack()
+{
+    void *frames[32];
+    const USHORT n = CaptureStackBackTrace(0, 32, frames, nullptr);
+
+    std::string out;
+    char line[512];
+    for (USHORT i = 0; i < n; i++)
+    {
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "?";
+        unsigned long long off = (unsigned long long)frames[i];
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               (LPCSTR)frames[i], &mod) && mod)
+        {
+            GetModuleFileNameA(mod, name, MAX_PATH);
+            const char *base = strrchr(name, '\\');
+            if (base)
+                memmove(name, base + 1, strlen(base + 1) + 1);
+            off = (unsigned long long)frames[i] - (unsigned long long)mod;
+        }
+        snprintf(line, sizeof(line), "#%-2d %s+0x%llX\n", i, name, off);
+        out += line;
+    }
+    return out;
+}
+
 // 逐个栈帧: 地址 + 符号名(有 pdb 时) + 源码位置(有行信息时)
 static std::string buildStack(EXCEPTION_POINTERS *info)
 {
     if (!info || !info->ContextRecord)
         return std::string();
 
-    HANDLE process = GetCurrentProcess();
+    // ⚠ 用**真实进程句柄**而不是 GetCurrentProcess() 伪句柄: 伪句柄 (-1) + fInvadeProcess=TRUE
+    //   在部分 dbghelp 版本下会直接返回 ERROR_INVALID_PARAMETER(87), 于是整段堆栈丢失。
+    HANDLE process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE,
+                                 GetCurrentProcessId());
+    if (!process)
+        process = GetCurrentProcess();
     HANDLE thread = GetCurrentThread();
 
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
     // 第二个参数为额外的符号搜索路径; pdb 就在 exe 同目录, 默认模块路径即可找到
     if (!SymInitialize(process, nullptr, TRUE))
-        return std::string("SymInitialize failed: " + std::to_string(GetLastError()) + "\n");
+    {
+        const DWORD err = GetLastError();
+        return "SymInitialize failed: " + std::to_string(err) + "\n" + rawStack();
+    }
 
     CONTEXT ctx = *info->ContextRecord;
     STACKFRAME64 frame;
@@ -124,6 +163,8 @@ static std::string buildStack(EXCEPTION_POINTERS *info)
     }
 
     SymCleanup(process);
+    if (process != GetCurrentProcess())
+        CloseHandle(process);
     return out;
 }
 

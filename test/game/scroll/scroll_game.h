@@ -42,6 +42,10 @@ public:
     // 给"agent 自己看画面"用: 不用人盯窗口也能确认滚屏真的画出来了。
     void setShotPath(const std::string& path) { m_shotPath = path; }
 
+    // 收尾方式: false(默认)=关窗 (WM_CLOSE -> notifyWindowClosed -> quit);
+    //           true=jzApp->quit() 直接停事件循环 (窗口还开着)。后者用于回归"退出路径"。
+    void setQuitDirectly(bool on) { m_quitDirectly = on; }
+
 protected:
     void resetGame() override;
     void stepGame() override;
@@ -72,4 +76,5 @@ private:
 
     std::string m_shotPath;      // 非空 = 中途抓一张图
     bool   m_shotDone = false;
+    bool   m_quitDirectly = false;
 };

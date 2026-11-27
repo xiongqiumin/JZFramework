@@ -166,13 +166,20 @@ void ScrollGame::finish()
                 m_step, camera().x(), expect, ok ? "ok" : "FAIL", m_drawn, m_total);
     std::fflush(stdout);
 
-    // 收尾走**关窗**这条正路 (close() -> WM_CLOSE -> notifyWindowClosed -> quit):
-    // 直接 jzApp->quit() 会让 exec 在"窗口还开着"的状态下返回, 随后栈上的 JZWindow/控件
-    // 带着活的顶层窗口析构, 实测偶发退出时 0xC0000005。
-    if (JZWindow* w = window())
+    // 收尾两种都支持:
+    //   默认 close(): 走"用户关窗"那条正路 (WM_CLOSE -> notifyWindowClosed -> quit);
+    //   --quit:     直接 jzApp->quit(), exec 在"窗口还开着"时返回, 随后栈上的
+    //               JZWindow/控件照常析构。这条路径曾经必崩 (0xC0000005), 根因是
+    //               控件先于窗口析构时窗口还攥着 m_focusWidget 裸指针, 已在
+    //               JZWindow::dropWidget / ~JZWidget 里修掉; --quit 就是它的回归用例。
+    if (m_quitDirectly) {
+        if (jzApp)
+            jzApp->quit();
+    } else if (JZWindow* w = window()) {
         w->close();
-    else if (jzApp)
+    } else if (jzApp) {
         jzApp->quit();
+    }
 }
 
 // ---------------------------------------------------------------- 绘制

@@ -386,6 +386,30 @@ void JZWindow::setFocusWidget(JZWidget* w)
     }
 }
 
+// 控件析构时摘除窗口里指向它的裸指针。**不派发事件**: 此刻控件正在析构,
+// 再给它发 focusOut 等于在半销毁对象上回调 (会二次崩溃)。
+void JZWindow::dropWidget(JZWidget* w)
+{
+    if (!w)
+        return;
+
+    bool focusChanged = false;
+    if (m_focusWidget == w) {
+        m_focusWidget = nullptr;
+        focusChanged = true;
+    }
+    if (m_mouseGrabber == w)
+        m_mouseGrabber = nullptr;
+    if (m_inputGate == w)
+        m_inputGate = nullptr;
+    if (m_hoverWidget == w)
+        m_hoverWidget = nullptr;
+
+    // 焦点没了要同步 IMC (否则输入法上下文还挂在已删除的控件上)
+    if (focusChanged)
+        updateImeContext();
+}
+
 // ==================== 命中测试 ====================
 // 从根向下, 返回包含全局逻辑坐标的最深层可见控件 (不含子窗口 / 根自身)。
 JZWidget* JZWindow::hitTest(const JZPoint& global)

@@ -119,6 +119,16 @@ int JZWidget::opaque() const
 
 JZWidget::~JZWidget()
 {
+    // 0) 先摘掉窗口里指向自己的裸指针 (焦点/鼠标抓取/输入屏蔽/悬停)。
+    //    典型崩法: 控件比窗口先析构 (栈上 `JZWindow w; JZWidget c(&w);` 就是先毁 c),
+    //    随后 ~JZWindow -> DestroyWindow -> WM_KILLFOCUS -> onWindowFocus(false)
+    //    -> sendEvent(已释放的 m_focusWidget) -> object->thread()->id() ⇒ 0xC0000005。
+    //    必须放在最前面: 后面 ~JZObject 会把本控件从父对象上摘掉, 那时 window() 就找不到了。
+    if (jzApp) {
+        if (JZWindow* win = window())
+            win->dropWidget(this);
+    }
+
     // 1) 摘除"本控件被外部布局持有"的关系: 防止布局 items 继续持有悬垂指针。
     //    逐个复制遍历: removeWidget 会修改 m_layoutOwners。
     std::vector<JZLayout*> owners = m_layoutOwners;

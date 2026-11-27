@@ -121,6 +121,13 @@ public:
     JZWidget* focusWidget() const { return m_focusWidget; }
     void setFocusWidget(JZWidget* w);   // w==nullptr 等价清空焦点
 
+    // 控件析构时调用: 把窗口内所有指向它的**裸指针**摘掉 (焦点/鼠标抓取/输入屏蔽/悬停),
+    // 不派发任何事件。⚠ 必须在 JZWidget 析构里做: 否则"子控件先析构、窗口后析构"时,
+    // 窗口销毁触发的 WM_KILLFOCUS 会打到已释放的 m_focusWidget 上 (实测退出偶发 0xC0000005,
+    // 栈: ~JZWindow -> Backend::destroy -> wndproc -> onWindowFocus -> sendEvent -> thread()->id())。
+    // Qt 在 QWidget 析构里清理 focus/mouseGrabber/entered 也是同一个道理。
+    void dropWidget(JZWidget* w);
+
     // 鼠标抓取 (窗口级: 同 HWND 同时仅一个 grabber)。抓取后所有鼠标事件
     // (含客户区外) 直发 w, 直到 releaseMouse 或窗口隐藏。SetCapture 由本窗口托管。
     void grabMouse(JZWidget* w);            // w 成为 grabber 并 SetCapture(HWND)
@@ -327,6 +334,7 @@ protected:
     bool m_top = false;                 // 置顶
 
     JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
+    // ⚠ 以上(含下面几个)都是**裸指针**: 控件析构必须经 dropWidget 摘除, 不能只在窗口析构时清。
     bool m_dispatchingKey = false;      // 正在派发键/IME 事件 (挡 event() 的递归, 见 JZWindow::event)
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)

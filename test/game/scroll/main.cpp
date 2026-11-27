@@ -15,10 +15,13 @@
 int app_main(int argc, char* argv[])
 {
     bool autoMode = false;
+    bool quitDirectly = false;
     std::string shotPath;
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--auto") == 0)
             autoMode = true;
+        else if (std::strcmp(argv[i], "--quit") == 0)
+            quitDirectly = true;      // 收尾改成 jzApp->quit() (回归"窗口还开着"的退出路径)
         else if (std::strcmp(argv[i], "--shot") == 0 && i + 1 < argc)
             shotPath = argv[++i];
     }
@@ -36,6 +39,7 @@ int app_main(int argc, char* argv[])
     game.setGeometry(0, 0, window.width(), window.height());
     game.setAutoMode(autoMode);
     game.setShotPath(shotPath);
+    game.setQuitDirectly(quitDirectly);
     game.show();
 
     window.show();

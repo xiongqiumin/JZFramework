@@ -136,7 +136,8 @@ build/binary/bin/Debug/agent_cli_server.exe -c build/agent_env/configs/server.js
 ctest --test-dir build -C Debug
 ```
 
-环境变量：`JZ_RENDER_BACKEND=d2d|gdi` 切渲染后端（默认 gdi）；`JZ_LOG_LEVEL=debug|info|warn|error|fatal` 控制日志等级。
+环境变量：`JZ_RENDER_BACKEND=d2d|gdi` 切渲染后端（**默认 d2d**，Direct2D/GPU；`gdi` 留作对照与排障）；
+`JZ_LOG_LEVEL=debug|info|warn|error|fatal` 控制日志等级。离屏设备（虚拟桌面/取帧）会自动落到 GDI。
 
 ## 架构速览
 

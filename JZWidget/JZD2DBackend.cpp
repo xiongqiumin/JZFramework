@@ -4,6 +4,7 @@
 #include "JZDrawTask.h"
 #include "JZPixmap.h"
 #include "JZImage.h"
+#include "JZScreen.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -403,8 +404,18 @@ void JZD2DBackend::rebuildFonts()
 
 bool JZD2DBackend::snapshot(JZImage& out)
 {
-    (void)out;
-    return false;             // 帧缓冲在 GPU 上
+    Impl& d = *m_d;
+    out = JZImage();
+    if (!d.ready || !d.hwnd)
+        return false;
+
+    // GPU 目标的像素在 D3D 的交换链里, D2D 的 HwndRenderTarget 不提供 CPU 回读
+    // (D2D1.1 的 CopyFromRenderTarget 需要 DeviceContext, HWND 目标拿不到)。
+    // 退一步: 走 PrintWindow(PW_RENDERFULLCONTENT) 从 DWM 拿客户区合成结果 ——
+    // 与 JZWidget::grab / JZScreen::grabWindow 是同一条路, 对 D2D/DX 窗口有效,
+    // 被遮挡也能抓到。代价是一次合成往返 (ms 级), 所以只用于"取帧/快照", 不进渲染循环。
+    out = JZScreen::grabWindow(d.hwnd);
+    return !out.isNull();
 }
 
 // ============================================================================

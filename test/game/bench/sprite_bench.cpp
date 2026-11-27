@@ -2,15 +2,33 @@
 // 测量四件事: 创建(堆分配) / 更新(forEach 遍历) / 碰撞查询(forEachOverlap) /
 // 绘制(离屏 image, 与窗口同一条 draw task 管线)。
 // 输出纯 ASCII (PowerShell 重定向读日志只认 ASCII)。
+//
+// 两种模式:
+//   默认(离屏): JZPainter(JZImage) -> GDI+ 离屏合成, 只测"任务提交+回放"的 CPU 成本。
+//              ⚠ 离屏只有 GDI 后端支持, --windowed 才能测到 D2D。
+//   --windowed: 真窗口 + 真后端 (GDI BitBlt / D2D EndDraw), 端到端一帧的成本,
+//              用来回答"换后端之后每帧能画多少个精灵"。
+//              用法: JZ_RENDER_BACKEND=d2d sprite_bench.exe --windowed --n 1000
 #include "JZScene.h"
 #include "JZSprite.h"
 #include "JZImage.h"
 #include "JZPainter.h"
+#include "JZPainterEvent.h"
 #include "JZColor.h"
+#include "JZApplication.h"
+#include "JZWindow.h"
+#include "JZWidget.h"
+#include "JZDisplayDevice.h"
+#include "JZRenderBackend.h"
+#include "JZD2DBackend.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstddef>
+#include <cstring>
+#include <string>
+#include <vector>
 
 static double nowMs()
 {
@@ -121,8 +139,118 @@ static void runBatch(int n, const JZPixmap& glow, int mode, Row& out)
     }
 }
 
-int main()
+// ==================== 窗口模式: 真后端 + 端到端 ====================
+// 只做"画"这一件事: 一个 800x600 的控件, paintEvent 把整个 scene 交出去。
+// 不跑消息循环, 直接同步调 device->render() —— 测的就是"生成任务 + 回放 + 上屏"的
+// 一帧成本 (窗口的 WM_PAINT 在真游戏里也是同一个入口)。
+class BenchView : public JZWidget
 {
+public:
+    explicit BenchView(JZWidget* parent) : JZWidget(parent) {}
+    JZScene* scene = nullptr;
+
+protected:
+    void paintEvent(JZPainterEvent* event) override
+    {
+        (void)event;
+        JZPainter p(this);
+        if (scene)
+            scene->draw(&p);
+    }
+};
+
+static void fillScene(JZScene& scene, const JZPixmap& glow, int n, int mode)
+{
+    for (int i = 0; i < n; i++) {
+        auto& s = scene.create<JZSprite>();
+        s.x = (i * 37) % 800;
+        s.y = (i * 53) % 600;
+        const bool tex = (mode == 0) || (mode == 2 && i % 2 == 0);
+        if (tex) {
+            s.texture = glow;
+            s.width = 22;
+            s.height = 22;
+        } else {
+            s.shape = JZSprite::Ellipse;
+            s.width = 14;
+            s.height = 14;
+            s.color = JZColor(255, 90, 180);
+            s.borderColor = JZColor(255, 210, 245);
+            s.borderWidth = 1;
+        }
+    }
+}
+
+static int runWindowed(int n, int frames, int mode)
+{
+    const JZPixmap glow = makeGlowTexture(JZColor(220, 250, 255), JZColor(60, 140, 255), 22);
+
+    JZApplication app;
+    JZWindow win(800, 600, "sprite_bench (windowed)");
+
+    JZScene scene;
+    fillScene(scene, glow, n, mode);
+
+    BenchView view(&win);
+    view.setGeometry(0, 0, 800, 600);
+    view.scene = &scene;
+    view.show();
+    win.show();
+    app.processEvents();          // 建原生窗口 + 首帧
+
+    JZDisplayDevice* dev = win.device();
+    if (!dev) {
+        std::printf("[windowed] no device\n");
+        return 1;
+    }
+    const bool d2d = dynamic_cast<JZD2DBackend*>(dev->renderBackend()) != nullptr;
+    const float scale = dev->scale();
+
+    // 预热 10 帧 (首次贴图/字体缓存建立), 再测。
+    for (int i = 0; i < 10; i++)
+        dev->render(&win, win.rect());
+
+    std::vector<double> ms;
+    ms.reserve((size_t)frames);
+    for (int f = 0; f < frames; f++) {
+        const double t0 = nowMs();
+        dev->render(&win, win.rect());
+        ms.push_back(nowMs() - t0);
+    }
+
+    std::sort(ms.begin(), ms.end());
+    const double best = ms.front();
+    const double p50 = ms[ms.size() / 2];
+
+    std::printf("[windowed] backend=%s dpi=%.2f n=%d mode=%d frames=%d "
+                "min=%.2fms p50=%.2fms  min=%.3fus/sprite  budget60fps~=%.0f sprites\n",
+                d2d ? "d2d" : "gdi", scale, n, mode, frames,
+                best, p50, best * 1000.0 / n, 16700.0 / (best * 1000.0 / n));
+    std::fflush(stdout);
+
+    win.close();                  // 走关窗正路 (WM_CLOSE -> notifyWindowClosed -> quit)
+    return 0;
+}
+
+int main(int argc, char** argv)
+{
+    {
+        int n = 1000, frames = 120, mode = 2;
+        bool windowed = false;
+        for (int i = 1; i < argc; i++) {
+            if (std::strcmp(argv[i], "--windowed") == 0)
+                windowed = true;
+            else if (std::strcmp(argv[i], "--n") == 0 && i + 1 < argc)
+                n = std::atoi(argv[++i]);
+            else if (std::strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
+                frames = std::atoi(argv[++i]);
+            else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc)
+                mode = std::atoi(argv[++i]);
+        }
+        if (windowed)
+            return runWindowed(n > 0 ? n : 1000, frames > 0 ? frames : 120, mode);
+    }
+
     const JZPixmap glow = makeGlowTexture(JZColor(220, 250, 255), JZColor(60, 140, 255), 22);
 
     std::printf("sizeof(JZSprite) = %zu bytes (+ unique_ptr node ~ %zu bytes with malloc overhead)\n",

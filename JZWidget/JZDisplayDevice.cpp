@@ -16,20 +16,26 @@
 #include <cctype>
 
 // ==================== 渲染调度 ====================
-// 后端选择: 环境变量 JZ_RENDER_BACKEND=d2d|gdi (默认 gdi)。
-// 默认不切 D2D 的原因: 文本/圆角的亚像素细节与 GDI+ 略有差异, 现有 UI 测试与视觉
-// 基线都是 GDI+ 口径; 先用它跑游戏/新窗口验证, 再决定要不要翻默认值。
+// 后端选择: 环境变量 JZ_RENDER_BACKEND=d2d|gdi，**默认 d2d**（2026-11-27 翻默认值）。
+//   * d2d：ID2D1HwndRenderTarget(GPU) + DirectWrite；窗口呈现走 D3D11/DXGI 交换链，
+//     实测 200% DPI 下弹幕类负载比 GDI+ 快 5~15 倍（见 test/game/bench 的重测数据）；
+//   * gdi：GDI+ 双缓冲，留作对照/兜底（老系统、怀疑 D2D 渲染差异时用）；
+//   * D2D 不可用（老 Windows/被策略禁用）或目标不是真窗口（离屏/虚拟桌面）时，
+//     JZD2DBackend::init 返回失败，JZDisplayDevice 自动换回 GDI —— 所以离屏那条路
+//     （targetPixels 零拷贝取帧）行为不变。
 JZRenderBackend* jzCreateRenderBackend()
 {
     std::string want = JZPlatform::getEnv("JZ_RENDER_BACKEND");
     std::transform(want.begin(), want.end(), want.begin(),
                    [](unsigned char c) { return (char)std::tolower(c); });
 
-    if (want == "d2d" || want == "d2d1" || want == "gpu") {
-        if (JZD2DBackend::available())
-            return new JZD2DBackend();
-    }
-    return new JZGdiBackend();
+    // 显式要求 GDI+ 才退回去；其余（未设置/拼错/d2d/gpu）都优先 GPU。
+    if (want == "gdi" || want == "gdiplus")
+        return new JZGdiBackend();
+
+    if (JZD2DBackend::available())
+        return new JZD2DBackend();
+    return new JZGdiBackend();     // D2D 起不来: 静默兜底
 }
 
 JZDisplayDevice::JZDisplayDevice()

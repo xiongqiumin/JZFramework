@@ -29,7 +29,7 @@ class JZImage;
 //   裁剪 = **显示坐标**的轴对齐矩形 (在 identity 变换下 PushAxisAlignedClip);
 //   描边内缩半笔宽、圆角半径同步减半笔宽 (Qt/GDI+ 的 drawRect 语义)。
 //
-// 选择方式: 环境变量 JZ_RENDER_BACKEND=d2d|gdi (默认 gdi, 见 jzCreateRenderBackend)。
+// 选择方式: 默认就是本后端; 环境变量 JZ_RENDER_BACKEND=gdi 可退回 GDI+ (对照/排障用)。
 // ============================================================================
 class JZFRAMEWORK_API JZD2DBackend : public JZRenderBackend
 {
@@ -45,7 +45,8 @@ public:
     void resizeSwapChain(unsigned physicalW, unsigned physicalH) override;
     void rebuildFonts() override;
 
-    // 只有窗口目标: 帧缓冲在 GPU 上, 不提供 CPU 取帧。
+    // 取帧: GPU 目标没有可零拷贝读的 CPU 缓冲, 退化为 PrintWindow 抓客户区
+    // (与 JZWidget::grab 同一条路; ms 级, 只给快照/测试用, 不进渲染循环)。
     bool snapshot(JZImage& out) override;
 
     // 进程里 D2D 是否可用 (老系统/被策略禁用时 false, 工厂据此回退 GDI)

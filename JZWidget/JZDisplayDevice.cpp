@@ -6,14 +6,35 @@
 #include "JZPainterEvent.h"
 #include "JZWindow.h"
 #include "JZGdiBackend.h"
+#include "JZD2DBackend.h"
 #include "JZPixmap.h"
 #include "JZApplication.h"
+#include "JZPlatform.h"
 #include "JZStd.h"
 
+#include <algorithm>
+#include <cctype>
+
 // ==================== 渲染调度 ====================
+// 后端选择: 环境变量 JZ_RENDER_BACKEND=d2d|gdi (默认 gdi)。
+// 默认不切 D2D 的原因: 文本/圆角的亚像素细节与 GDI+ 略有差异, 现有 UI 测试与视觉
+// 基线都是 GDI+ 口径; 先用它跑游戏/新窗口验证, 再决定要不要翻默认值。
+JZRenderBackend* jzCreateRenderBackend()
+{
+    std::string want = JZPlatform::getEnv("JZ_RENDER_BACKEND");
+    std::transform(want.begin(), want.end(), want.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+
+    if (want == "d2d" || want == "d2d1" || want == "gpu") {
+        if (JZD2DBackend::available())
+            return new JZD2DBackend();
+    }
+    return new JZGdiBackend();
+}
+
 JZDisplayDevice::JZDisplayDevice()
 {
-    m_backend = new JZGdiBackend();   // 默认后端; 可经 setRenderBackend 替换
+    m_backend = jzCreateRenderBackend();   // 默认后端; 可经 setRenderBackend 替换
 }
 
 JZDisplayDevice::~JZDisplayDevice()
@@ -34,21 +55,39 @@ void JZDisplayDevice::setRenderBackend(JZRenderBackend* backend)
         delete m_backend;
     }
     m_backend = backend;
-    if (!m_backend)
-        m_backend = new JZGdiBackend();   // nullptr = 恢复默认后端
+    m_backendFromFactory = false;
+    if (!m_backend) {
+        m_backend = jzCreateRenderBackend();   // nullptr = 恢复默认后端
+        m_backendFromFactory = true;
+    }
 }
 
 void JZDisplayDevice::init(void* hwnd, int width, int height)
 {
-    if (m_backend)
-        m_backend->init(this, hwnd, (unsigned)width, (unsigned)height);
+    if (!m_backend)
+        return;
+    if (m_backend->init(this, hwnd, (unsigned)width, (unsigned)height))
+        return;
+    if (!m_backendFromFactory)
+        return;                     // 使用者显式换的后端: 失败就失败, 不越权改
+    // 工厂后端建不起来 (典型: D2D 被装到了离屏设备上): 换 GDI 再试一次
+    delete m_backend;
+    m_backend = new JZGdiBackend();
+    m_backend->init(this, hwnd, (unsigned)width, (unsigned)height);
 }
 
 // 离屏: 不绑定窗口, 后端只建自己的帧缓冲 (target = nullptr), 取帧走 snapshot
 void JZDisplayDevice::initOffscreen(int width, int height)
 {
-    if (m_backend)
-        m_backend->init(this, nullptr, (unsigned)width, (unsigned)height);
+    if (!m_backend)
+        return;
+    if (m_backend->init(this, nullptr, (unsigned)width, (unsigned)height))
+        return;
+    if (!m_backendFromFactory)
+        return;
+    delete m_backend;
+    m_backend = new JZGdiBackend();
+    m_backend->init(this, nullptr, (unsigned)width, (unsigned)height);
 }
 
 bool JZDisplayDevice::snapshot(JZImage& out)

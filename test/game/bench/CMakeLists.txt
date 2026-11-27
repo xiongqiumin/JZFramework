@@ -1,2 +1,3 @@
 add_executable(sprite_bench sprite_bench.cpp)
-target_link_libraries(sprite_bench JZFramework)
+# JZGame 单独 DLL (JZSprite/JZScene 的容量基准)
+target_link_libraries(sprite_bench JZGame)

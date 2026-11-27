@@ -29,3 +29,35 @@ void JZScene::draw(JZPainter* painter) const
     for (const JZSprite* s : m_drawList)
         s->draw(painter);
 }
+
+void JZScene::drawVisible(JZPainter* painter, const JZBody& view) const
+{
+    if (!painter)
+        return;
+
+    m_drawList.clear();
+    for (const auto& s : m_sprites) {
+        // 过滤顺序: 便宜的先判 (visible/alpha 是字段; body() 要算一次 AABB)
+        if (!s->visible || s->alpha <= 0.0)
+            continue;
+        if (!s->body().intersects(view))
+            continue;
+        m_drawList.push_back(s.get());
+    }
+    std::stable_sort(m_drawList.begin(), m_drawList.end(),
+        [](const JZSprite* a, const JZSprite* b) { return a->z < b->z; });
+    for (const JZSprite* s : m_drawList)
+        s->draw(painter);
+}
+
+size_t JZScene::countVisible(const JZBody& view) const
+{
+    size_t n = 0;
+    for (const auto& s : m_sprites) {
+        if (!s->visible || s->alpha <= 0.0)
+            continue;
+        if (s->body().intersects(view))
+            ++n;
+    }
+    return n;
+}

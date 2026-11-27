@@ -105,6 +105,14 @@ private:
         HANDLE waits[2] = { m_hTimer, m_hWake };
         std::vector<JZFixedTimer *> due;      // 复用以少几次分配
 
+        // ⚠ "算出到期"和"投递到期"必须在**同一段临界区**里 (见下面的 postDue)。
+        //   析构方是 unsubscribe(取 m_mutex) 之后才 delete —— 只要投递时还握着 m_mutex,
+        //   裸指针就一定还是活的(投递那一刻对象还没进 delete)。反过来, 若把 due 带出锁外
+        //   再投递, 中间这段就是 use-after-free, 实测退出时偶发 0xC0000005 (崩在
+        //   JZObject::~JZObject -> clearGuardPointer -> JZThread::id())。
+        //   另一种写法 runOnObject(JZObjectPointer, ...) 也不行: 那个重载内部会拿
+        //   jzApp->globalLock(), 而 postEvent 里的 currentThread() 也要同一把锁 ⇒ 自锁死。
+
         while (!m_stop.load())
         {
             due.clear();
@@ -148,12 +156,15 @@ private:
                         hasWait = true;
                     }
                 }
-            }
 
-            for (size_t i = 0; i < due.size(); i++)
-            {
-                JZFixedTimer *t = due[i];
-                runOnObject(t, [t]() { t->tick(); });
+                // 投递仍在锁内 (关键, 见 run() 开头): 此刻析构方还卡在 unsubscribe 上,
+                // 这些裸指针必然有效; runOnObject 会立刻取 guardPointer 钉住对象,
+                // 之后即使析构了, dispatch 也会因弱引用失效而跳过。
+                for (size_t i = 0; i < due.size(); i++)
+                {
+                    JZFixedTimer *t = due[i];
+                    runOnObject(t, [t]() { t->tick(); });
+                }
             }
 
             if (m_stop.load())

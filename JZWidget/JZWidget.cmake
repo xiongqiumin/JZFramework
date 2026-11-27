@@ -60,6 +60,9 @@ set(JZ_SOURCES
     JZRenderBackend.h
     JZGdiBackend.h
     JZGdiBackend.cpp
+    # Direct2D 渲染后端 (GPU, 窗口呈现): JZ_RENDER_BACKEND=d2d 启用
+    JZD2DBackend.h
+    JZD2DBackend.cpp
     JZLayout.h
     JZLayout.cpp
     JZAbstractAnimation.h
@@ -203,8 +206,12 @@ if(HAS_JZMcpServer)
 endif()
 
 if(WIN32)
-    # GDI+ 绘图后端 (临时方案; 后续如需 GPU 渲染, 按同样接口接入新后端)
-    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE gdiplus imm32 shell32 comdlg32 ole32)
+    # GDI+ 绘图后端 (默认) + Direct2D/DirectWrite 绘图后端 (JZ_RENDER_BACKEND=d2d)
+    #   d2d1   : D2D 工厂/渲染目标
+    #   dwrite : 文本 (D2D 不画字, 排版与字形由 DirectWrite 提供)
+    #   dxgi   : HwndRenderTarget 内部交换链 (老 SDK 不自动带, 显式链上更稳)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE
+        gdiplus imm32 shell32 comdlg32 ole32 d2d1 dwrite dxgi)
 else()
     # 非 Windows 平台暂无渲染后端, 控件树逻辑层可编译运行
     message(STATUS "[JZWidget] No render backend on this platform (logic only)")

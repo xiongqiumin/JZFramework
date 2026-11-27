@@ -2,7 +2,7 @@
 #define JZ_GAME_BODY_H_
 #pragma once
 
-#include "JZGlobal.h"   // JZFRAMEWORK_API
+#include "JZGameGlobal.h"   // JZGAME_API
 
 // ============================================================================
 // JZBody: AABB 碰撞体 (世界坐标, double)。
@@ -13,7 +13,7 @@
 // 坐标约定: (x,y) = 左上角, (w,h) = 尺寸; 与 JZRect 的闭区间语义不同, 这里
 // 用 [x, x+w) 半开区间做重叠测试 (浮点世界坐标的标准做法)。
 // ============================================================================
-class JZFRAMEWORK_API JZBody
+class JZGAME_API JZBody
 {
 public:
     JZBody() = default;

@@ -57,6 +57,40 @@ else()
     endif()
 endif()
 
+# ---- 共享模块: JZGame (2D 游戏层, 单独 DLL; 构建时启用才有) ----
+# 用法: target_link_libraries(app PRIVATE JZFramework::JZGame JZFramework::JZFramework)
+#   它自己 PUBLIC 链 JZFramework::JZFramework, 所以 include 路径/宏/JZGAME_DYNAMIC
+#   会一起带出; 运行时把 bin/JZGame[d].dll 放到 exe 旁边即可。
+set(_jz_has_game "@HAS_JZGame@")
+if(_jz_has_game)
+    add_library(JZFramework::JZGame SHARED IMPORTED)
+    if(WIN32)
+        set_target_properties(JZFramework::JZGame PROPERTIES
+            IMPORTED_CONFIGURATIONS "DEBUG;RELEASE"
+            IMPORTED_LOCATION_DEBUG "${_jz_root}/bin/JZGamed.dll"
+            IMPORTED_IMPLIB_DEBUG "${_jz_root}/lib/JZGamed.lib"
+            IMPORTED_LOCATION_RELEASE "${_jz_root}/bin/JZGame.dll"
+            IMPORTED_IMPLIB_RELEASE "${_jz_root}/lib/JZGame.lib"
+            MAP_IMPORTED_CONFIG_DEBUG Debug
+            MAP_IMPORTED_CONFIG_RELEASE Release
+            MAP_IMPORTED_CONFIG_RELWITHDEBINFO Release
+            MAP_IMPORTED_CONFIG_MINSIZEREL Release)
+    elseif(APPLE)
+        set_target_properties(JZFramework::JZGame PROPERTIES
+            IMPORTED_LOCATION "${_jz_root}/lib/libJZGame.dylib")
+    else()
+        set_target_properties(JZFramework::JZGame PROPERTIES
+            IMPORTED_LOCATION "${_jz_root}/lib/libJZGame.so")
+    endif()
+    set_property(TARGET JZFramework::JZGame APPEND PROPERTY
+        INTERFACE_INCLUDE_DIRECTORIES ${_jz_inc_dirs})
+    set_property(TARGET JZFramework::JZGame APPEND PROPERTY
+        INTERFACE_COMPILE_DEFINITIONS JZGAME_DYNAMIC HAS_JZGame)
+    set_property(TARGET JZFramework::JZGame APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES JZFramework::JZFramework)
+endif()
+unset(_jz_has_game)
+
 set(_jz_defs "@JZ_INSTALL_MODULE_DEFS@")
 if(@JZFRAMEWORK_DYNAMIC@)
     list(APPEND _jz_defs JZFRAMEWORK_DYNAMIC JSON_DLL)

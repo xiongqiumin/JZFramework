@@ -2,7 +2,7 @@
 #define JZ_GAME_SCENE_H_
 #pragma once
 
-#include "JZGlobal.h"   // JZFRAMEWORK_API
+#include "JZGameGlobal.h"   // JZGAME_API
 #include "JZSprite.h"
 #include "JZBody.h"
 #include "JZPainter.h"
@@ -32,10 +32,14 @@
 //   需要删除先打标记 (如 alpha=0), 循环结束后再 removeIf 一次。
 // ⚠ create/adopt 之后, 之前取得的指针/引用可能被扩容失效, 不要跨次持有。
 // ============================================================================
-class JZFRAMEWORK_API JZScene
+class JZGAME_API JZScene
 {
 public:
     JZScene() = default;
+
+    // 场景持有 unique_ptr 精灵: 拷贝没有语义 (淡出的应该是"同一个场景"), 且 dllexport
+    // 会强制实例化隐式拷贝赋值 —— vector<unique_ptr> 的拷贝赋值是删除的, 必须显式禁掉。
+    JZ_DISABLE_COPY(JZScene)
 
     // ---- 精灵管理 ----
     // 原地构造一个精灵 (T 必须是 JZSprite 的派生类; 默认 JZSprite 本身)。
@@ -79,6 +83,15 @@ public:
 
     // ---- 绘制: 可见性过滤 -> z 稳定排序 (同 z 保持加入顺序) -> 逐个 draw ----
     void draw(JZPainter* painter) const;
+
+    // ---- 滚屏剔除绘制: 只画与 view 相交的精灵 ----
+    // view 是**世界坐标**矩形 (一般传 camera.visibleRect() / JZGameView2D::visibleWorld())。
+    // 与 draw 的唯一区别是过滤条件多了一条 AABB 相交; 排序/绘制路径完全一样,
+    // 所以"跑起来一样、只是少画了屏幕外的东西"。
+    void drawVisible(JZPainter* painter, const JZBody& view) const;
+
+    // 与 view 相交且可见的精灵数 (与 drawVisible 同一套过滤; 用于 HUD 统计/自检)
+    size_t countVisible(const JZBody& view) const;
 
     // ---- 碰撞查询: 对每个与 body 重叠的精灵调 f(sprite) ----
     // 弹幕热路径 (玩家小判定点 vs 几百发子弹) 就是它; O(n) 但每次只 4 次比较。

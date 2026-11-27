@@ -2,6 +2,7 @@
 #define JZ_GAME_VIEW_H_
 #pragma once
 
+#include "JZGameGlobal.h"
 #include "JZWidget.h"
 #include "JZPainter.h"
 #include "JZKeyEvent.h"
@@ -35,7 +36,7 @@
 //
 // 参考实现: test/game/shooter (与 test/widget/shooter 同一套玩法, 对照看基类省了什么)。
 // ============================================================================
-class JZFRAMEWORK_API JZGameView : public JZWidget
+class JZGAME_API JZGameView : public JZWidget
 {
 public:
     explicit JZGameView(JZWidget* parent = nullptr);

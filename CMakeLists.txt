@@ -100,11 +100,12 @@ set(JZ_MODULE_LIST JZCore JZNet JZAgent JZAudio JZCamera JZCoroutine JZCrashRepo
 if(WIN32)
     list(APPEND JZ_MODULE_LIST JZJSEngine)
     list(APPEND JZ_MODULE_LIST JZWidget)
-    # JZGame(2D 游戏控件, 基于 JZWidget): 2026-10-12 首版落地, 按需求**暂不进默认构建**
-    # (源码在 JZGame/, 示例在 test/game/; 容量基准见 test/game/bench/sprite_bench)。
-    # 需要时取消下一行注释, 并同步打开 JZFramework.cmake 的 MODULE_DEPENDS_JZGame:
-    # list(APPEND JZ_MODULE_LIST JZGame)
 endif()
+
+# 共享模块(各自一个 DLL, 见 jzframework_use_modules 的 SHARED_MODULES)。
+# JZGame(2D 游戏控件/滚屏相机, 基于 JZWidget): 2026-11-27 起改成**单独 DLL**并进默认构建,
+# 源码在 JZGame/, 示例在 test/game/。所以它不在 JZ_MODULE_LIST 里 —— 那样会被编进核心库。
+set(JZ_SHARED_MODULES "")
 
 include(JZFramework.cmake)
 
@@ -113,6 +114,12 @@ include(JZFramework.cmake)
 set(JZ_SINGLE_MODULES "")
 if(JZ_OPENCV_FOUND AND JZ_ONNXRUNTIME_FOUND)
     list(APPEND JZ_SINGLE_MODULES JZCv)
+endif()
+
+# JZGame: Windows 专属(JZWidget 只有 Windows 实现), 依赖 JZWidget —— 模块自己的 .cmake
+# 还会再检查一次, 缺依赖时只跳过、不建空 DLL。
+if(WIN32)
+    list(APPEND JZ_SHARED_MODULES JZGame)
 endif()
 
 # JZEmulator(GBA 画面控件) 要 JZWidget + 外部的宿主 DLL mgba_host.dll(见 JZEmulator/JZEmulator.cmake)。
@@ -124,7 +131,9 @@ if(WIN32 AND EXISTS "${JZ_MGBA_DIR}/mgba_host.dll")
     list(APPEND JZ_SINGLE_MODULES JZEmulator)
 endif()
 
-jzframework_use_modules(${JZ_MODULE_LIST} SINGLE_MODULES ${JZ_SINGLE_MODULES})
+jzframework_use_modules(${JZ_MODULE_LIST}
+    SINGLE_MODULES ${JZ_SINGLE_MODULES}
+    SHARED_MODULES ${JZ_SHARED_MODULES})
 # TLS 后端: 用系统 OpenSSL(mongoose 的 MG_TLS_OPENSSL 分支)而不是内置实现。
 # 内置实现只支持 P-256 与 RSA —— 证书链里出现 P-384 会直接 "reject secp386 for now"
 # 导致握手失败(而且那段链校验不看 skip_verification), 表现为 web_fetch 报 ConnectError。
@@ -196,6 +205,21 @@ foreach(_jz_mod ${JZFRAMEWORK_ADDED_MODULES})
     endif()
 endforeach()
 unset(_jz_mod)
+
+# 共享模块(JZGame.dll): 运行库 / 导入库 / 公共头, 都装在同一个前缀下。
+# 消费方用导入目标 JZFramework::JZGame (定义在 cmake/JZFrameworkConfig.cmake.in)。
+if(TARGET JZGame)
+    install(TARGETS JZGame
+        RUNTIME DESTINATION bin
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib)
+    install(DIRECTORY "${JZFRAMEWORK_ROOT_DIR}/JZGame/"
+        DESTINATION "include/JZFramework/JZGame"
+        FILES_MATCHING
+            PATTERN "*.h"
+            PATTERN "*.hpp"
+            PATTERN "*.inl")
+endif()
 
 # 生成头: jz_version.h / JZFrameworkConfig.h
 install(FILES "${JZ_VERSION_HEADER}"

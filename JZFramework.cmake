@@ -132,8 +132,9 @@ set(MODULE_DEPENDS_JZAgent "JZCore;JZNet;JZJson")
 set(MODULE_DEPENDS_JZWebView "JZCore")
 set(MODULE_DEPENDS_JZMcpServer "JZCore;JZJson;JZHttpServer;JZNet")
 set(MODULE_DEPENDS_JZWidget "JZCore;JZJson")
-# JZGame 暂不进默认构建 (见根 CMakeLists 的同名注释); 启用模块时这行也要取消注释
-# set(MODULE_DEPENDS_JZGame "JZWidget")
+# JZGame 是**共享模块**(单独 DLL, 见 JZGame/JZGame.cmake 与根 CMakeLists 的 JZ_SHARED_MODULES):
+# 这条依赖只用于"启用集合"的传递(HAS_JZWidget ⇒ JZGame 能查到), 不影响它自己的 target。
+set(MODULE_DEPENDS_JZGame "JZWidget")
 set(MODULE_DEPENDS_JZSimulator "JZBle;JZHttpServer;JZJson;JZGpio")
 set(MODULE_DEPENDS_JZCamera "JZCore")
 set(MODULE_DEPENDS_JZCrashReport "JZCore;JZNet")
@@ -296,13 +297,15 @@ endfunction()
 macro(jzframework_use_modules)
     set(options)
     set(oneValueArgs)
-    set(multiValueArgs SINGLE_MODULES)
+    set(multiValueArgs SINGLE_MODULES SHARED_MODULES)
     cmake_parse_arguments(JZ_USE "" "" "${multiValueArgs}" ${ARGN})
 	
     # 普通模块 = 所有未被解析的参数
     set(modules ${JZ_USE_UNPARSED_ARGUMENTS})
     # 单例模块 = 显式指定的 SINGLE_MODULES 后的参数
     set(single_modules ${JZ_USE_SINGLE_MODULES})
+    # 共享模块 = 显式指定的 SHARED_MODULES 后的参数 (各自一个 DLL)
+    set(shared_modules ${JZ_USE_SHARED_MODULES})
 
     # 处理普通模块
     set(JZ_MODULE_TARGET JZFramework)
@@ -318,6 +321,9 @@ macro(jzframework_use_modules)
 		_jz_collect_modules("${MODULE}")
 	endforeach()
 	foreach(s ${single_modules})
+		_jz_collect_modules("${s}")
+	endforeach()
+	foreach(s ${shared_modules})
 		_jz_collect_modules("${s}")
 	endforeach()
 	_jz_export_module_flags()
@@ -338,7 +344,36 @@ macro(jzframework_use_modules)
         target_link_libraries(${s} PRIVATE JZFramework)
     endforeach()
 
+    # 处理共享模块(可选): 各自一个 DLL, **target 由模块自己的 .cmake 创建**
+    # (只有它才知道依赖齐不齐; 依赖不满足时直接 return, 不会留下空 DLL 目标)。
+    set(_jz_any_shared "")
+    foreach(s ${shared_modules})
+        set(JZ_MODULE_TARGET ${s})
+        # 依赖模块(编在 JZFramework 里的人)必须先加进普通模块列表
+        set(_jz_dep_var "MODULE_DEPENDS_${s}")
+        if(DEFINED ${_jz_dep_var})
+            foreach(_jz_dep ${${_jz_dep_var}})
+                _jz_add_module("${_jz_dep}")
+            endforeach()
+        endif()
+        unset(_jz_dep_var)
+        include(${JZFRAMEWORK_ROOT_DIR}/${s}/${s}.cmake)
+        if(TARGET ${s})
+            # 与普通模块一致: 消费方 #if HAS_<模块> 能判断"本次构建有没有它"
+            target_compile_definitions(JZFramework PUBLIC HAS_${s})
+            list(APPEND _jz_any_shared ${s})
+        else()
+            message(STATUS "[JZFramework] 共享模块 ${s} 未创建 (依赖不满足, 见上面的说明)")
+        endif()
+    endforeach()
+    set(JZ_SHARED_MODULES_BUILT "${_jz_any_shared}" CACHE INTERNAL "本次构建实际建出来的共享模块")
+    unset(_jz_any_shared)
+    unset(JZ_MODULE_TARGET)
+
     message(STATUS "JZFramework enabled modules: ${JZFRAMEWORK_ADDED_MODULES}")
+    if(JZ_SHARED_MODULES_BUILT)
+        message(STATUS "JZFramework shared modules (DLL): ${JZ_SHARED_MODULES_BUILT}")
+    endif()
 endmacro()
 
 function(jzframework_use_config TEMPLATE_FILE)

@@ -2,7 +2,7 @@
 #define JZ_GAME_SPRITE_H_
 #pragma once
 
-#include "JZGlobal.h"   // JZFRAMEWORK_API
+#include "JZGameGlobal.h"   // JZGAME_API
 #include "JZBody.h"
 #include "JZColor.h"
 #include "JZPixmap.h"
@@ -28,7 +28,7 @@ class JZPainter;
 //   * vx/vy 由玩法层自管: 引擎不积分、不解释。
 //   * alpha 仅程序化图形路径生效 (drawPixmap 无逐次 alpha)。
 // ============================================================================
-class JZFRAMEWORK_API JZSprite
+class JZGAME_API JZSprite
 {
 public:
     JZSprite() = default;

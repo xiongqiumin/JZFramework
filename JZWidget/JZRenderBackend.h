@@ -48,4 +48,11 @@ public:
     }
 };
 
+// 按环境变量 JZ_RENDER_BACKEND 创建默认渲染后端:
+//   "d2d" (= "d2d1" / "gpu") -> JZD2DBackend (Direct2D, GPU; 不可用时回退 GDI)
+//   其它 / 未设置            -> JZGdiBackend (GDI+, 现有默认)
+// 调用方接管所有权。离屏设备拿到 D2D 后端时 init 会失败, 设备据此换回 GDI
+// (见 JZDisplayDevice::initOffscreen): 离屏那条路要的是 targetPixels 零拷贝取帧。
+JZFRAMEWORK_API JZRenderBackend* jzCreateRenderBackend();
+
 #endif // JZ_RENDER_BACKEND_H_

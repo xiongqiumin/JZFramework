@@ -76,6 +76,9 @@ private:
                             const JZRect& ancClip);
 
     JZRenderBackend* m_backend = nullptr;
+    // 后端是否由 jzCreateRenderBackend 选出 (而非使用者 setRenderBackend 指定):
+    // 只有"工厂选的"才允许在 init 失败时自动换成 GDI。
+    bool m_backendFromFactory = true;
     JZLayer m_layer;
     float m_scale = 1.0f;
     JZRect m_dirty;   // 本轮重绘脏区 (render 时更新)

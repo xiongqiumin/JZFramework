@@ -23,6 +23,7 @@ add_executable(test_agent_tools
     main_tools.cpp
     test_code_tools.cpp
     test_loopdetect.cpp
+    test_agent_omni.cpp
     test_terminal_tools.cpp
     test_agenttoolbridge.cpp)
 # JZMcpToolBridge / JZTerminalManager 在 binary/agent_tool 里(通用工具库), 所以要额外链它
@@ -34,6 +35,9 @@ target_link_libraries(test_agent_tools JZFramework agent_tool)
 # 边界把中文源码判成二进制 ⇒ read_file/modify_file/search_context 一起失效), 必须有自动回归。
 add_test(NAME agent.test_code_tools COMMAND test_agent_tools code_tools)
 set_tests_properties(agent.test_code_tools PROPERTIES TIMEOUT 120)
+
+add_test(NAME agent.test_omni COMMAND test_agent_tools omni)
+set_tests_properties(agent.test_omni PROPERTIES TIMEOUT 60)
 
 add_test(NAME agent.test_loopdetect COMMAND test_agent_tools loopdetect)
 set_tests_properties(agent.test_loopdetect PROPERTIES TIMEOUT 60)

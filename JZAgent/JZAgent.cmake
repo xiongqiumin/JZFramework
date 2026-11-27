@@ -1,6 +1,8 @@
 ﻿set(JZAGENT_SOURCES
 	JZAgent.h
     JZAgent.cpp
+	JZAgentOmni.h
+	JZAgentOmni.cpp
 	JZAgentTool.h
 	JZAgentTool.cpp
 	# 注: JZAgentNodePacket / JZAgentHubPacket 已移到 binary/agent_cli/ ——

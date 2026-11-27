@@ -25,9 +25,11 @@ extern int test_code_tools(int argc, char *argv[]);
 extern int test_loopdetect(int argc, char *argv[]);
 extern int test_terminal_tools(int argc, char *argv[]);
 extern int test_agenttoolbridge(int argc, char *argv[]);
+extern int test_omni(int argc, char *argv[]);
 
 static const JzAgentTestCase kCases[] = {
     { "code_tools", test_code_tools },
+    { "omni", test_omni },
     { "loopdetect", test_loopdetect },
     { "terminal_tools", test_terminal_tools },
     { "agenttoolbridge", test_agenttoolbridge },

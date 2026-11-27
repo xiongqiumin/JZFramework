@@ -358,6 +358,13 @@ void JZWidget::styleChanged()
 
 void JZWidget::setParentWidget(JZWidget* parent)
 {
+    // 换父很可能等于换窗口: 老窗口里指向本控件的裸指针 (焦点/抓取/屏蔽/悬停) 必须先摘掉。
+    // 否则控件在新窗口里析构时, dropWidget 只会清新窗口, 老窗口留一枚悬垂指针 ——
+    // 之后它的 WM_KILLFOCUS / updateHover 就会派发到已释放对象上。
+    if (JZWindow* old = window()) {
+        if (old != this)
+            old->dropWidget(this);
+    }
     setParent(parent);
 }
 

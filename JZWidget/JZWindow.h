@@ -333,9 +333,14 @@ protected:
     WindowType m_windowType = Normal;
     bool m_top = false;                 // 置顶
 
-    JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
-    // ⚠ 以上(含下面几个)都是**裸指针**: 控件析构必须经 dropWidget 摘除, 不能只在窗口析构时清。
     bool m_dispatchingKey = false;      // 正在派发键/IME 事件 (挡 event() 的递归, 见 JZWindow::event)
+
+    // ---- 窗口级的"控件引用" (下面四个都是**裸指针**, 生命周期不归窗口管) ----
+    // ⚠ 控件只能通过 delete 销毁 ⇒ 一定会走 ~JZWidget; 换父也会走 setParentWidget。
+    //   这两个入口都调 dropWidget(this) 把下面四个摘干净, 所以不存在第三条"控件离开窗口"的路。
+    //   新增同类成员时: 往 dropWidget 里加一行 (那里是集中处理), 别只在窗口析构时清 ——
+    //   栈上 `JZWindow w; JZWidget c(&w);` 是 c 先析构, 窗口还活着却指着已释放的控件。
+    JZWidget* m_focusWidget = nullptr;  // 当前焦点控件 (接收键盘/IME)
     JZWidget* m_mouseGrabber = nullptr; // 鼠标抓取控件 (grabMouse 后所有鼠标事件直发它)
     JZWidget* m_inputGate = nullptr;    // 输入屏蔽层 (setInputGate; 可见期间丢真实输入)
     JZWidget* m_hoverWidget = nullptr;  // 当前悬停的最深控件 (updateHover 派发 enter/leave)

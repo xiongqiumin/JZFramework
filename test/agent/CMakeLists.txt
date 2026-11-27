@@ -2,6 +2,10 @@
 add_executable(test_agent test_agent.cpp)
 target_link_libraries(test_agent JZFramework)
 
+# 崩溃报告自检: 故意崩, 只看 <exe>/crash/ 里的 log/dmp 是否生成(不注册 ctest)
+add_executable(test_crash test_crash.cpp)
+target_link_libraries(test_crash JZFramework)
+
 add_executable(test_mcpclient test_mcpclient.cpp)
 target_link_libraries(test_mcpclient JZFramework)
 

@@ -24,3 +24,8 @@ convert_to_abs_paths(JZCrashReport_SOURCES)
 # 添加到目标
 target_sources(${JZ_MODULE_TARGET} PRIVATE ${JZCrashReport_SOURCES})
 target_include_directories(${JZ_MODULE_TARGET} PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
+
+# Windows: dbghelp 用于崩溃时符号化堆栈 + MiniDumpWriteDump
+if(WIN32)
+    target_link_libraries(${JZ_MODULE_TARGET} PRIVATE dbghelp)
+endif()

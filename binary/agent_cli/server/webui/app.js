@@ -1940,9 +1940,11 @@ async function doSend() {
 }
 
 /* ---- 模型选择 ----
-   默认模型来自 /api/agent 的 info.modelName; 候选来自 info.modelList(llm.models)。
+   默认模型来自 /api/agent 的 info.modelName; 候选优先 info.modelList(llm.models)。
+   旧版中枢只下发 info.modelWindows(名字->窗口, 没有 modelList), 这时用它的键兜底,
+   否则下拉只剩默认模型一项。
    选中的名字只存本机并发在每条任务上, 不改 agent 进程配置, 也不传 token。
-   上下文窗口(info.modelWindows)只给任务卡片圆环用, 不在下拉里显示; 每个模型各自配, 无全局默认。 */
+   上下文窗口只给任务卡片圆环用, 不在下拉里显示; 每个模型各自配, 无全局默认。 */
 function modelContextWindow(name) {
   const info = AG.info || {};
   return Number((info.modelWindows || {})[name || ''] || 0) || 0;
@@ -1952,7 +1954,9 @@ function modelOptions() {
   const info = AG.info || {};
   const opts = [];
   if (info.modelName) opts.push(String(info.modelName));
-  const list = Array.isArray(info.modelList) ? info.modelList : [];
+  let list = Array.isArray(info.modelList) ? info.modelList.slice() : [];
+  if (!list.length && info.modelWindows && typeof info.modelWindows === 'object')
+    list = Object.keys(info.modelWindows);
   list.forEach((n) => {
     n = String(n || '').trim();
     if (n && opts.indexOf(n) < 0) opts.push(n);

@@ -20,6 +20,7 @@
 #include "JZApplication.h"
 #include "JZCliConfigIO.h"   // 内置 agent 与 agent_cli 共用配置解析
 #include "JZCommandLineParser.h"
+#include "JZCrashReport.h"
 #include "JZDir.h"
 #include "JZFileInfo.h"
 #include "JZJson.h"
@@ -411,6 +412,13 @@ int main(int argc, char *argv[])
     }
 
     JZApplication app;
+
+    // 崩溃报告: 符号化堆栈 + minidump 写到 <exe目录>/crash/, 同时打到 stderr。
+    // 之前没有它时, 崩溃只能从 WER 里看到 "MSVCP140D.dll + 0x2299c" 这种 dll 偏移, 定位不了。
+    JZCrashReportManager::instance()->init([](JZCrashReport rpt) {
+        fprintf(stderr, "[crash] %s\n%s\n", rpt.msg.c_str(), rpt.stack.c_str());
+        fflush(stderr);
+    });
 
     // 日志: General 模块落盘到 <logFile目录或 exeDir/data/logs>/Server.log。
     // logFile 一律按**目录**解释(与 agent_cli / agent_node 同一口径, 见 jzLogDirOf):

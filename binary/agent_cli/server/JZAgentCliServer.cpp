@@ -1567,9 +1567,20 @@ Json::Value JZAgentCliServer::onlineAgentsJson() const
         {
             Json::Value mw;
             if (parseJsonText(a.modelWindows, mw) && mw.isObject())
+            {
                 j["modelWindows"] = mw;
+                // 中枢包只带 name->window, 网页下拉要的是名字列表(modelList); 这里补齐,
+                // 否则下拉只剩 modelName 一项(旧版脚本/缓存的页面也照这个走)。
+                Json::Value list(Json::arrayValue);
+                for (const string &name : mw.getMemberNames())
+                    list.append(name);
+                j["modelList"] = list;
+            }
             else
+            {
                 j["modelWindows"] = Json::Value(Json::objectValue);
+                j["modelList"] = Json::Value(Json::arrayValue);
+            }
         }
         j["busy"] = a.busy;
         j["round"] = a.round;

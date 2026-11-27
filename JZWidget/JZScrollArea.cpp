@@ -337,6 +337,12 @@ void JZScrollArea::layoutScrollBars()
     cw = std::max(0, cw);
     ch = std::max(0, ch);
 
+    // 模型 B 里 -1 = "该方向跟随视口"(见头文件), 也就是该方向不该产生滚动条。
+    // 不能只按控件宽/高比较: 竖条一出现视口就变窄, 内容会被判成"比视口宽一条竖条的
+    // 量", 于是凭空多出一条水平滚动条(两者还会互相触发)。
+    const bool followW = (!widgetMode && m_contentW < 0);
+    const bool followH = (!widgetMode && m_contentH < 0);
+
     // 可见性: 策略 + 内容是否溢出视口 (交叉收缩需迭代 2 次)
     bool vVis = (m_vPolicy == ScrollBarAlwaysOn) ||
                 (m_vPolicy == ScrollBarAsNeeded && ch > h);
@@ -350,9 +356,13 @@ void JZScrollArea::layoutScrollBars()
     }
     if (m_vPolicy == ScrollBarAlwaysOff) vVis = false;
     if (m_hPolicy == ScrollBarAlwaysOff) hVis = false;
+    if (followH) vVis = (m_vPolicy == ScrollBarAlwaysOn);   // 跟随视口的轴: 恒定不滚动
+    if (followW) hVis = (m_hPolicy == ScrollBarAlwaysOn);
 
     const int vw = std::max(0, w - (vVis ? t : 0));
     const int vh = std::max(0, h - (hVis ? t : 0));
+    if (followW) cw = vw;      // 大小即视口 -> maxX 恒为 0
+    if (followH) ch = vh;
 
     // 滚动范围与收窄
     int maxX = 0;

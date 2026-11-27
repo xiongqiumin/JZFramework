@@ -19,6 +19,100 @@
 JZ_OBJECT_IMPL(JZListWidget, JZAbstractViewWidget)
 
 // ============================================================================
+// JZListWidgetItem: 默认实现 (图标 + 单行文本) + 改值通知
+// ============================================================================
+void JZListWidgetItem::setText(const std::string& t)
+{
+    m_text = t;
+    if (m_widget)
+    {
+        m_widget->itemChanged(this);   // 文本变了高度可能也变了 -> 重测 + 重绘
+        m_widget->notifyDataChanged();
+    }
+}
+
+void JZListWidgetItem::setIcon(const JZImage& i)
+{
+    m_icon = i;
+    if (m_widget)
+    {
+        m_widget->itemChanged(this);
+        m_widget->notifyDataChanged();
+    }
+}
+
+void JZListWidgetItem::setData(const JZVariant& d)
+{
+    m_data = d;
+    if (m_widget)
+    {
+        m_widget->itemChanged(this);   // 自定义 itemPaint 可能依据 data 绘制, 故同样重绘
+        m_widget->notifyDataChanged();
+    }
+}
+
+int JZListWidgetItem::heightForWidth(int width)
+{
+    (void)width;
+    return -1;      // 不参与逐项测量: 用列表的 setItemHeight() 定高
+}
+
+void JZListWidgetItem::paint(JZPainter& p, const JZRect& rect, const JZListItemPaintInfo& info)
+{
+    const bool sel = info.selected;
+
+    // 选中底色由项自己画(默认实现画蓝底 + 白字); 自绘项要高亮就同样按 info.selected 自己画
+    if (sel)
+        p.fillRect(rect.x(), rect.y(), rect.width(), rect.height(), JZColor(0x33, 0x66, 0xcc));
+
+    const int iconSize = 20;
+    int textX = rect.x() + 6;
+    if (!m_icon.isNull())
+    {
+        const int ix = rect.x() + 6;
+        const int iy = rect.y() + (rect.height() - iconSize) / 2;
+        p.drawImage(m_icon, ix, iy, iconSize, iconSize);
+        textX = ix + iconSize + 6;
+    }
+    // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
+    p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
+    JZFont font(14);
+    p.setFont(font);
+    const int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
+    p.drawText(textX, ty, m_text.c_str());
+}
+
+bool JZListWidgetItem::mousePress(const JZRect& rect, JZMouseEvent* e)
+{
+    (void)rect; (void)e;
+    return false;   // 默认不消费: 列表照旧做"点击选中"
+}
+
+bool JZListWidgetItem::mouseMove(const JZRect& rect, JZMouseEvent* e)
+{
+    (void)rect; (void)e;
+    return false;
+}
+
+bool JZListWidgetItem::mouseRelease(const JZRect& rect, JZMouseEvent* e)
+{
+    (void)rect; (void)e;
+    return false;
+}
+
+bool JZListWidgetItem::keyPress(JZKeyEvent* e)
+{
+    (void)e;
+    return false;
+}
+
+void JZListWidgetItem::notifyChanged()
+{
+    if (m_widget)
+        m_widget->itemChanged(this);
+}
+
+// ============================================================================
 // JZListWidget (owner-draw 虚拟列表, 继承 JZAbstractViewWidget)
 // ============================================================================
 JZListWidget::JZListWidget(JZWidget* parent)
@@ -32,39 +126,17 @@ JZListWidget::~JZListWidget()
 {
 }
 
-// ---- JZListWidgetItem: 改值并通知所属列表重绘 (在 JZListWidget 之后定义, 此处类型已完整) ----
+// ---- 数据模型 ----
 
-void JZListWidgetItem::setText(const std::string& t)
+void JZListWidget::invalidateLayout(int fromIndex)
 {
-    m_text = t;
-    if (m_widget)
-    {
-        m_widget->update();
-        m_widget->notifyDataChanged();
-    }
+    if (!m_layoutValid)
+        return;
+    const int n = (int)m_items.size();
+    const int from = (fromIndex < 0) ? 0 : std::min(fromIndex, n);
+    if (from < m_dirtyFrom)
+        m_dirtyFrom = from;
 }
-
-void JZListWidgetItem::setIcon(const JZImage& i)
-{
-    m_icon = i;
-    if (m_widget)
-    {
-        m_widget->update();
-        m_widget->notifyDataChanged();
-    }
-}
-
-void JZListWidgetItem::setData(const JZVariant& d)
-{
-    m_data = d;
-    if (m_widget)
-    {
-        m_widget->update();   // 自定义 itemPaint 可能依据 data 绘制, 故同样重绘
-        m_widget->notifyDataChanged();
-    }
-}
-
-// ---- JZListWidget: 数据模型 ----
 
 JZListWidgetItem* JZListWidget::insertItemAt(int index, std::unique_ptr<JZListWidgetItem> item)
 {
@@ -81,6 +153,7 @@ JZListWidgetItem* JZListWidget::insertItemAt(int index, std::unique_ptr<JZListWi
     if (m_current >= index)
         m_current++;                             // 选中项被挤到后一位
 
+    invalidateLayout(index);                     // 插入点之后的项索引/高度都变了
     updateContentSize();
     update();
     notifyDataChanged();
@@ -121,6 +194,7 @@ void JZListWidget::appendItems(const std::vector<std::string>& texts)
         it->m_widget = this;
         m_items.push_back(std::move(it));
     }
+    invalidateLayout(0);
     updateContentSize();
     update();
     notifyDataChanged();
@@ -135,12 +209,13 @@ JZListWidgetItem* JZListWidget::takeItem(int index)
     raw->m_widget = nullptr;                            // 不再属于本列表
     m_items.erase(m_items.begin() + index);
 
-    bool hadCurrent = (m_current >= 0);
+    const bool hadCurrent = (m_current >= 0);
     if (m_current == index)
         m_current = -1;                                 // 选中项被摘除 -> 清空选择
     else if (m_current > index)
         m_current--;
 
+    invalidateLayout(index);
     updateContentSize();
     update();
     notifyDataChanged();
@@ -158,9 +233,13 @@ JZListWidgetItem* JZListWidget::takeItem(int index)
 
 void JZListWidget::clear()
 {
-    bool hadCurrent = (m_current >= 0);
+    const bool hadCurrent = (m_current >= 0);
     m_items.clear();
     m_current = -1;
+    m_layoutValid = false;
+    m_dirtyFrom = 0;
+    m_heights.clear();
+    m_tops.clear();
     updateContentSize();
     update();
     notifyDataChanged();
@@ -207,32 +286,221 @@ JZVariant JZListWidget::itemData(int index) const
     return it ? it->data() : JZVariant();
 }
 
-void JZListWidget::setViewMode(ViewMode mode)
-{
-    if (mode == m_mode) return;
-    m_mode = mode;
-    updateContentSize();
-    update();
-}
-
-JZListWidget::ViewMode JZListWidget::viewMode() const
-{
-    return m_mode;
-}
-
 void JZListWidget::setItemHeight(int h)
 {
     if (h <= 0) return;
     m_itemHeight = h;
-    if (m_mode == ListMode) {
-        updateContentSize();
-        update();
-    }
+    invalidateLayout(0);
+    updateContentSize();
+    update();
 }
 
 int JZListWidget::itemHeight() const
 {
     return m_itemHeight;
+}
+
+// ---- 逐项测量 (变高) ----
+void JZListWidget::setDynamicItemHeight(bool on)
+{
+    if (m_dynamic == on)
+        return;
+    m_dynamic = on;
+    invalidateLayout(0);
+    updateContentSize();
+    update();
+}
+
+bool JZListWidget::dynamicItemHeight() const
+{
+    return m_dynamic;
+}
+
+void JZListWidget::setSpacing(int px)
+{
+    const int v = std::max(0, px);
+    if (v == m_spacing)
+        return;
+    m_spacing = v;
+    invalidateLayout(0);
+    if (m_dynamic) {
+        updateContentSize();
+        update();
+    }
+}
+
+int JZListWidget::spacing() const
+{
+    return m_spacing;
+}
+
+void JZListWidget::setContentPadding(int left, int top, int right, int bottom)
+{
+    m_padL = std::max(0, left);
+    m_padT = std::max(0, top);
+    m_padR = std::max(0, right);
+    m_padB = std::max(0, bottom);
+    invalidateLayout(0);
+    if (m_dynamic) {
+        updateContentSize();
+        update();
+    }
+}
+
+int JZListWidget::contentPaddingLeft() const { return m_padL; }
+int JZListWidget::contentPaddingTop() const { return m_padT; }
+int JZListWidget::contentPaddingRight() const { return m_padR; }
+int JZListWidget::contentPaddingBottom() const { return m_padB; }
+
+void JZListWidget::setStickToBottom(bool on)
+{
+    m_stickBottom = on;
+}
+
+bool JZListWidget::stickToBottom() const
+{
+    return m_stickBottom;
+}
+
+bool JZListWidget::atBottom() const
+{
+    return scrollY() >= maxScrollY() - 1;
+}
+
+void JZListWidget::setBackgroundColor(const JZColor& c)
+{
+    m_bgColor = c;
+    update();
+}
+
+void JZListWidget::setEmptyText(const std::string& text)
+{
+    m_emptyText = text;
+    update();
+}
+
+// ---- 内部布局: 前缀和 ----
+int JZListWidget::contentWidthForItems() const
+{
+    const int w = viewportWidth() - m_padL - m_padR;
+    return std::max(1, w);
+}
+
+// 惰性重算: 宽度变了/项数变了 -> 全量; 只有某项内容变了 -> 从该项起重算。
+// 逐项测量只在"变高 + 列表模式"下生效; 图片模式仍是网格定高。
+void JZListWidget::ensureLayout() const
+{
+    const int n = (int)m_items.size();
+    const int w = contentWidthForItems();
+    const bool dynamic = m_dynamic;
+    const bool needAll = !m_layoutValid || (w != m_layoutWidth) || ((int)m_heights.size() != n);
+
+    if (!needAll && m_dirtyFrom >= n)
+        return;                                  // 全部有效
+
+    if (needAll)
+    {
+        m_heights.assign((size_t)n, m_itemHeight);
+        m_tops.assign((size_t)n + 1, 0);
+        m_layoutWidth = w;
+        m_layoutValid = true;
+        m_dirtyFrom = 0;
+    }
+
+    const int from = std::max(0, std::min(m_dirtyFrom, n));
+    if (from == 0)
+        m_tops[0] = 0;
+
+    for (int i = from; i < n; i++)
+    {
+        int h = -1;
+        if (dynamic)
+            h = m_items[i]->heightForWidth(w);
+        if (h < 0)
+            h = m_itemHeight;                    // 未声明自定高 -> 用列表定高
+        m_heights[i] = h;
+    }
+    for (int i = from; i < n; i++)
+        m_tops[i + 1] = m_tops[i] + m_heights[i] + ((i + 1 < n) ? m_spacing : 0);
+
+    m_dirtyFrom = n;
+}
+
+int JZListWidget::itemTop(int index) const
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return -1;
+    ensureLayout();
+    return m_padT + m_tops[index];
+}
+
+int JZListWidget::itemHeightAt(int index) const
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return -1;
+    ensureLayout();
+    return m_heights[index];
+}
+
+int JZListWidget::indexAt(const JZPoint& contentPos) const
+{
+    const int n = (int)m_items.size();
+    if (n == 0)
+        return -1;
+
+    if (m_dynamic)
+    {
+        ensureLayout();
+        const int y = contentPos.y() - m_padT;
+        if (y < 0 || contentPos.x() < m_padL || contentPos.x() > m_padL + contentWidthForItems())
+            return -1;
+        // 二分: 最后一个 tops[i] <= y 的项
+        int lo = 0, hi = n - 1, ans = -1;
+        while (lo <= hi)
+        {
+            const int mid = (lo + hi) / 2;
+            if (m_tops[mid] <= y) { ans = mid; lo = mid + 1; }
+            else hi = mid - 1;
+        }
+        if (ans < 0)
+            return -1;
+        if (y >= m_tops[ans] + m_heights[ans])
+            return -1;                            // 落在项间距里
+        return ans;
+    }
+
+    if (m_itemHeight <= 0)
+        return -1;
+    const int idx = contentPos.y() / m_itemHeight;
+    return (idx >= 0 && idx < n) ? idx : -1;
+}
+
+bool JZListWidget::itemRect(int index, JZRect& out) const
+{
+    if (index < 0 || index >= (int)m_items.size())
+        return false;
+
+    const int sy = scrollY();
+    if (m_dynamic)
+    {
+        ensureLayout();
+        out = JZRect(m_padL, m_padT + m_tops[index] - sy,
+                     contentWidthForItems(), m_heights[index]);
+        return true;
+    }
+
+    out = JZRect(0, index * m_itemHeight - sy, viewportWidth(), m_itemHeight);
+    return true;
+}
+
+void JZListWidget::itemChanged(JZListWidgetItem* item)
+{
+    const int i = row(item);
+    if (i < 0)
+        return;
+    invalidateLayout(i);       // 只从这一项起重算(高度前缀和是整数加法, 很便宜)
+    updateContentSize();
+    update();
 }
 
 JZSize JZListWidget::sizeHint() const
@@ -242,44 +510,24 @@ JZSize JZListWidget::sizeHint() const
     //   高度 = 行数 * 行高, 至多 8 行 (再多交给滚动 —— 与下拉弹层的可见行数一致)
     const int maxVisible = 8;
 
-    JZFont font(m_mode == ListMode ? 14 : 12);
+    JZFont font(14);
     int w = 0;
     for (size_t i = 0; i < m_items.size(); i++)
     {
         const JZListWidgetItem& it = *m_items[i];
         int iw = JZFontMetrics::textWidth(it.text(), font);
         if (!it.icon().isNull())
-            iw += 20 + 6;              // 图标 + 间距 (与 defaultPaint 一致)
+            iw += 20 + 6;              // 图标 + 间距 (与默认绘制一致)
         if (iw > w)
             w = iw;
     }
+    w += 6 + 6;                        // 默认绘制左右各留 6
 
-    int h;
-    if (m_mode == ListMode)
-    {
-        w += 6 + 6;                    // defaultPaint 左右各留 6
-        int rows = std::min(std::max(1, (int)m_items.size()), maxVisible);
-        h = rows * m_itemHeight + 4;
-    }
-    else
-    {
-        w = std::max(w, m_cellW);
-        int rows = std::min(std::max(1, (int)m_items.size()), maxVisible);
-        h = rows * m_cellH + 4;        // 图片模式按"每项一行"给下限, 实际由视口宽度决定列数
-    }
+    const int rows = std::min(std::max(1, (int)m_items.size()), maxVisible);
+    const int h = rows * m_itemHeight + 4;
 
-    JZSize min = minimumSizeHint();
-    return JZSize(std::max(w, min.width()), std::max(h, min.height()));
-}
-
-void JZListWidget::setCellSize(int w, int h)
-{
-    if (w > 0) m_cellW = w;
-    if (h > 0) m_cellH = h;
-    if (m_mode == ImageMode) {
-        updateContentSize();
-        update();
-    }
+    const JZSize mn = minimumSizeHint();
+    return JZSize(std::max(w, mn.width()), std::max(h, mn.height()));
 }
 
 void JZListWidget::setItemPaint(PaintFn fn)
@@ -313,7 +561,7 @@ void JZListWidget::setCurrentItem(JZListWidgetItem* item, bool emitSignal)
 {
     if (!item)
         return;
-    int index = row(item);
+    const int index = row(item);
     if (index < 0 || index == m_current)
         return;
     m_current = index;
@@ -325,109 +573,123 @@ void JZListWidget::setCurrentItem(JZListWidgetItem* item, bool emitSignal)
 // ----------------------------------------------------------------------------
 // 虚拟列表核心
 // ----------------------------------------------------------------------------
-int JZListWidget::itemsPerRow() const
-{
-    if (m_mode == ListMode) return 1;
-    int w = viewportWidth();
-    if (w <= 0) return 1;
-    int n = w / m_cellW;
-    return n < 1 ? 1 : n;
-}
-
-int JZListWidget::rowHeight() const
-{
-    return (m_mode == ListMode) ? m_itemHeight : m_cellH;
-}
-
-int JZListWidget::cellWidth() const
-{
-    return (m_mode == ListMode) ? viewportWidth() : m_cellW;
-}
-
 void JZListWidget::updateContentSize()
 {
-    int perRow = itemsPerRow();
-    int rows = (perRow == 0) ? 0 : ((int)m_items.size() + perRow - 1) / perRow;
-    setContentSize(-1, rows * rowHeight());   // 宽度跟随视口, 仅纵向滚动
+    // "变化前是否贴底"要在 setContentSize 之前取: 内容长高后 maxScrollY 会变
+    const bool wasBottom = atBottom();
+
+    ensureLayout();
+
+    if (m_dynamic)
+    {
+        const int n = (int)m_items.size();
+        setContentSize(-1, m_padT + (n ? m_tops[n] : 0) + m_padB);
+    }
+    else
+    {
+        setContentSize(-1, (int)m_items.size() * m_itemHeight);   // 宽度跟随视口, 仅纵向滚动
+    }
+
+    if (m_stickBottom && wasBottom)
+        scrollToBottom();                        // 保持贴底(用户上滚看历史时不会被拽走)
 }
 
-// 内置默认绘图: 图标 + 文本(列表模式左对齐, 图片模式缩略图 + 居中说明)
-void JZListWidget::defaultPaint(JZPainter& p, const JZRect& rect, JZListWidgetItem* item, int index)
+void JZListWidget::paintItemAt(JZPainter& p, int index, const JZRect& rect)
 {
-    bool sel = (index == m_current);
-    if (sel)
-        p.fillRect(rect.x(), rect.y(), rect.width(), rect.height(), JZColor(0x33, 0x66, 0xcc));
-
-    if (m_mode == ListMode) {
-        int iconSize = 20;
-        int textX = rect.x() + 6;
-        if (!item->icon().isNull()) {
-            int ix = rect.x() + 6;
-            int iy = rect.y() + (rect.height() - iconSize) / 2;
-            p.drawImage(item->icon(), ix, iy, iconSize, iconSize);
-            textX = ix + iconSize + 6;
-        }
-        // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
-        p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
-        JZFont font(14); p.setFont(font);
-        int ty = rect.y() + JZFontMetrics::centerY(font, rect.height());
-        p.drawText(textX, ty, item->text().c_str());
-    } else {
-        int iconSize = rect.height() - 22;
-        if (iconSize > 0 && !item->icon().isNull()) {
-            int cx = rect.x() + (rect.width() - iconSize) / 2;
-            int cy = rect.y() + 2;
-            p.drawImage(item->icon(), cx, cy, iconSize, iconSize);
-        }
-        // drawText 取 pen.color() (非 brush): 选中行白字, 否则黑字
-        p.setPen(JZPen(sel ? JZColor::White : JZColor::Black, 1));
-        JZFont font(12); p.setFont(font);
-        int th = JZFontMetrics::textHeight(font);
-        p.drawText(rect.x() + 2, rect.y() + rect.height() - th - 4, item->text().c_str());
+    JZListWidgetItem* it = m_items[index].get();
+    if (m_paintFn) {
+        m_paintFn(p, rect, it);                  // 整体换画法(旧接口)
+        return;
     }
+    JZListItemPaintInfo info;
+    info.index = index;
+    info.selected = (index == m_current);
+    it->paint(p, rect, info);
 }
 
 void JZListWidget::paintEvent(JZPainterEvent* event)
 {
+    (void)event;
     JZPainter p(this);
 
-    int viewW = viewportWidth();
-    int viewH = viewportHeight();
-    int sy = scrollY();
+    const int viewW = viewportWidth();
+    const int viewH = viewportHeight();
+    const int sy = scrollY();
 
-    // 整控件白底 (含滚动条带宽下的底色), 防止项与项之间/滚动条后残留旧帧内容
-    p.fillRect(0, 0, width(), height(), JZColor::White);
+    p.fillRect(0, 0, width(), height(), m_bgColor);
 
-    int perRow = itemsPerRow();
-    int rh = rowHeight();
-    int cw = cellWidth();
+    if (m_items.empty())
+    {
+        if (!m_emptyText.empty())
+        {
+            JZFont font(14);
+            p.setPen(JZPen(JZColor(0x99, 0x99, 0x99), 1));
+            p.setFont(font);
+            const int tx = JZFontMetrics::centerX(m_emptyText, font, width());
+            p.drawText(tx, JZFontMetrics::centerY(font, height()), m_emptyText.c_str());
+        }
+        return;
+    }
 
-    int firstRow = (int)sy / rh;
-    if (firstRow < 0) firstRow = 0;
-    int visRows = (viewH > 0 ? viewH / rh : 0) + 2;
+    // ---- 逐项测量模式: 二分找首个可见项, 再顺序画到视口底 ----
+    if (m_dynamic)
+    {
+        ensureLayout();
+        const int n = (int)m_items.size();
+        int first = n;
+        {
+            int lo = 0, hi = n - 1;
+            while (lo <= hi)
+            {
+                const int mid = (lo + hi) / 2;
+                if (m_padT + m_tops[mid] + m_heights[mid] > sy) { first = mid; hi = mid - 1; }
+                else lo = mid + 1;
+            }
+        }
+        const int w = contentWidthForItems();
+        for (int i = first; i < n; i++)
+        {
+            const int y = m_padT + m_tops[i] - sy;
+            const int h = m_heights[i];
+            if (y > viewH)
+                break;
+            if (y + h <= 0)
+                continue;
+            paintItemAt(p, i, JZRect(m_padL, y, w, h));
+        }
+        return;
+    }
+
+    // ---- 定高老路径 ----
+    const int rh = m_itemHeight;
+    if (rh <= 0)
+        return;
+
+    const int firstRow = std::max(0, sy / rh);
+    const int visRows = (viewH > 0 ? viewH / rh : 0) + 2;
 
     for (int r = firstRow; r <= firstRow + visRows; r++) {
-        for (int c = 0; c < perRow; c++) {
-            int index = r * perRow + c;
-            if (index >= (int)m_items.size())
-                return;
-            int cx = (m_mode == ListMode) ? 0 : c * cw;
-            int cy = r * rh - sy;
-            if (cy + rh < 0 || cy > viewH) continue;
-            JZRect rect(cx, cy, (m_mode == ListMode) ? viewW : cw, rh);
-            if (m_paintFn)
-                m_paintFn(p, rect, m_items[index].get());
-            else
-                defaultPaint(p, rect, m_items[index].get(), index);
-        }
+        const int index = r;
+        if (index >= (int)m_items.size())
+            return;
+        const int cy = r * rh - sy;
+        if (cy + rh < 0 || cy > viewH) continue;
+        paintItemAt(p, index, JZRect(0, cy, viewW, rh));
     }
+}
+
+void JZListWidget::resizeEvent(JZResizeEvent* event)
+{
+    invalidateLayout(0);        // 宽度变化会让换行结果变, 必须全量重测
+    JZAbstractViewWidget::resizeEvent(event);   // 基类会回调 updateContentSize()
+    update();
 }
 
 // ----------------------------------------------------------------------------
 // 事件
 // ----------------------------------------------------------------------------
 
-// 点击选择: 视口坐标 + 滚动偏移 -> 内容坐标 -> 行列 -> 项索引
+// 点击: 先给项自己判(折叠/拖选/链接), 没消费才走"选中 + 激活"
 void JZListWidget::mousePressEvent(JZMouseEvent* event)
 {
     if (event->button() != JZMouseEvent::LeftButton) {
@@ -435,23 +697,63 @@ void JZListWidget::mousePressEvent(JZMouseEvent* event)
         return;
     }
 
-    const int perRow = itemsPerRow();
-    const int rh = rowHeight();
-    if (perRow <= 0 || rh <= 0)
+    const JZPoint contentPos(event->localPos().x(), event->localPos().y() + scrollY());
+    const int index = indexAt(contentPos);
+    if (index < 0) {
+        JZScrollArea::mousePressEvent(event);
         return;
-
-    int row = (event->localPos().y() + scrollY()) / rh;
-    int col = (m_mode == ListMode) ? 0 : event->localPos().x() / cellWidth();
-    int index = row * perRow + col;
-    if (index >= 0 && index < (int)m_items.size()) {
-        setCurrentIndex(index);
-        sigActivated.emit(index);   // 点击即激活 (下拉弹层收编用)
     }
+
+    JZRect rect;
+    if (itemRect(index, rect) && m_items[index]->mousePress(rect, event)) {
+        m_mouseItem = index;          // 后续 move/release 继续发给这一项
+        event->accept();
+        return;
+    }
+
+    setCurrentIndex(index);
+    sigActivated.emit(index);   // 点击即激活 (下拉弹层收编用)
 }
 
-// 键盘: Up/Down 移动选择 (带滚动可见), Enter 激活; Esc ignore 冒泡给弹层关闭
+void JZListWidget::mouseMoveEvent(JZMouseEvent* event)
+{
+    if (m_mouseItem >= 0 && m_mouseItem < (int)m_items.size())
+    {
+        JZRect rect;
+        if (itemRect(m_mouseItem, rect) && m_items[m_mouseItem]->mouseMove(rect, event)) {
+            event->accept();
+            return;
+        }
+    }
+    JZScrollArea::mouseMoveEvent(event);
+}
+
+void JZListWidget::mouseReleaseEvent(JZMouseEvent* event)
+{
+    if (m_mouseItem >= 0)
+    {
+        const int i = m_mouseItem;
+        m_mouseItem = -1;
+        if (i < (int)m_items.size())
+        {
+            JZRect rect;
+            if (itemRect(i, rect))
+                m_items[i]->mouseRelease(rect, event);
+        }
+    }
+    JZScrollArea::mouseReleaseEvent(event);
+}
+
+// 键盘: 先给当前项(如 Ctrl+C 复制选区), 再走 Up/Down 移动选择、Enter 激活
 void JZListWidget::keyPressEvent(JZKeyEvent* event)
 {
+    if (m_current >= 0 && m_current < (int)m_items.size()
+        && m_items[m_current]->keyPress(event))
+    {
+        event->accept();
+        return;
+    }
+
     switch (event->key()) {
     case JZKey::Key_Up:
     case JZKey::Key_Down: {
@@ -463,8 +765,9 @@ void JZListWidget::keyPressEvent(JZKeyEvent* event)
         idx = std::max(0, std::min(idx, (int)m_items.size() - 1));
         if (idx != m_current) {
             setCurrentIndex(idx);
-            // 选择行滚入视口
-            ensureVisible(idx * rowHeight(), idx * rowHeight() + rowHeight());
+            // 选择行滚入视口 (变高模式下用真实顶部/高度)
+            const int top = itemTop(idx);
+            ensureVisible(top, top + itemHeightAt(idx));
         }
         event->accept();
         return;

@@ -10,6 +10,8 @@ set(JZCORE_SOURCES
     JZAllocator.h
     JZByteArray.h
     JZByteArray.cpp    
+    # 只读视图(纯 header): 零拷贝地"看见"一块字节, 只读语义由类型保证
+    JZByteArrayView.h
     JZDataStream.h
     JZDataStream.cpp
 	JZTextStream.h

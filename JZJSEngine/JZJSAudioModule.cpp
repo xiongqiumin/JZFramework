@@ -459,7 +459,8 @@ JSValue JZJSAudioModule::transcode(JSValue data, const Json::Value& inFmt, const
         return jsMakeUint8Array(ctx, JZByteArray());
     const JZAudioFormat in = fmtOf(inFmt, JZAudioFormat());
     const JZAudioFormat out = fmtOf(outFmt, JZAudioFormat());
-    // ⚠ audioTrans 内部按 int16 处理(只做线性重采样 + 单声道复制到多声道), 见 JZAudioUtils.cpp
+    // audioTrans 支持 uint8/int16/int32/float 互转 + 线性重采样 + 声道映射(多->单取平均),
+    // 输入走 JZByteArrayView 零拷贝; 详见 JZAudioUtils.h
     return jsMakeUint8Array(ctx, audioTrans(bytes, in, out));
 }
 

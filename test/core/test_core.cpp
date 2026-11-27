@@ -4,6 +4,7 @@
 #include "JZString.h"
 #include "JZRegExp.h"
 #include "JZByteArray.h"
+#include "JZByteArrayView.h"
 #include "JZElapsedTimer.h"
 #include "JZApplication.h"
 #include "JZTimer.h"
@@ -452,6 +453,42 @@ bool jzbytearray_clear()
     return true;
 }
 
+// ---- JZByteArrayView: 零拷贝只读视图 ----
+static bool bytearrayview_basic()
+{
+    JZByteArray ba("abcdef", 6);
+    JZByteArrayView v(ba);
+    JZ_TEST_EQ(v.size(), 6);
+    JZ_TEST_FALSE(v.isEmpty());
+    JZ_TEST_TRUE(v.data() == ba.constData());      // 视图不拷数据: 同一块内存
+    JZ_TEST_EQ(v[0], 'a');
+    JZ_TEST_EQ(v[5], 'f');
+
+    // 切片返回的也是视图(零拷贝)
+    JZByteArrayView s = v.mid(2, 3);
+    JZ_TEST_EQ(s.size(), 3);
+    JZ_TEST_EQ(s[0], 'c');
+    JZ_TEST_TRUE(s.data() == ba.constData() + 2);
+
+    JZ_TEST_TRUE(v.left(3) == JZByteArrayView("abc", 3));
+    JZ_TEST_TRUE(v.mid(4) == JZByteArrayView("ef", 2));
+
+    // 越界自动裁剪
+    JZ_TEST_EQ(v.mid(4, 100).size(), 2);
+    JZ_TEST_TRUE(v.mid(10).isEmpty());
+    JZ_TEST_TRUE(JZByteArrayView().isEmpty());
+
+    // toByteArray: 复制一份自有副本, 与源完全独立
+    JZByteArray copy = v.mid(1, 3).toByteArray();
+    JZ_TEST_EQ(copy.size(), 3);
+    JZ_TEST_TRUE(copy.constData() != ba.constData() + 1);   // 不是同一块内存
+    JZ_TEST_TRUE(memcmp(copy.constData(), "bcd", 3) == 0);
+    copy[0] = 'X';                                          // 改副本不影响源
+    JZ_TEST_EQ(ba[1], 'b');
+    JZ_TEST_TRUE(JZByteArrayView().toByteArray().isEmpty());
+    return true;
+}
+
 // ---- JZDataStream 字节序正确性验证 ----
 // 这些用例验证: 大小端都能正确序列化/反序列化, 且大端确实做了字节交换,
 // 单字节类型不受字节序影响, 与主机字节序无关(任何平台都能跑通)。
@@ -832,6 +869,10 @@ void test_JZCore(JZTest *test)
     bytearraySuite->addTestCase("mid", jzbytearray_mid);
     bytearraySuite->addTestCase("resize", jzbytearray_resize);
     bytearraySuite->addTestCase("clear", jzbytearray_clear);
+
+    auto baViewSuite = std::make_shared<JZTestSuite>("JZByteArrayView");
+    test->addSuite(baViewSuite);
+    baViewSuite->addTestCase("basic", bytearrayview_basic);
 
     auto dataStreamSuite = std::make_shared<JZTestSuite>("JZDataStream");
     test->addSuite(dataStreamSuite);

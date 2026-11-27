@@ -82,7 +82,11 @@ export function wavReadAll(path: string): Uint8Array;
 export function wavRead(path: string): WavData;
 export function wavWrite(path: string, format: AudioFormat, data: Uint8Array): boolean;
 
-/** 重采样 / 声道转换（⚠ 后端按 int16 处理） */
+/**
+ * 重采样 / 采样格式 / 声道转换。
+ * 支持 uint8 / int16 / int32 / float 任意互转；重采样为线性插值（无抗混叠）；
+ * 声道：单->多复制、多->单取平均、其余直通（多出来的输出声道用平均值填充）。
+ */
 export function transcode(data: Uint8Array, inFormat: AudioFormat, outFormat: AudioFormat): Uint8Array;
 
 /** 关掉所有打开的输入/输出，返回关掉的数量 */
